@@ -14,7 +14,7 @@ import re
 import signal
 import time
 from collections.abc import Callable, Coroutine, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -1496,8 +1496,6 @@ class EventDagRunner:
         Returns (error, was_settlement) tuple.
         """
         task = self.dag.tasks[action.task_slug]
-        pc = self.project_config
-        task_config = replace(pc, test_cmd=task.test_cmd) if task.test_cmd else pc
         sf = self._settlement_flow
 
         # Phase 1: Prepare and commit (or handle read-only roles)
@@ -1579,7 +1577,8 @@ class EventDagRunner:
         error = await sf.validate_and_finalize_candidate(
             action=action,
             candidate_result=candidate_result,
-            task_config=task_config,
+            project_config=self.project_config,
+            task_test_cmd=task.test_cmd,
             emit_event_fn=emit_event,
         )
         duration = time.monotonic() - start_ts

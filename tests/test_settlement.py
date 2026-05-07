@@ -17,6 +17,7 @@ from dgov.config import ProjectConfig
 from dgov.persistence import emit_event
 from dgov.settlement import (
     _build_test_cmd,
+    _build_test_commands,
     _run_coverage_gate,
     _run_sentrux_gate,
     _scoped_lint_check,
@@ -865,6 +866,42 @@ class TestValidateSandbox:
             tmp_path,
         )
         assert cmd == literal_cmd
+
+    @pytest.mark.unit
+    def test_build_test_commands_runs_task_cmd_and_changed_tests(self, tmp_path: Path):
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_runner.py").write_text("def test_runner():\n    assert True\n")
+
+        commands = _build_test_commands(
+            ProjectConfig(test_cmd="uv run pytest -q {test_dir}"),
+            ["tests/test_runner.py"],
+            tmp_path,
+            task_test_cmd="uv run pytest -q tests/test_runner.py -k 'rate'",
+        )
+
+        assert commands == [
+            "uv run pytest -q tests/test_runner.py -k 'rate'",
+            "uv run pytest -q tests/test_runner.py",
+        ]
+
+    @pytest.mark.unit
+    def test_build_test_commands_scopes_task_placeholder(self, tmp_path: Path):
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_runner.py").write_text("def test_runner():\n    assert True\n")
+
+        commands = _build_test_commands(
+            ProjectConfig(test_cmd="uv run pytest -q {test_dir}"),
+            ["tests/test_runner.py"],
+            tmp_path,
+            task_test_cmd="uv run pytest -q -m unit {test_dir}",
+        )
+
+        assert commands == [
+            "uv run pytest -q -m unit tests/test_runner.py",
+            "uv run pytest -q tests/test_runner.py",
+        ]
 
     def test_pass_clean_python(self, tmp_path: Path):
         base = _init_repo(tmp_path)

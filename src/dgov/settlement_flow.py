@@ -15,7 +15,6 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -205,11 +204,6 @@ class SettlementFlow:
         self.session_root = session_root
         self.plan_name = plan_name
         self.project_config = project_config
-
-    def _task_config(self, task: DagTaskSpec) -> ProjectConfig:
-        if not task.test_cmd:
-            return self.project_config
-        return replace(self.project_config, test_cmd=task.test_cmd)
 
     def _git_rev_parse(self, ref: str) -> str | None:
         result = subprocess.run(
@@ -407,8 +401,7 @@ class SettlementFlow:
             )
 
         file_claims = action.file_claims
-        task_config = self._task_config(task)
-        await asyncio.to_thread(autofix_fn, wt.path, file_claims, task_config)
+        await asyncio.to_thread(autofix_fn, wt.path, file_claims, self.project_config)
         msg = task.commit_message or f"feat: completed {action.task_slug}"
         await asyncio.to_thread(commit_fn, wt, msg, file_claims)
         return None, True
@@ -426,7 +419,6 @@ class SettlementFlow:
         if validate_fn is None:
             validate_fn = validate_sandbox
 
-        task_config = self._task_config(task)
         risk_record = self.compute_semantic_risk(
             action=action,
             wt=wt,
@@ -443,7 +435,8 @@ class SettlementFlow:
             wt.path,
             wt.commit,
             self.session_root,
-            task_config,
+            self.project_config,
+            task_test_cmd=task.test_cmd,
         )
         if not gate_result.passed:
             return gate_result.error, risk_record
@@ -637,7 +630,8 @@ class SettlementFlow:
         *,
         action: MergeTask,
         candidate_result: IntegrationCandidateResult,
-        task_config: ProjectConfig,
+        project_config: ProjectConfig,
+        task_test_cmd: str | None = None,
         emit_event_fn: Any,
         validate_fn: Any = None,
         remove_candidate_fn: Any = None,
@@ -659,7 +653,8 @@ class SettlementFlow:
             candidate_result.candidate_path,
             candidate_result.candidate_sha,
             self.session_root,
-            task_config,
+            project_config,
+            task_test_cmd=task_test_cmd,
         )
         if gate_result.passed:
             await self.cleanup_passed_candidate(

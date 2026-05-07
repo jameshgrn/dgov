@@ -339,6 +339,8 @@ def _render_plan_status_json(
     run_status: str | None,
     sentrux_degradation: bool | None,
     sentrux_offender_summary: str | None,
+    branch_verification_status: str | None,
+    branch_verification_error: str | None,
     remediation_needed: bool,
     next_action: str | None,
 ) -> None:
@@ -354,6 +356,8 @@ def _render_plan_status_json(
                 "run_status": run_status,
                 "sentrux_degradation": sentrux_degradation,
                 "sentrux_offender_summary": sentrux_offender_summary,
+                "branch_verification_status": branch_verification_status,
+                "branch_verification_error": branch_verification_error,
                 "remediation_needed": remediation_needed,
                 "next_action": next_action,
                 "unit_statuses": unit_statuses,
@@ -373,6 +377,8 @@ def _render_plan_status_text(
     verbose: bool,
     run_status: str | None,
     sentrux_advisory: str | None,
+    branch_verification_status: str | None,
+    branch_verification_error: str | None,
     remediation_needed: bool,
     next_action: str | None,
 ) -> None:
@@ -386,6 +392,12 @@ def _render_plan_status_text(
         click.echo(click.style(line, fg=color) if color else line)
     if sentrux_advisory is not None:
         click.echo(click.style(f"  advisory: {sentrux_advisory}", fg="yellow"))
+    if branch_verification_status is not None:
+        color = "red" if branch_verification_status == "failed" else None
+        line = f"  branch status: {branch_verification_status}"
+        if branch_verification_error:
+            line += f" — {branch_verification_error}"
+        click.echo(click.style(line, fg=color) if color else line)
     if remediation_needed and next_action is not None:
         click.echo(
             click.style(
@@ -477,6 +489,8 @@ def _cmd_plan_status(
             run_envelope.run_status,
             run_envelope.sentrux_degradation,
             run_envelope.sentrux_offender_summary,
+            run_envelope.branch_verification_status,
+            run_envelope.branch_verification_error,
             remediation_needed,
             next_action,
         )
@@ -491,6 +505,8 @@ def _cmd_plan_status(
             verbose,
             run_envelope.run_status,
             _format_sentrux_advisory(run_envelope),
+            run_envelope.branch_verification_status,
+            run_envelope.branch_verification_error,
             remediation_needed,
             next_action,
         )

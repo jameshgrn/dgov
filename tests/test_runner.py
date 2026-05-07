@@ -97,13 +97,13 @@ def _mock_review_fail(
     return ReviewResult(passed=False, verdict="scope_violation", error="touched unclaimed files")
 
 
-def _mock_gate_pass(wt_path, base_commit, project_root, config=None):
+def _mock_gate_pass(wt_path, base_commit, project_root, config=None, **_kwargs):
     from dgov.settlement import GateResult
 
     return GateResult(passed=True)
 
 
-def _mock_gate_fail(wt_path, base_commit, project_root, config=None):
+def _mock_gate_fail(wt_path, base_commit, project_root, config=None, **_kwargs):
     from dgov.settlement import GateResult
 
     return GateResult(passed=False, error="lint failure")
@@ -361,10 +361,18 @@ class TestSingleTaskHappy:
     def test_task_test_cmd_override_reaches_settlement(self):
         captured: dict[str, object] = {}
 
-        def _capture_validate(wt_path, base_commit, project_root, config=None):
+        def _capture_validate(
+            wt_path,
+            base_commit,
+            project_root,
+            config=None,
+            task_test_cmd=None,
+            type_baseline_path=None,
+        ):
             from dgov.settlement import GateResult
 
             captured["test_cmd"] = getattr(config, "test_cmd", "")
+            captured["task_test_cmd"] = task_test_cmd
             return GateResult(passed=True)
 
         task = _task("a").model_copy(
@@ -375,7 +383,10 @@ class TestSingleTaskHappy:
             results = asyncio.run(runner.run())
 
         assert results["a"] == "merged"
-        assert captured["test_cmd"] == "./scripts/qgis-python.sh -m pytest tests/plugin/test_a.py"
+        assert captured["test_cmd"] != "./scripts/qgis-python.sh -m pytest tests/plugin/test_a.py"
+        assert captured["task_test_cmd"] == (
+            "./scripts/qgis-python.sh -m pytest tests/plugin/test_a.py"
+        )
 
 
 class TestChain:
@@ -1285,7 +1296,9 @@ class TestIntegrationCandidate:
         # First call is isolated validation (pass), second is candidate validation (fail)
         call_count = {"count": 0}
 
-        def _validate_with_candidate_fail(wt_path, base_commit, project_root, config=None):
+        def _validate_with_candidate_fail(
+            wt_path, base_commit, project_root, config=None, **_kwargs
+        ):
             from dgov.settlement import GateResult
 
             call_count["count"] += 1

@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import textwrap
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
 from typing import cast
@@ -1163,6 +1163,7 @@ def _type_check_gate(
     worktree_path: Path,
     project_root: str,
     timeout: int = 120,
+    baseline_path: Path | None = None,
 ) -> GateResult | None:
     """Run type checker with baseline comparison.
 
@@ -1171,17 +1172,20 @@ def _type_check_gate(
     (file, error_code pairs) that don't exist in the baseline — pre-existing
     errors are not the worker's fault, even if line numbers shift.
     """
-    # Baseline: run in project root (current HEAD)
+    # Baseline: run in project root by default. Branch-level verification can
+    # pass a detached baseline worktree so diagnostics are compared against the
+    # merge base instead of the already-mutated feature branch.
+    baseline_cwd = baseline_path or Path(project_root)
     baseline_res = subprocess.run(
         type_check_cmd,
         shell=True,
-        cwd=project_root,
+        cwd=baseline_cwd,
         capture_output=True,
         text=True,
         timeout=timeout,
     )
     baseline_output = (baseline_res.stdout or "") + (baseline_res.stderr or "")
-    baseline_ids = _parse_diagnostic_identities(baseline_output, Path(project_root))
+    baseline_ids = _parse_diagnostic_identities(baseline_output, baseline_cwd)
 
     # Worktree: run against worker's changes
     worktree_res = subprocess.run(
@@ -1405,12 +1409,50 @@ def _scoped_lint_check(
     return None
 
 
+def _build_explicit_test_cmd(
+    config: ProjectConfig,
+    changed_files: Sequence[str],
+    worktree_path: Path,
+    task_test_cmd: str,
+) -> str:
+    """Build a task-declared test command, scoping placeholders when present."""
+    if "{test_dir}" not in task_test_cmd:
+        return task_test_cmd
+    task_config = replace(config, test_cmd=task_test_cmd)
+    return _build_test_cmd(task_config, list(changed_files), worktree_path)
+
+
+def _build_test_commands(
+    config: ProjectConfig,
+    changed_files: Sequence[str],
+    worktree_path: Path,
+    task_test_cmd: str | None = None,
+) -> list[str]:
+    """Return task-declared and auto-targeted test commands without duplicates.
+
+    Task-level verification is useful when a worker needs an exact command, but
+    it must not replace the project auto-targeting that runs changed test files.
+    """
+    commands: list[str] = []
+    if task_test_cmd:
+        explicit = _build_explicit_test_cmd(config, changed_files, worktree_path, task_test_cmd)
+        if explicit:
+            commands.append(explicit)
+
+    auto = _build_test_cmd(config, list(changed_files), worktree_path)
+    if auto and auto not in commands:
+        commands.append(auto)
+    return commands
+
+
 def _run_acceptance_gates(
     worktree_path: Path,
     changed_files: Sequence[str],
     project_root: str,
     config: ProjectConfig,
     base_commit: str | None = None,
+    task_test_cmd: str | None = None,
+    type_baseline_path: Path | None = None,
 ) -> GateResult:
     """Run the shared acceptance gates for a resolved changed-file set.
 
@@ -1520,12 +1562,12 @@ def _run_acceptance_gates(
                 worktree_path,
                 project_root,
                 timeout=config.settlement_timeout,
+                baseline_path=type_baseline_path,
             )
             if ty_failure is not None:
                 return ty_failure
 
-        test_cmd = _build_test_cmd(config, list(changed_files), worktree_path)
-        if test_cmd:
+        for test_cmd in _build_test_commands(config, changed_files, worktree_path, task_test_cmd):
             test_failure = _run_test_gate(
                 test_cmd, worktree_path, timeout=config.settlement_timeout
             )
@@ -1571,6 +1613,8 @@ def validate_sandbox(
     base_commit: str,
     project_root: str,
     config: ProjectConfig | None = None,
+    task_test_cmd: str | None = None,
+    type_baseline_path: Path | None = None,
 ) -> GateResult:
     """Read-only validation gate. Called AFTER commit. No mutations."""
     if config is None:
@@ -1578,5 +1622,11 @@ def validate_sandbox(
 
     changed_files = _changed_source_files(worktree_path, base_commit, config.source_extensions)
     return _run_acceptance_gates(
-        worktree_path, changed_files, project_root, config, base_commit=base_commit
+        worktree_path,
+        changed_files,
+        project_root,
+        config,
+        base_commit=base_commit,
+        task_test_cmd=task_test_cmd,
+        type_baseline_path=type_baseline_path,
     )
