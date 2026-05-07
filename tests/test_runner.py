@@ -985,7 +985,7 @@ class TestInterruptHandling:
         ]
         assert len(governor_resumed_calls) == 1
         event = governor_resumed_calls[0][0][1]
-        assert event.event_type == "governor_resumed"
+        assert event.event_type == "dag_task_governor_resumed"
         assert event.task_slug == "a"
         assert event.action == GovernorAction.FAIL.value
 
@@ -1014,7 +1014,7 @@ class TestInterruptHandling:
         ]
         assert len(governor_resumed_calls) == 1
         event = governor_resumed_calls[0][0][1]
-        assert event.event_type == "governor_resumed"
+        assert event.event_type == "dag_task_governor_resumed"
         assert event.task_slug == "a"
         assert event.action == GovernorAction.RETRY.value
 
