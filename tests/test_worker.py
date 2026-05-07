@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -316,6 +317,84 @@ def test_clip_tool_result_truncates_large_payload() -> None:
     assert len(result) <= 120 + len("\n... [tool output truncated for prompt budget]")
 
 
+def _tool_call(name: str, args: dict[str, object], call_id: str = "call-1") -> SimpleNamespace:
+    return SimpleNamespace(
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments=json.dumps(args)),
+    )
+
+
+def test_execute_tool_call_emits_success_telemetry(
+    tools: AtomicTools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        "dgov.worker.WorkerEvent.emit",
+        lambda self: events.append((self.type, self.content)),
+    )
+
+    result, is_done = _execute_tool_call(
+        _tool_call("read_file", {"path": "hello.py"}),
+        tools,
+        role="worker",
+        turn_index=2,
+        tool_index=1,
+    )
+
+    assert "x = 1" in result
+    assert is_done is False
+    call_event = events[0][1]
+    result_event = events[1][1]
+    assert isinstance(call_event, dict)
+    call_event = cast(dict[str, Any], call_event)
+    assert call_event["tool"] == "read_file"
+    assert call_event["args"] == {"path": "hello.py"}
+    assert call_event["arg_keys"] == ["path"]
+    assert call_event["call_id"] == "call-1"
+    assert call_event["role"] == "worker"
+    assert call_event["turn_index"] == 2
+    assert call_event["tool_index"] == 1
+    assert isinstance(result_event, dict)
+    result_event = cast(dict[str, Any], result_event)
+    assert result_event["tool"] == "read_file"
+    assert result_event["status"] == "success"
+    assert result_event["call_id"] == "call-1"
+    assert result_event["result_chars"] == len(result)
+    assert result_event["raw_result_chars"] == len(result)
+    assert result_event["result_clipped"] is False
+    assert isinstance(result_event["duration_ms"], float)
+    assert result_event["duration_ms"] >= 0
+
+
+def test_execute_tool_call_emits_failed_telemetry(
+    tools: AtomicTools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        "dgov.worker.WorkerEvent.emit",
+        lambda self: events.append((self.type, self.content)),
+    )
+
+    result, is_done = _execute_tool_call(
+        _tool_call("read_file", {"path": "missing.py"}),
+        tools,
+        role="worker",
+        turn_index=1,
+        tool_index=3,
+    )
+
+    assert result.startswith("Error:")
+    assert is_done is False
+    result_event = events[1][1]
+    assert isinstance(result_event, dict)
+    result_event = cast(dict[str, Any], result_event)
+    assert result_event["status"] == "failed"
+    assert result_event["error_kind"] == "not_found"
+    assert result_event["role"] == "worker"
+    assert result_event["turn_index"] == 1
+    assert result_event["tool_index"] == 3
+
+
 def test_build_system_prompt_uses_configured_budget_and_repo_map(tmp_path: Path) -> None:
     for idx in range(90):
         (tmp_path / f"file_{idx:03}.txt").write_text("x\n")
@@ -366,13 +445,15 @@ def test_build_system_prompt_injects_task_scope(tmp_path: Path) -> None:
     assert "files.create already exists" in prompt
 
 
-def test_done_is_blocked_until_required_retry_tests_pass(tmp_path: Path) -> None:
-    call = SimpleNamespace(
-        function=SimpleNamespace(
-            name="done",
-            arguments=json.dumps({"summary": "fixed"}),
-        )
+def test_done_is_blocked_until_required_retry_tests_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        "dgov.worker.WorkerEvent.emit",
+        lambda self: events.append((self.type, self.content)),
     )
+    call = _tool_call("done", {"summary": "fixed"})
     actuators = AtomicTools(
         tmp_path,
         AtomicConfig(test_cmd="true {test_dir}", test_dir="tests/"),
@@ -388,15 +469,16 @@ def test_done_is_blocked_until_required_retry_tests_pass(tmp_path: Path) -> None
     assert is_done is False
     assert result.startswith("Error:")
     assert "requires a successful run_tests() call" in result
+    result_event = events[1][1]
+    assert isinstance(result_event, dict)
+    result_event = cast(dict[str, Any], result_event)
+    assert result_event["tool"] == "done"
+    assert result_event["status"] == "failed"
+    assert result_event["error_kind"] == "validation_failed"
 
 
 def test_successful_retry_tests_unlock_done(tmp_path: Path) -> None:
-    call = SimpleNamespace(
-        function=SimpleNamespace(
-            name="done",
-            arguments=json.dumps({"summary": "fixed"}),
-        )
-    )
+    call = _tool_call("done", {"summary": "fixed"})
     actuators = AtomicTools(
         tmp_path,
         AtomicConfig(test_cmd="true {test_dir}", test_dir="tests/"),

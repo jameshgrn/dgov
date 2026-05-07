@@ -178,7 +178,7 @@ def run_researcher(
     allowed_tools = get_allowed_tool_names("researcher")
     budget = _iteration_budget(config)
 
-    for _ in range(budget):
+    for iteration in range(budget):
         try:
             resp = create_chat_completion_with_backoff(
                 client,
@@ -217,8 +217,15 @@ def run_researcher(
                 sys.exit(1)
             continue
 
-        for call in msg.tool_calls:
-            result, is_done = _execute_tool_call(call, actuators, allowed_tools=allowed_tools)
+        for tool_index, call in enumerate(msg.tool_calls, start=1):
+            result, is_done = _execute_tool_call(
+                call,
+                actuators,
+                allowed_tools=allowed_tools,
+                role="researcher",
+                turn_index=iteration + 1,
+                tool_index=tool_index,
+            )
             if is_done:
                 _cleanup()
                 sys.exit(0)

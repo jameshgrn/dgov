@@ -218,7 +218,7 @@ def run_planner(
     allowed_tools = get_allowed_tool_names("planner", interactive=interactive)
     budget = _iteration_budget(config)
 
-    for _ in range(budget):
+    for iteration in range(budget):
         try:
             resp = create_chat_completion_with_backoff(
                 client,
@@ -257,9 +257,15 @@ def run_planner(
                 sys.exit(1)
             continue
 
-        for call in msg.tool_calls:
+        for tool_index, call in enumerate(msg.tool_calls, start=1):
             result, is_done = _execute_tool_call(
-                call, actuators, allowed_tools=allowed_tools, ask_user_fn=ask_fn
+                call,
+                actuators,
+                allowed_tools=allowed_tools,
+                ask_user_fn=ask_fn,
+                role="planner",
+                turn_index=iteration + 1,
+                tool_index=tool_index,
             )
             if is_done:
                 _cleanup()

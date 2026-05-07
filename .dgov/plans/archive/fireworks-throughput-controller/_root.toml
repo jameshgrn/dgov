@@ -1,0 +1,5 @@
+[plan]
+name = "fireworks-throughput-controller"
+summary = "Classify Fireworks adaptive rate limits and stop nonproductive worker retries."
+sections = ["runtime", "runner"]
+

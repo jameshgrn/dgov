@@ -958,6 +958,93 @@ class TestInterruptHandling:
         assert event.task_slug == "a"
         assert event.reason == "shutdown"
 
+    def test_adaptive_rate_limit_fails_fast_even_with_retries_remaining(self):
+        """Fireworks adaptive TPM errors should fail immediately, not retry."""
+        from dgov.actions import GovernorAction
+        from dgov.event_types import GovernorResumed
+
+        with _io_patches(), patch("dgov.runner.emit_event") as mock_emit:
+            runner = _make_runner(_single_dag())
+            runner.kernel.task_states["a"] = TaskState.ACTIVE
+            runner._ctx("a").attempts = 0  # retries remaining
+            runner._ctx("a").error = (
+                "Fireworks adaptive serverless TPM: prompt token limit exceeded. "
+                "Estimated prompt tokens: 50000, observed limit: 10000."
+            )
+
+            actions = runner._handle_interrupt(InterruptGovernor("a", "pane-a", "rate limited"))
+
+        # Should fail immediately, not retry
+        assert actions
+        assert runner.kernel.task_states["a"] == TaskState.FAILED
+        # Verify the emitted GovernorResumed event has FAIL action
+        governor_resumed_calls = [
+            call
+            for call in mock_emit.call_args_list
+            if len(call[0]) >= 2 and isinstance(call[0][1], GovernorResumed)
+        ]
+        assert len(governor_resumed_calls) == 1
+        event = governor_resumed_calls[0][0][1]
+        assert event.event_type == "dag_task_governor_resumed"
+        assert event.task_slug == "a"
+        assert event.action == GovernorAction.FAIL.value
+
+    def test_ordinary_errors_still_retry_when_attempts_remain(self):
+        """Normal worker errors should still follow retry logic."""
+        from dgov.actions import GovernorAction
+        from dgov.event_types import GovernorResumed
+
+        with _io_patches(), patch("dgov.runner.emit_event") as mock_emit:
+            runner = _make_runner(_single_dag())
+            runner.kernel.task_states["a"] = TaskState.ACTIVE
+            runner._ctx("a").attempts = 0  # first attempt, retries available
+            runner._ctx("a").error = "Some normal worker error"
+
+            actions = runner._handle_interrupt(InterruptGovernor("a", "pane-a", "worker failed"))
+
+        # Should retry since attempts < max_retries
+        assert actions
+        # attempts should be incremented
+        assert runner._ctx("a").attempts == 1
+        # Verify the emitted GovernorResumed event has RETRY action
+        governor_resumed_calls = [
+            call
+            for call in mock_emit.call_args_list
+            if len(call[0]) >= 2 and isinstance(call[0][1], GovernorResumed)
+        ]
+        assert len(governor_resumed_calls) == 1
+        event = governor_resumed_calls[0][0][1]
+        assert event.event_type == "dag_task_governor_resumed"
+        assert event.task_slug == "a"
+        assert event.action == GovernorAction.RETRY.value
+
+    def test_generated_token_rate_limit_also_fails_fast(self):
+        """Fireworks adaptive TPM for generated tokens should also fail fast."""
+        from dgov.actions import GovernorAction
+        from dgov.event_types import GovernorResumed
+
+        with _io_patches(), patch("dgov.runner.emit_event") as mock_emit:
+            runner = _make_runner(_single_dag())
+            runner.kernel.task_states["a"] = TaskState.ACTIVE
+            runner._ctx("a").attempts = 0
+            runner._ctx("a").error = (
+                "Fireworks adaptive serverless TPM: generated token limit exceeded. "
+                "Estimated generated tokens: 25000, observed limit: 5000."
+            )
+
+            actions = runner._handle_interrupt(InterruptGovernor("a", "pane-a", "rate limited"))
+
+        assert actions
+        assert runner.kernel.task_states["a"] == TaskState.FAILED
+        governor_resumed_calls = [
+            call
+            for call in mock_emit.call_args_list
+            if len(call[0]) >= 2 and isinstance(call[0][1], GovernorResumed)
+        ]
+        assert len(governor_resumed_calls) == 1
+        event = governor_resumed_calls[0][0][1]
+        assert event.action == GovernorAction.FAIL.value
+
 
 class TestSemanticSettlementShadowMode:
     """Tests for shadow-mode semantic settlement — telemetry only, no merge blocking."""

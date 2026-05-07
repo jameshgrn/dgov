@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -110,6 +111,7 @@ def test_researcher_execution_rejects_disallowed_tool(tmp_path: Path) -> None:
     (tmp_path / "hello.py").write_text("x = 1\n")
     actuators = AtomicTools(tmp_path, AtomicConfig())
     call = SimpleNamespace(
+        id="call-researcher-1",
         function=SimpleNamespace(
             name="edit_file",
             arguments=json.dumps({
@@ -117,19 +119,40 @@ def test_researcher_execution_rejects_disallowed_tool(tmp_path: Path) -> None:
                 "old_text": "x = 1",
                 "new_text": "x = 2",
             }),
-        )
+        ),
     )
 
-    with patch("dgov.worker.WorkerEvent.emit", autospec=True):
+    events: list[tuple[str, object]] = []
+    with patch(
+        "dgov.worker.WorkerEvent.emit",
+        lambda self: events.append((self.type, self.content)),
+    ):
         result, is_done = _execute_tool_call(
             call,
             actuators,
             allowed_tools=get_allowed_tool_names("researcher"),
+            role="researcher",
+            turn_index=4,
+            tool_index=2,
         )
 
     assert result == "Error: Tool edit_file is not allowed in this worker role."
     assert is_done is False
     assert (tmp_path / "hello.py").read_text() == "x = 1\n"
+    call_event = events[0][1]
+    result_event = events[1][1]
+    assert isinstance(call_event, dict)
+    call_event = cast(dict[str, Any], call_event)
+    assert call_event["tool"] == "edit_file"
+    assert call_event["role"] == "researcher"
+    assert call_event["turn_index"] == 4
+    assert call_event["tool_index"] == 2
+    assert call_event["call_id"] == "call-researcher-1"
+    assert isinstance(result_event, dict)
+    result_event = cast(dict[str, Any], result_event)
+    assert result_event["status"] == "failed"
+    assert result_event["error_kind"] == "policy_blocked"
+    assert result_event["duration_ms"] >= 0
 
 
 def test_run_researcher_uses_configured_iteration_budget(

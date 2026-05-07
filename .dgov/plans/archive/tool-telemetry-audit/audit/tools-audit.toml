@@ -1,0 +1,52 @@
+[tasks.tools-audit]
+summary = "Add dgov tools audit command over worker-log telemetry"
+commit_message = "Add tool telemetry audit"
+depends_on = ["runtime/enrich-worker-events.enrich-worker-events"]
+files.create = [
+  "src/dgov/tool_audit.py",
+  "src/dgov/cli/tools.py",
+  "tests/test_tool_audit.py",
+  "tests/test_cli_tools.py",
+]
+files.edit = [
+  "src/dgov/cli/__init__.py",
+]
+files.read = [
+  "src/dgov/persistence/events.py",
+  "src/dgov/plan_review.py",
+  "src/dgov/cli/plan.py",
+  "tests/test_cli.py",
+]
+prompt = '''
+Orient:
+Read src/dgov/persistence/events.py for read_events, src/dgov/plan_review.py for existing worker_log rollups, src/dgov/cli/__init__.py for command registration, and src/dgov/cli/plan.py for CLI formatting style.
+This task should expose observability, not change tool behavior. Do not remove, rename, or condense any tools yet.
+Use existing worker_log call/result events. Support historical events that only have {"tool": "..."} and newer enriched events from the dependency task.
+
+Edit:
+1. Create src/dgov/tool_audit.py as a pure data layer:
+   - dataclasses for per-tool summary and whole-audit summary.
+   - a function summarize_tool_events(events: list[dict], plan_name: str | None = None, role: str | None = None) that consumes read_events-style rows and aggregates worker_log call/result entries.
+   - aggregate by tool_name: calls, successes, failures, blocked/policy failures if inferable, clipped_results, total_result_chars, total_raw_result_chars, total_duration_ms, roles, error_kind counts.
+   - derive failure_rate, average_result_chars, average_raw_result_chars, and average_duration_ms as properties or computed output fields.
+   - keep ordering deterministic: highest call count first, then tool name.
+2. Create src/dgov/cli/tools.py with a `dgov tools audit` command:
+   - options: --plan TEXT, --role TEXT, --limit INT default 0.
+   - human output: total calls, total failures, then a compact table with tool, calls, fail%, clipped, avg_ms, avg_chars, roles, top_error.
+   - JSON output must honor the existing DGOV_JSON mechanism and include totals plus per-tool rows.
+   - If there are no worker tool-call events, print a clear empty-state message and JSON totals of zero.
+3. Register the new tools command module in src/dgov/cli/__init__.py and add one usage line to the CLI help docstring.
+4. Add tests/test_tool_audit.py for pure aggregation:
+   - historical call/result events without enriched fields.
+   - enriched success/failure/clipped/duration/error_kind events.
+   - plan and role filtering.
+   - deterministic ordering.
+5. Add tests/test_cli_tools.py for CLI rendering and JSON output using temporary state with emitted worker_log events.
+
+Verify:
+uv run pytest -q tests/test_tool_audit.py tests/test_cli_tools.py
+uv run ruff check src/dgov/tool_audit.py src/dgov/cli/tools.py src/dgov/cli/__init__.py tests/test_tool_audit.py tests/test_cli_tools.py
+uv run ruff format --check src/dgov/tool_audit.py src/dgov/cli/tools.py src/dgov/cli/__init__.py tests/test_tool_audit.py tests/test_cli_tools.py
+uv run ty check src/dgov/tool_audit.py src/dgov/cli/tools.py src/dgov/cli/__init__.py
+'''
+

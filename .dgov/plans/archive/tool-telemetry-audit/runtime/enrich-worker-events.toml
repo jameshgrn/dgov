@@ -1,0 +1,38 @@
+[tasks.enrich-worker-events]
+summary = "Enrich worker-log tool call and result telemetry"
+commit_message = "Enrich tool call telemetry"
+files.edit = [
+  "src/dgov/worker.py",
+  "src/dgov/researcher.py",
+  "src/dgov/planner.py",
+  "tests/test_worker.py",
+  "tests/test_researcher.py",
+]
+files.read = [
+  "src/dgov/workers/atomic.py",
+]
+prompt = '''
+Orient:
+Read src/dgov/worker.py around WorkerEvent, _clip_tool_result, _execute_tool_call, and the run_worker loop.
+Read src/dgov/researcher.py and src/dgov/planner.py around their model loops.
+Read tests/test_worker.py and tests/test_researcher.py for direct _execute_tool_call coverage.
+Do not add a new database table. The existing worker_log event is the event-sourced telemetry channel.
+Preserve backward compatibility: existing worker_log call/result content must still include "tool", and existing plan review counting must continue to work.
+
+Edit:
+1. In src/dgov/worker.py, add small private helpers for tool telemetry:
+   - classify failed result strings into error_kind values such as policy_blocked, validation_failed, not_found, ambiguous_match, command_failed, timeout, unknown.
+   - compute result_chars, raw_result_chars, and result_clipped when _clip_tool_result trims output.
+2. Extend _execute_tool_call to accept role, turn_index, and tool_index keyword-only arguments. Include these fields plus call_id and arg_keys in the emitted WorkerEvent("call", ...). Keep the existing "args" field for now.
+3. Emit WorkerEvent("result", ...) for every tool path with tool, status, activity, call_id, role, turn_index, tool_index, duration_ms, result_chars, raw_result_chars, result_clipped, and error_kind when failed.
+4. Use time.perf_counter for duration_ms around tool execution. Keep duration nonnegative. Do not include full result text in event payloads.
+5. Update run_worker, run_researcher, and run_planner to pass role and stable turn/tool indexes when calling _execute_tool_call.
+6. Update focused tests in tests/test_worker.py and tests/test_researcher.py to assert telemetry fields for success, failed tool, disallowed tool, and done-verification failure where coverage already exists. Avoid brittle exact duration assertions; assert type/range.
+
+Verify:
+uv run pytest -q tests/test_worker.py tests/test_researcher.py
+uv run ruff check src/dgov/worker.py src/dgov/researcher.py src/dgov/planner.py tests/test_worker.py tests/test_researcher.py
+uv run ruff format --check src/dgov/worker.py src/dgov/researcher.py src/dgov/planner.py tests/test_worker.py tests/test_researcher.py
+uv run ty check src/dgov/worker.py src/dgov/researcher.py src/dgov/planner.py
+'''
+

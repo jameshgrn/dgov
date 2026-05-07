@@ -1145,6 +1145,17 @@ class EventDagRunner:
         "Agent stopped without calling 'done'",
     })
 
+    _PROVIDER_RATE_LIMIT_MARKER = "Fireworks adaptive serverless TPM"
+
+    def _is_non_retryable_provider_rate_limit(self, error_detail: str) -> bool:
+        """Check if error is a non-retryable provider rate limit.
+
+        Fireworks adaptive serverless TPM limits are infrastructure/provider
+        throughput constraints, not worker-fixable issues. These should fail
+        fast without wasting retry budget.
+        """
+        return self._PROVIDER_RATE_LIMIT_MARKER in error_detail
+
     def _handle_interrupt(self, action: InterruptGovernor) -> list[DagAction]:
         """Decide retry vs fail based on attempt count."""
         ctx = self._ctx(action.task_slug)
@@ -1177,6 +1188,15 @@ class EventDagRunner:
                 "Task %s failed — non-retryable: %s",
                 action.task_slug,
                 error_detail,
+            )
+        elif self._is_non_retryable_provider_rate_limit(error_detail):
+            # Provider rate limits (Fireworks adaptive TPM) are infrastructure
+            # constraints, not worker-fixable. Fail fast to avoid wasting retries.
+            logger.error(
+                "Task %s failed — provider rate limit (non-retryable): %s. "
+                "Use 'dgov run --continue <plan-dir>' after cooldown or model change.",
+                action.task_slug,
+                error_detail[:200],
             )
         elif attempts < self.kernel.max_retries:
             ctx.attempts = attempts + 1
