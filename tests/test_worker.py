@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -345,6 +346,7 @@ def test_execute_tool_call_emits_success_telemetry(
     call_event = events[0][1]
     result_event = events[1][1]
     assert isinstance(call_event, dict)
+    call_event = cast(dict[str, Any], call_event)
     assert call_event["tool"] == "read_file"
     assert call_event["args"] == {"path": "hello.py"}
     assert call_event["arg_keys"] == ["path"]
@@ -353,6 +355,7 @@ def test_execute_tool_call_emits_success_telemetry(
     assert call_event["turn_index"] == 2
     assert call_event["tool_index"] == 1
     assert isinstance(result_event, dict)
+    result_event = cast(dict[str, Any], result_event)
     assert result_event["tool"] == "read_file"
     assert result_event["status"] == "success"
     assert result_event["call_id"] == "call-1"
@@ -384,6 +387,7 @@ def test_execute_tool_call_emits_failed_telemetry(
     assert is_done is False
     result_event = events[1][1]
     assert isinstance(result_event, dict)
+    result_event = cast(dict[str, Any], result_event)
     assert result_event["status"] == "failed"
     assert result_event["error_kind"] == "not_found"
     assert result_event["role"] == "worker"
@@ -467,6 +471,7 @@ def test_done_is_blocked_until_required_retry_tests_pass(
     assert "requires a successful run_tests() call" in result
     result_event = events[1][1]
     assert isinstance(result_event, dict)
+    result_event = cast(dict[str, Any], result_event)
     assert result_event["tool"] == "done"
     assert result_event["status"] == "failed"
     assert result_event["error_kind"] == "validation_failed"

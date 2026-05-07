@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -141,12 +142,14 @@ def test_researcher_execution_rejects_disallowed_tool(tmp_path: Path) -> None:
     call_event = events[0][1]
     result_event = events[1][1]
     assert isinstance(call_event, dict)
+    call_event = cast(dict[str, Any], call_event)
     assert call_event["tool"] == "edit_file"
     assert call_event["role"] == "researcher"
     assert call_event["turn_index"] == 4
     assert call_event["tool_index"] == 2
     assert call_event["call_id"] == "call-researcher-1"
     assert isinstance(result_event, dict)
+    result_event = cast(dict[str, Any], result_event)
     assert result_event["status"] == "failed"
     assert result_event["error_kind"] == "policy_blocked"
     assert result_event["duration_ms"] >= 0
