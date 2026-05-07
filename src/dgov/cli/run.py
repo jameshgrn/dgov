@@ -59,6 +59,31 @@ def _clean_head_worktree(project_root: str) -> Iterator[Path]:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
 
+@contextlib.contextmanager
+def _detached_worktree(project_root: str, ref: str, prefix: str) -> Iterator[Path]:
+    """Yield a temporary detached worktree at ref."""
+    tmp_root = Path(tempfile.mkdtemp(prefix=prefix))
+    wt_path = tmp_root / "checkout"
+    created = False
+    try:
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(wt_path), ref],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+        )
+        created = True
+        yield wt_path
+    finally:
+        if created:
+            subprocess.run(
+                ["git", "worktree", "remove", "-f", str(wt_path)],
+                cwd=project_root,
+                capture_output=True,
+            )
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
 @cli.command(name="run")
 @click.argument("plan", type=click.Path(path_type=Path, exists=True))
 @click.option(
@@ -190,6 +215,20 @@ def _git_env(cwd: str | None = None) -> dict[str, str]:
     if cwd is not None:
         env["PWD"] = cwd
     return env
+
+
+def _git_stdout(project_root: str, args: list[str]) -> str | None:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        env=_git_env(project_root),
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
 
 
 def _working_tree_files(project_root: str) -> list[str]:
@@ -480,6 +519,88 @@ def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[st
     return gate_result
 
 
+def _branch_verification_base(project_root: str) -> str | None:
+    """Return the merge-base used for whole-branch verification."""
+    candidates: list[str] = []
+    origin_head = _git_stdout(project_root, ["rev-parse", "--abbrev-ref", "origin/HEAD"])
+    if origin_head and origin_head != "origin/HEAD":
+        candidates.append(origin_head)
+    candidates.extend(["origin/main", "origin/master", "main", "master"])
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        base = _git_stdout(project_root, ["merge-base", "HEAD", candidate])
+        if base:
+            return base
+    return None
+
+
+def _branch_changed_source_files(
+    project_root: str,
+    base_ref: str,
+    source_extensions: tuple[str, ...],
+) -> list[str]:
+    output = _git_stdout(project_root, ["diff", "--name-only", base_ref, "HEAD"])
+    if not output:
+        return []
+    seen: set[str] = set()
+    files: list[str] = []
+    for path in output.splitlines():
+        if path in seen or not any(path.endswith(ext) for ext in source_extensions):
+            continue
+        seen.add(path)
+        files.append(path)
+    return files
+
+
+def _branch_verification_gate(project_root: str, config: object) -> dict[str, object]:
+    """Run final verification over all source files changed since the merge base."""
+    from dgov.config import ProjectConfig
+    from dgov.settlement import validate_sandbox
+
+    if not isinstance(config, ProjectConfig):
+        return {"status": "skipped", "reason": "invalid project config"}
+
+    base_ref = _branch_verification_base(project_root)
+    if not base_ref:
+        return {"status": "skipped", "reason": "no merge base found"}
+
+    head_ref = _git_stdout(project_root, ["rev-parse", "HEAD"])
+    changed_files = _branch_changed_source_files(project_root, base_ref, config.source_extensions)
+    result: dict[str, object] = {
+        "status": "clean",
+        "base": base_ref,
+        "head": head_ref,
+        "changed_files": len(changed_files),
+    }
+    if not changed_files:
+        return result
+
+    with _detached_worktree(project_root, base_ref, "dgov-branch-base-") as baseline_path:
+        gate = validate_sandbox(
+            Path(project_root),
+            base_ref,
+            project_root,
+            config=config,
+            type_baseline_path=baseline_path,
+        )
+
+    if gate.passed:
+        return result
+    return {
+        **result,
+        "status": "failed",
+        "error": gate.error or "Branch verification failed",
+    }
+
+
+def _branch_verification_failed(branch_result: dict[str, object]) -> bool:
+    return branch_result.get("status") == "failed"
+
+
 def _make_worker_event_callback(stream: bool = False) -> Callable[[str, str, object], None]:
     """Build a callback that prints worker activity to stderr.
 
@@ -657,8 +778,10 @@ def _run_log_status(
     failed: list[str],
     abandoned: list[str],
     gate_result: dict[str, object],
+    branch_result: dict[str, object],
 ) -> str:
-    if _sentrux_failed(gate_result) and not failed and not abandoned:
+    post_run_failed = _sentrux_failed(gate_result) or _branch_verification_failed(branch_result)
+    if post_run_failed and not failed and not abandoned:
         return "warn"
     return "ok" if not failed and not abandoned else "fail"
 
@@ -708,14 +831,29 @@ def _append_sentrux_log_lines(lines: list[str], gate_result: dict[str, object]) 
     lines.append(f"  sentrux_offenders: {summary[:400]}")
 
 
+def _append_branch_verification_log_lines(
+    lines: list[str],
+    branch_result: dict[str, object],
+) -> None:
+    status = branch_result.get("status")
+    if not status:
+        return
+    lines.append(f"  branch_verification_status: {status}")
+    if branch_result.get("changed_files") is not None:
+        lines.append(f"  branch_verification_changed_files: {branch_result['changed_files']}")
+    if branch_result.get("error"):
+        lines.append(f"  branch_verification_error: {str(branch_result['error'])[:400]}")
+
+
 def _run_status_and_summary(
     results: dict[str, str],
     task_errors: dict[str, str],
     gate_result: dict[str, object],
+    branch_result: dict[str, object],
     duration: timedelta,
 ) -> tuple[str, list[str], list[str], list[str], list[str], bool]:
     failed, abandoned, skipped, succeeded = _classify_task_results(results)
-    sentrux_failure = _sentrux_failed(gate_result)
+    sentrux_failure = _sentrux_failed(gate_result) or _branch_verification_failed(branch_result)
     run_status = _derive_run_status(
         failed=failed,
         abandoned=abandoned,
@@ -740,6 +878,7 @@ def _emit_run_warnings(
     succeeded: list[str],
     task_errors: dict[str, str],
     gate_result: dict[str, object],
+    branch_result: dict[str, object],
     duration: timedelta,
 ) -> None:
     if want_json():
@@ -762,6 +901,11 @@ def _emit_run_warnings(
         )
     if _sentrux_failed(gate_result):
         _emit_sentrux_warning(gate_result)
+    if _branch_verification_failed(branch_result):
+        click.echo(
+            f"  branch verification: {branch_result.get('error', 'failed')}",
+            err=True,
+        )
 
 
 def _emit_verbose_task_durations(
@@ -863,6 +1007,8 @@ def _cmd_run_plan(
 
     results, duration = _run_plan_runner(runner)
     gate_result = _sentrux_compare(project_root, baseline_quality)
+    branch_result = _branch_verification_gate(project_root, pc)
+    completed_gate_result = {**gate_result, "branch_verification": branch_result}
     failed_now = [s for s, st in results.items() if st == "failed"]
     task_errors = {slug: err for slug, err in runner.task_errors.items() if slug in failed_now}
     token_usage = cast(dict[str, tuple[int, int]], getattr(runner, "token_usage", {}))
@@ -872,6 +1018,7 @@ def _cmd_run_plan(
         results,
         task_errors,
         gate_result,
+        branch_result,
         duration,
     )
     _emit_run_warnings(
@@ -881,6 +1028,7 @@ def _cmd_run_plan(
         succeeded=succeeded,
         task_errors=task_errors,
         gate_result=gate_result,
+        branch_result=branch_result,
         duration=duration,
     )
 
@@ -894,6 +1042,7 @@ def _cmd_run_plan(
         "abandoned_tasks": abandoned if abandoned else None,
         "task_errors": task_errors if task_errors else None,
         "sentrux": gate_result,
+        "branch_verification": branch_result,
         "duration_s": round(duration.total_seconds(), 2),
         "total_prompt_tokens": total_prompt_tokens,
         "total_completion_tokens": total_completion_tokens,
@@ -918,6 +1067,7 @@ def _cmd_run_plan(
         plan_file,
         results,
         gate_result,
+        branch_result,
         duration,
         runner.task_durations,
         task_errors,
@@ -937,10 +1087,10 @@ def _cmd_run_plan(
         plan_name=dag.name,
         run_status=run_status,
         duration=duration,
-        gate_result=gate_result,
+        gate_result=completed_gate_result,
     )
 
-    if run_status in ("failed", "partial"):
+    if run_status in ("failed", "partial") or _branch_verification_failed(branch_result):
         raise click.exceptions.Exit(code=1)
     return run_status
 
@@ -951,6 +1101,7 @@ def _append_run_log(
     plan_file: str,
     results: dict[str, str],
     gate_result: dict[str, object],
+    branch_result: dict[str, object],
     duration: timedelta,
     task_durations: dict[str, float] | None = None,
     task_errors: dict[str, str] | None = None,
@@ -963,7 +1114,12 @@ def _append_run_log(
 
     ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
     failed, abandoned, _, merged = _classify_task_results(results)
-    status = _run_log_status(failed=failed, abandoned=abandoned, gate_result=gate_result)
+    status = _run_log_status(
+        failed=failed,
+        abandoned=abandoned,
+        gate_result=gate_result,
+        branch_result=branch_result,
+    )
 
     lines = [
         f"[{ts}] {plan_name} ({plan_file}) — {status} ({round(duration.total_seconds(), 2)}s)"
@@ -978,6 +1134,7 @@ def _append_run_log(
     _append_token_usage_lines(lines, prompt_tokens, completion_tokens)
     _append_task_duration_line(lines, task_durations)
     _append_sentrux_log_lines(lines, gate_result)
+    _append_branch_verification_log_lines(lines, branch_result)
     lines.append("")
 
     with log_path.open("a") as f:

@@ -180,6 +180,8 @@ class PlanReview:
     sentrux_quality_after: int | None = None
     sentrux_error: str | None = None
     sentrux_offender_summary: str | None = None
+    branch_verification_status: str | None = None
+    branch_verification_error: str | None = None
 
     @property
     def deployed_count(self) -> int:
@@ -210,6 +212,8 @@ class RunEnvelope:
     sentrux_quality_after: int | None = None
     sentrux_error: str | None = None
     sentrux_offender_summary: str | None = None
+    branch_verification_status: str | None = None
+    branch_verification_error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1066,6 +1070,9 @@ def _extract_run_completed_fields(
             sentrux = json.loads(sentrux_raw)
     offenders = sentrux.get("structural_offenders") if isinstance(sentrux, dict) else None
     offender_summary = _format_structural_offenders(offenders)
+    branch = sentrux.get("branch_verification") if isinstance(sentrux, dict) else None
+    branch_status = branch.get("status") if isinstance(branch, dict) else None
+    branch_error = branch.get("error") if isinstance(branch, dict) else None
 
     return {
         "run_status": event.run_status,
@@ -1078,6 +1085,8 @@ def _extract_run_completed_fields(
         else None,
         "sentrux_error": sentrux.get("error") if isinstance(sentrux, dict) else None,
         "sentrux_offender_summary": offender_summary,
+        "branch_verification_status": branch_status,
+        "branch_verification_error": branch_error,
     }
 
 
@@ -1139,6 +1148,14 @@ def _parse_runs_log_block(log_text: str, plan_name: str) -> dict[str, Any]:
         # Parse "sentrux_status: degradation"
         if "sentrux_status: degradation" in line:
             result["sentrux_degradation"] = True
+
+        branch_status_match = re.match(r"\s+branch_verification_status:\s*(.+)", line)
+        if branch_status_match:
+            result["branch_verification_status"] = branch_status_match.group(1).strip()
+
+        branch_error_match = re.match(r"\s+branch_verification_error:\s*(.+)", line)
+        if branch_error_match:
+            result["branch_verification_error"] = branch_error_match.group(1).strip()
 
         # Parse "sentrux_error: ..."
         error_match = re.match(r"\s+sentrux_error:\s*(.+)", line)
@@ -1254,6 +1271,8 @@ def load_review(
         sentrux_quality_after=run_fields.get("sentrux_quality_after"),
         sentrux_error=run_fields.get("sentrux_error"),
         sentrux_offender_summary=run_fields.get("sentrux_offender_summary"),
+        branch_verification_status=run_fields.get("branch_verification_status"),
+        branch_verification_error=run_fields.get("branch_verification_error"),
     )
 
 
@@ -1279,4 +1298,6 @@ def load_run_envelope(project_root: str, compiled_path: Path) -> RunEnvelope:
         sentrux_quality_after=run_fields.get("sentrux_quality_after"),
         sentrux_error=run_fields.get("sentrux_error"),
         sentrux_offender_summary=run_fields.get("sentrux_offender_summary"),
+        branch_verification_status=run_fields.get("branch_verification_status"),
+        branch_verification_error=run_fields.get("branch_verification_error"),
     )

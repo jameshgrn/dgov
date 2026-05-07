@@ -1105,6 +1105,28 @@ class TestExtractRunCompletedFields:
         assert fields["sentrux_quality_before"] == 100
         assert fields["sentrux_quality_after"] == 90
         assert fields["sentrux_offender_summary"] == "functions: 5, classes: 2"
+        assert fields["branch_verification_status"] is None
+
+    def test_extracts_branch_verification_from_run_completed_event(self):
+        events = [
+            {"id": 1, "event": "run_start", "plan_name": "p"},
+            {
+                "id": 10,
+                "event": "run_completed",
+                "plan_name": "p",
+                "run_status": "degraded",
+                "sentrux": {
+                    "degradation": False,
+                    "branch_verification": {
+                        "status": "failed",
+                        "error": "Type check failure",
+                    },
+                },
+            },
+        ]
+        fields = _extract_run_completed_fields(_convert_events(events), 1)
+        assert fields["branch_verification_status"] == "failed"
+        assert fields["branch_verification_error"] == "Type check failure"
 
     def test_extracts_error_field_when_present(self):
         events = [
@@ -1185,6 +1207,15 @@ class TestParseRunsLogBlock:
 """
         result = _parse_runs_log_block(log_text, "my-plan")
         assert result["sentrux_error"] == "Sentrux gate setup failed: git error"
+
+    def test_parses_branch_verification_status(self):
+        log_text = """[2026-01-01 00:00:00Z] my-plan (.dgov/plans/my-plan) — warn (5.2s)
+  branch_verification_status: failed
+  branch_verification_error: Type check failure
+"""
+        result = _parse_runs_log_block(log_text, "my-plan")
+        assert result["branch_verification_status"] == "failed"
+        assert result["branch_verification_error"] == "Type check failure"
 
     def test_parses_offender_summary(self):
         log_text = """[2026-01-01 00:00:00Z] my-plan (.dgov/plans/my-plan) — warn (10.5s)

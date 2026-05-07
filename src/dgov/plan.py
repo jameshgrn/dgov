@@ -446,6 +446,11 @@ def validate_plan(
     for slug, unit in plan.units.items():
         issues.extend(_check_verify_only_task(slug, unit))
 
+    # Verification specificity check: source/test write tasks should make
+    # explicit when project-level auto-targeting is not sufficient.
+    for slug, unit in plan.units.items():
+        issues.extend(_check_missing_task_test_cmd(slug, unit))
+
     # Empty prompt check — catch at compile time, not at dispatch time.
     # Reviewers are exempt: they get auto-generated prompts from dependency diffs.
     for slug, unit in plan.units.items():
@@ -503,6 +508,30 @@ def _check_verify_only_task(slug: str, unit: PlanUnit) -> list[PlanIssue]:
                 f"but also claims .py files via edit/touch: {py_touches}. "
                 "This tempts the worker to modify code, risking scope violations. "
                 "Remove the .py claims or split into separate tasks."
+            ),
+            unit=slug,
+        )
+    ]
+
+
+def _check_missing_task_test_cmd(slug: str, unit: PlanUnit) -> list[PlanIssue]:
+    """Warn when code/test write tasks rely only on project-level auto-targeting."""
+    if unit.role != "worker" or unit.test_cmd:
+        return []
+    write_paths = [
+        _normalize_touch_path(path)
+        for path in (*unit.files.create, *unit.files.edit, *unit.files.touch)
+        if path.strip()
+    ]
+    if not any(path.startswith("tests/") or "/test_" in path for path in write_paths):
+        return []
+    return [
+        PlanIssue(
+            severity="warning",
+            message=(
+                "Task writes test files but has no task-level test_cmd. "
+                "Settlement will auto-target changed tests from project.toml; add "
+                "test_cmd when this task needs a specific verification command."
             ),
             unit=slug,
         )

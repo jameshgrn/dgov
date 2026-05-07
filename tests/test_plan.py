@@ -1082,6 +1082,43 @@ class TestValidatePlanVerifyOnlyTasks:
 
 
 # =============================================================================
+# validate_plan — test verification warnings
+# =============================================================================
+
+
+class TestValidatePlanTestVerification:
+    """Tasks that write tests should declare explicit verification when needed."""
+
+    def _plan(self, test_cmd: str | None = None) -> PlanSpec:
+        return PlanSpec(
+            name="test-plan",
+            goal="Goal",
+            units={
+                "task": PlanUnit(
+                    slug="task",
+                    summary="Add tests",
+                    prompt="Orient:\nRead.\n\nEdit:\nChange.\n\nVerify:\nCheck.",
+                    commit_message="Add tests",
+                    files=PlanUnitFiles(edit=("tests/test_runner.py",)),
+                    test_cmd=test_cmd,
+                )
+            },
+        )
+
+    def test_warns_when_test_writer_has_no_task_test_cmd(self):
+        warnings = [i for i in validate_plan(self._plan()) if i.severity == "warning"]
+        assert any("writes test files" in warning.message for warning in warnings)
+
+    def test_no_warning_when_test_writer_has_task_test_cmd(self):
+        warnings = [
+            i
+            for i in validate_plan(self._plan(test_cmd="uv run pytest -q tests/test_runner.py"))
+            if i.severity == "warning"
+        ]
+        assert not any("writes test files" in warning.message for warning in warnings)
+
+
+# =============================================================================
 # validate_plan — prompt structure warnings
 # =============================================================================
 

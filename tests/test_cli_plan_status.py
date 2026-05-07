@@ -431,6 +431,31 @@ def test_status_json_includes_remediation_fields(
     assert data["next_action"] == f"dgov plan remediate {plan_dir}"
 
 
+def test_status_shows_branch_verification_failure(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.plan_review import RunEnvelope
+
+    envelope = RunEnvelope(
+        plan_name="test-plan",
+        last_run_ts="2026-04-10T12:00:00Z",
+        run_status="degraded",
+        branch_verification_status="failed",
+        branch_verification_error="Type check failure",
+    )
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        os.chdir(td)
+        plan_dir = _make_plan_tree(Path(td))
+        _patched_run_envelope(monkeypatch, envelope=envelope)
+        _compile_plan(runner, plan_dir)
+
+        result = runner.invoke(cli, ["plan", "status", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert "branch status: failed" in result.output
+    assert "Type check failure" in result.output
+
+
 def test_status_does_not_call_full_review_loader(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
