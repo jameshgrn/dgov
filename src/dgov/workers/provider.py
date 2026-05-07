@@ -1,4 +1,4 @@
-"""Retry helpers for OpenAI-compatible LLM calls."""
+"""OpenAI-compatible provider wrapper with rate-limit backoff."""
 
 from __future__ import annotations
 
@@ -6,7 +6,10 @@ import json
 import random
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
+
+from openai import OpenAI
 
 RATE_LIMIT_BACKOFF_S = (5.0, 30.0, 90.0)
 _JITTER_FRACTION = 0.2
@@ -292,9 +295,17 @@ def call_with_rate_limit_backoff[T](
             sleep_fn(_jittered_delay(delay_s, jitter_fn))
 
 
-def create_chat_completion_with_backoff(client: Any, **kwargs: Any) -> Any:
-    """Call ``client.chat.completions.create`` with dgov's rate-limit backoff."""
-    return call_with_rate_limit_backoff(
-        lambda: client.chat.completions.create(**kwargs),
-        _kwargs_for_classification=kwargs,
-    )
+@dataclass(frozen=True)
+class OpenAICompatibleProvider:
+    client: Any
+
+    def create_chat_completion(self, **kwargs: Any) -> Any:
+        return call_with_rate_limit_backoff(
+            lambda: self.client.chat.completions.create(**kwargs),
+            _kwargs_for_classification=kwargs,
+        )
+
+
+def create_provider(*, base_url: str, api_key: str) -> OpenAICompatibleProvider:
+    client = OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
+    return OpenAICompatibleProvider(client)

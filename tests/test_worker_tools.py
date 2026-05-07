@@ -5,15 +5,16 @@ import pytest
 from dgov.tool_policy import ToolPolicy
 
 
-# We import from dgov.workers.atomic (extracted from worker.py).
+# We mirror the old combined worker module for tool tests.
 @pytest.fixture(scope="module")
 def worker_module():
     """Load worker.py as a module and provide its classes/tools."""
     import sys
     from unittest.mock import MagicMock
 
-    import dgov.worker as worker
     import dgov.workers.atomic as atomic
+    import dgov.workers.config as worker_config
+    import dgov.workers.runtime as runtime
 
     # Mock openai so we don't need it installed
     sys.modules["openai"] = MagicMock()
@@ -26,10 +27,10 @@ def worker_module():
 
         @staticmethod
         def _load_project_config(path):
-            return worker._load_project_config(path)
+            return runtime.load_project_config(path)
 
         AtomicTools = atomic.AtomicTools
-        AtomicConfig = atomic.AtomicConfig
+        AtomicConfig = worker_config.AtomicConfig
 
     yield WorkerModule()
 

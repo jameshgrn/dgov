@@ -134,9 +134,9 @@ def run_cmd(
 
     project_root = str(resolve_project_root())
     plan_dir = plan
-    _compile_plan_for_run(plan_dir)
+    compile_plan_for_run(plan_dir)
     plan_file = plan_dir / "_compiled.toml"
-    _cmd_run_plan(
+    run_compiled_plan(
         str(plan_file),
         project_root,
         restart=restart,
@@ -149,11 +149,11 @@ def run_cmd(
     )
 
 
-def _compile_plan_for_run(plan_dir: Path) -> None:
+def compile_plan_for_run(plan_dir: Path) -> None:
     """Compile the current plan tree before every public run."""
-    from dgov.cli.compile import _cmd_compile
+    from dgov.cli.compile import compile_plan_dir
 
-    _cmd_compile(plan_dir, dry_run=False, recompile_sops=False, graph=False)
+    compile_plan_dir(plan_dir, dry_run=False, recompile_sops=False, graph=False)
 
 
 def _parse_quality(line: str) -> int | None:
@@ -178,7 +178,7 @@ def _parse_quality(line: str) -> int | None:
             return None
 
 
-def _sentrux_available() -> bool:
+def sentrux_available() -> bool:
     """Check if sentrux binary is available."""
     try:
         subprocess.run(
@@ -192,7 +192,7 @@ def _sentrux_available() -> bool:
         return False
 
 
-def _run_sentrux(
+def run_sentrux(
     args: list[str], cwd: str | None = None, timeout: float = 30.0, check: bool = True
 ) -> subprocess.CompletedProcess[str]:
     """Run sentrux command."""
@@ -404,7 +404,7 @@ def _bootstrap_sentrux_baseline(project_root: str, baseline_path: Path) -> int |
     """Create a missing baseline once so fresh repos/worktrees can run."""
     click.echo(f"[sentrux] No baseline found at {baseline_path}; bootstrapping baseline...")
     try:
-        _run_sentrux(["gate", "--save", project_root], timeout=30.0)
+        run_sentrux(["gate", "--save", project_root], timeout=30.0)
     except subprocess.CalledProcessError as exc:
         details = (exc.stderr or exc.stdout or str(exc)).strip()
         click.echo(f"Error: failed to create sentrux baseline at {baseline_path}.", err=True)
@@ -421,7 +421,7 @@ def _bootstrap_sentrux_baseline(project_root: str, baseline_path: Path) -> int |
 
 def _require_sentrux_baseline(project_root: str) -> int | None:
     """Ensure sentrux is installed and a baseline exists for comparison."""
-    if not _sentrux_available():
+    if not sentrux_available():
         click.echo(
             "Error: sentrux not found. Install: https://github.com/sentrux/sentrux",
             err=True,
@@ -457,7 +457,7 @@ def _scan_head_against_sentrux_baseline(
         if scan_sentrux_dir.exists():
             shutil.rmtree(scan_sentrux_dir)
         shutil.copytree(baseline_path.parent, scan_sentrux_dir)
-        result = _run_sentrux(["gate", str(scan_dir)], timeout=30.0, check=False)
+        result = run_sentrux(["gate", str(scan_dir)], timeout=30.0, check=False)
         offenders: dict[str, object] | None = None
         try:
             offenders = likely_structural_offenders(
@@ -962,7 +962,7 @@ def _maybe_archive_completed_plan(
         click.echo(f"Plan fully deployed → archived to {dest}")
 
 
-def _cmd_run_plan(
+def run_compiled_plan(
     plan_file: str,
     project_root: str,
     restart: bool = False,

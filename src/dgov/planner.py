@@ -18,22 +18,20 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
-
 # Ensure src/ is in path for dgov imports when run as a standalone script
 _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root / "src") not in sys.path:
     sys.path.append(str(_project_root / "src"))
 
-from dgov.llm_backoff import create_chat_completion_with_backoff  # noqa: E402
-from dgov.worker import (  # noqa: E402
-    WorkerEvent,
-    _execute_tool_call,
-    _iteration_budget,
-    _repo_map_snapshot,
-    _resolve_config,
-)
 from dgov.workers.atomic import AtomicTools, get_allowed_tool_names, get_tool_spec  # noqa: E402
+from dgov.workers.provider import create_provider  # noqa: E402
+from dgov.workers.runtime import (  # noqa: E402
+    WorkerEvent,
+    execute_tool_call,
+    iteration_budget,
+    repo_map_snapshot,
+    resolve_config,
+)
 
 
 def _build_system_prompt(worktree: Path, config: Any, interactive: bool = False) -> str:
@@ -43,7 +41,7 @@ def _build_system_prompt(worktree: Path, config: Any, interactive: bool = False)
     if rules_path.exists():
         rules_context = f"\nLEARNED RULES:\n{rules_path.read_text()}"
 
-    repo_map = _repo_map_snapshot(worktree, config, max_lines=config.worker_tree_max_lines)
+    repo_map = repo_map_snapshot(worktree, config, max_lines=config.worker_tree_max_lines)
 
     project_section = (
         f"\n\nPROJECT:\n"
@@ -196,13 +194,13 @@ def run_planner(
     interactive: bool = False,
 ) -> None:
     """Run the planner agent loop."""
-    config = _resolve_config(worktree, project_config_json)
+    config = resolve_config(worktree, project_config_json)
     api_key = os.environ.get(config.llm_api_key_env)
     if not api_key:
         WorkerEvent("error", f"{config.llm_api_key_env} missing").emit()
         sys.exit(1)
 
-    client = OpenAI(base_url=config.llm_base_url, api_key=api_key, max_retries=0)
+    provider = create_provider(base_url=config.llm_base_url, api_key=api_key)
     actuators = AtomicTools(worktree, config)
 
     def _cleanup() -> None:
@@ -216,12 +214,11 @@ def run_planner(
     ]
     nudged = False
     allowed_tools = get_allowed_tool_names("planner", interactive=interactive)
-    budget = _iteration_budget(config)
+    budget = iteration_budget(config)
 
     for iteration in range(budget):
         try:
-            resp = create_chat_completion_with_backoff(
-                client,
+            resp = provider.create_chat_completion(
                 model=model,
                 messages=messages,
                 tools=get_tool_spec("planner", interactive=interactive),
@@ -258,7 +255,7 @@ def run_planner(
             continue
 
         for tool_index, call in enumerate(msg.tool_calls, start=1):
-            result, is_done = _execute_tool_call(
+            result, is_done = execute_tool_call(
                 call,
                 actuators,
                 allowed_tools=allowed_tools,

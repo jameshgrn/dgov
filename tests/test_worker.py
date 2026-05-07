@@ -20,18 +20,18 @@ sys.modules.setdefault("openai", type(sys)("openai"))
 sys.modules["openai"].OpenAI = object  # type: ignore
 
 from dgov.tool_policy import ToolPolicy  # noqa: E402
-from dgov.worker import (  # noqa: E402
-    _build_system_prompt,
-    _clip_tool_result,
-    _diff_stat_for_error,
-    _execute_tool_call,
-    _iteration_budget,
-    _load_project_config,
-    _repo_map_snapshot,
-    _tool_choice_for_iteration,
-    run_worker,
+from dgov.worker import _build_system_prompt, run_worker  # noqa: E402
+from dgov.workers.atomic import AtomicTools, get_tool_spec  # noqa: E402
+from dgov.workers.config import AtomicConfig  # noqa: E402
+from dgov.workers.runtime import (  # noqa: E402
+    clip_tool_result,
+    diff_stat_for_error,
+    execute_tool_call,
+    iteration_budget,
+    load_project_config,
+    repo_map_snapshot,
+    tool_choice_for_iteration,
 )
-from dgov.workers.atomic import AtomicConfig, AtomicTools, get_tool_spec  # noqa: E402
 
 
 @pytest.fixture()
@@ -206,7 +206,7 @@ def test_head_missing(tools: AtomicTools) -> None:
 
 
 def test_load_project_config_defaults(tmp_path: Path) -> None:
-    config = _load_project_config(tmp_path)
+    config = load_project_config(tmp_path)
     assert config.language == "python"
     assert config.test_dir == "tests/"
 
@@ -220,7 +220,7 @@ def test_load_project_config_from_toml(tmp_path: Path) -> None:
         "worker_iteration_budget = 75\nworker_iteration_warn_at = 60\n"
         "worker_tree_max_lines = 0\n"
     )
-    config = _load_project_config(tmp_path)
+    config = load_project_config(tmp_path)
     assert config.language == "rust"
     assert config.test_markers == ("unit",)
     assert config.worker_iteration_budget == 75
@@ -235,7 +235,7 @@ def test_load_project_config_preserves_type_check_and_line_length(tmp_path: Path
         '[project]\ntype_check_cmd = "uv run ty check"\nline_length = 120\n'
     )
 
-    config = _load_project_config(tmp_path)
+    config = load_project_config(tmp_path)
 
     assert config.type_check_cmd == "uv run ty check"
     assert config.line_length == 120
@@ -254,7 +254,7 @@ require_wrapped_verify_tools = true
 require_uv_run = true
 """
     )
-    config = _load_project_config(tmp_path)
+    config = load_project_config(tmp_path)
     assert config.tool_policy == ToolPolicy(
         restrict_run_bash=True,
         require_wrapped_verify_tools=True,
@@ -263,7 +263,7 @@ require_uv_run = true
 
 
 def test_load_project_config_llm_defaults(tmp_path: Path) -> None:
-    config = _load_project_config(tmp_path)
+    config = load_project_config(tmp_path)
     assert config.llm_base_url == "https://api.fireworks.ai/inference/v1"
     assert config.llm_api_key_env == "FIREWORKS_API_KEY"
 
@@ -275,7 +275,7 @@ def test_load_project_config_llm_from_toml(tmp_path: Path) -> None:
         '[project]\nllm_base_url = "https://api.openai.com/v1"\n'
         'llm_api_key_env = "OPENAI_API_KEY"\n'
     )
-    config = _load_project_config(tmp_path)
+    config = load_project_config(tmp_path)
     assert config.llm_base_url == "https://api.openai.com/v1"
     assert config.llm_api_key_env == "OPENAI_API_KEY"
 
@@ -296,7 +296,7 @@ def test_get_tool_spec_returns_list() -> None:
 def test_repo_map_snapshot_returns_all_lines_when_unbounded(tmp_path: Path) -> None:
     for idx in range(90):
         (tmp_path / f"file_{idx:03}.txt").write_text("x\n")
-    repo_map = _repo_map_snapshot(tmp_path, AtomicConfig(), max_lines=0)
+    repo_map = repo_map_snapshot(tmp_path, AtomicConfig(), max_lines=0)
     assert "file_000.txt" in repo_map
     assert "file_089.txt" in repo_map
 
@@ -304,14 +304,14 @@ def test_repo_map_snapshot_returns_all_lines_when_unbounded(tmp_path: Path) -> N
 def test_repo_map_snapshot_truncates_for_prompt_budget(tmp_path: Path) -> None:
     for idx in range(2_000):
         (tmp_path / f"file_{idx:04}.txt").write_text("x\n")
-    repo_map = _repo_map_snapshot(tmp_path, AtomicConfig(), max_lines=0, max_chars=300)
+    repo_map = repo_map_snapshot(tmp_path, AtomicConfig(), max_lines=0, max_chars=300)
 
     assert "... [repo map truncated for prompt budget]" in repo_map
     assert len(repo_map) <= 300 + len("\n... [repo map truncated for prompt budget]")
 
 
 def test_clip_tool_result_truncates_large_payload() -> None:
-    result = _clip_tool_result("x" * 500, max_chars=120)
+    result = clip_tool_result("x" * 500, max_chars=120)
 
     assert "... [tool output truncated for prompt budget]" in result
     assert len(result) <= 120 + len("\n... [tool output truncated for prompt budget]")
@@ -329,11 +329,11 @@ def test_execute_tool_call_emits_success_telemetry(
 ) -> None:
     events: list[tuple[str, object]] = []
     monkeypatch.setattr(
-        "dgov.worker.WorkerEvent.emit",
+        "dgov.workers.runtime.WorkerEvent.emit",
         lambda self: events.append((self.type, self.content)),
     )
 
-    result, is_done = _execute_tool_call(
+    result, is_done = execute_tool_call(
         _tool_call("read_file", {"path": "hello.py"}),
         tools,
         role="worker",
@@ -371,11 +371,11 @@ def test_execute_tool_call_emits_failed_telemetry(
 ) -> None:
     events: list[tuple[str, object]] = []
     monkeypatch.setattr(
-        "dgov.worker.WorkerEvent.emit",
+        "dgov.workers.runtime.WorkerEvent.emit",
         lambda self: events.append((self.type, self.content)),
     )
 
-    result, is_done = _execute_tool_call(
+    result, is_done = execute_tool_call(
         _tool_call("read_file", {"path": "missing.py"}),
         tools,
         role="worker",
@@ -450,7 +450,7 @@ def test_done_is_blocked_until_required_retry_tests_pass(
 ) -> None:
     events: list[tuple[str, object]] = []
     monkeypatch.setattr(
-        "dgov.worker.WorkerEvent.emit",
+        "dgov.workers.runtime.WorkerEvent.emit",
         lambda self: events.append((self.type, self.content)),
     )
     call = _tool_call("done", {"summary": "fixed"})
@@ -464,7 +464,7 @@ def test_done_is_blocked_until_required_retry_tests_pass(
         },
     )
 
-    result, is_done = _execute_tool_call(call, actuators, allowed_tools=frozenset({"done"}))
+    result, is_done = execute_tool_call(call, actuators, allowed_tools=frozenset({"done"}))
 
     assert is_done is False
     assert result.startswith("Error:")
@@ -489,23 +489,23 @@ def test_successful_retry_tests_unlock_done(tmp_path: Path) -> None:
     )
 
     assert "EXIT:0" in actuators.run_tests()
-    result, is_done = _execute_tool_call(call, actuators, allowed_tools=frozenset({"done"}))
+    result, is_done = execute_tool_call(call, actuators, allowed_tools=frozenset({"done"}))
 
     assert is_done is True
     assert result == "fixed"
 
 
 def test_iteration_budget_clamps_nonpositive_values() -> None:
-    assert _iteration_budget(AtomicConfig(worker_iteration_budget=0)) == 1
+    assert iteration_budget(AtomicConfig(worker_iteration_budget=0)) == 1
 
 
 def test_tool_choice_for_iteration_forces_done_only_near_real_budget_end() -> None:
-    assert _tool_choice_for_iteration(iteration=7, budget=10) == "auto"
-    assert _tool_choice_for_iteration(iteration=8, budget=10) == {
+    assert tool_choice_for_iteration(iteration=7, budget=10) == "auto"
+    assert tool_choice_for_iteration(iteration=8, budget=10) == {
         "type": "function",
         "function": {"name": "done"},
     }
-    assert _tool_choice_for_iteration(iteration=1, budget=2) == "auto"
+    assert tool_choice_for_iteration(iteration=1, budget=2) == "auto"
 
 
 def test_diff_stat_for_error_summarizes_worktree_changes(tmp_path: Path) -> None:
@@ -532,7 +532,7 @@ def test_diff_stat_for_error_summarizes_worktree_changes(tmp_path: Path) -> None
     )
     (tmp_path / "tracked.py").write_text("x = 2\n")
 
-    summary = _diff_stat_for_error(tmp_path)
+    summary = diff_stat_for_error(tmp_path)
 
     assert "tracked.py" in summary
 
@@ -553,12 +553,8 @@ def test_run_worker_uses_configured_iteration_budget(
         def model_dump(self, exclude_none: bool = True):
             return {"role": "assistant"}
 
-    class _FakeOpenAI:
-        def __init__(self, *args, **kwargs):
-            completions = SimpleNamespace(create=self._create)
-            self.chat = SimpleNamespace(completions=completions)
-
-        def _create(self, **kwargs):
+    class _FakeProvider:
+        def create_chat_completion(self, **kwargs):
             nonlocal call_count
             call_count += 1
             return SimpleNamespace(
@@ -566,9 +562,9 @@ def test_run_worker_uses_configured_iteration_budget(
                 usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
             )
 
-    monkeypatch.setattr("dgov.worker.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr("dgov.worker.create_provider", lambda **_kwargs: _FakeProvider())
     monkeypatch.setattr(
-        "dgov.worker.WorkerEvent.emit",
+        "dgov.workers.runtime.WorkerEvent.emit",
         lambda self: events.append((self.type, self.content)),
     )
 
@@ -615,12 +611,8 @@ def test_run_worker_forces_done_near_iteration_limit(
                 ]
             return data
 
-    class _FakeOpenAI:
-        def __init__(self, *args, **kwargs):
-            completions = SimpleNamespace(create=self._create)
-            self.chat = SimpleNamespace(completions=completions)
-
-        def _create(self, **kwargs):
+    class _FakeProvider:
+        def create_chat_completion(self, **kwargs):
             tool_choice = kwargs["tool_choice"]
             tool_choices.append(tool_choice)
             tool_calls = []
@@ -641,9 +633,9 @@ def test_run_worker_forces_done_near_iteration_limit(
                 usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
             )
 
-    monkeypatch.setattr("dgov.worker.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr("dgov.worker.create_provider", lambda **_kwargs: _FakeProvider())
     monkeypatch.setattr(
-        "dgov.worker.WorkerEvent.emit",
+        "dgov.workers.runtime.WorkerEvent.emit",
         lambda self: events.append((self.type, self.content)),
     )
 

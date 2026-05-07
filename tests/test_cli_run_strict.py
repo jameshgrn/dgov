@@ -79,8 +79,8 @@ def test_run_plan_dir_compiles_before_execution(
         captured["kwargs"] = kwargs
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", _capture_compile)
-    monkeypatch.setattr("dgov.cli.run._cmd_run_plan", _capture_run)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", _capture_compile)
+    monkeypatch.setattr("dgov.cli.run.run_compiled_plan", _capture_run)
 
     result = runner.invoke(cli, ["run", str(plan_dir)])
 
@@ -99,11 +99,11 @@ def test_run_plan_dir_compiles_before_execution(
     }
 
 
-def test_cmd_run_plan_rejects_department_violation(
+def test_run_compiled_plan_rejects_department_violation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from dgov.cli.run import _cmd_run_plan
+    from dgov.cli.run import run_compiled_plan
 
     dgov_dir = tmp_path / ".dgov"
     plan_dir = dgov_dir / "plans" / "constitution"
@@ -126,7 +126,7 @@ def test_cmd_run_plan_rejects_department_violation(
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(click.ClickException, match="Constitutional violation"):
-        _cmd_run_plan(
+        run_compiled_plan(
             str(compiled),
             str(tmp_path),
             plan_dir=plan_dir,
@@ -155,7 +155,7 @@ def test_run_auto_bootstraps_dgov_only_repo(
         async def run(self) -> dict[str, str]:
             return {"a": "merged"}
 
-    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
@@ -211,7 +211,7 @@ def test_run_returns_nonzero_on_failed_plan(
         async def run(self) -> dict[str, str]:
             return {"a": "failed"}
 
-    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
@@ -268,9 +268,9 @@ def test_run_auto_creates_bootstrap_commit_in_headless(
         )
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
-    monkeypatch.setattr("dgov.cli.run._sentrux_available", lambda: True)
-    monkeypatch.setattr("dgov.cli.run._run_sentrux", _mock_run_sentrux)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
+    monkeypatch.setattr("dgov.cli.run.sentrux_available", lambda: True)
+    monkeypatch.setattr("dgov.cli.run.run_sentrux", _mock_run_sentrux)
     monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
@@ -336,9 +336,9 @@ def test_run_bootstraps_missing_sentrux_baseline(
             stderr="",
         )
 
-    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
-    monkeypatch.setattr("dgov.cli.run._sentrux_available", lambda: True)
-    monkeypatch.setattr("dgov.cli.run._run_sentrux", _mock_run_sentrux)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
+    monkeypatch.setattr("dgov.cli.run.sentrux_available", lambda: True)
+    monkeypatch.setattr("dgov.cli.run.run_sentrux", _mock_run_sentrux)
     monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
@@ -388,7 +388,7 @@ def test_run_reports_degraded_when_final_sentrux_compare_degrades(
         async def run(self) -> dict[str, str]:
             return {"a": "merged"}
 
-    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
@@ -443,7 +443,7 @@ def test_run_emits_run_completed_event_with_degraded_status(
     def _capture_emit_event(session_root, event, pane="", **kwargs):
         captured_events.append(event)
 
-    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
@@ -527,7 +527,7 @@ def test_run_returns_nonzero_on_branch_verification_failure(
         async def run(self) -> dict[str, str]:
             return {"a": "merged"}
 
-    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
@@ -584,7 +584,7 @@ def test_run_reports_structural_offenders_when_sentrux_degrades(
         async def run(self) -> dict[str, str]:
             return {"a": "merged"}
 
-    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(

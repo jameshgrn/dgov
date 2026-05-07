@@ -26,6 +26,7 @@ from dgov.semantic_settlement import (
     emit_integration_overlap_detected,
     emit_integration_risk_scored,
     emit_semantic_gate_rejected,
+    evidence_payload,
     parse_integration_candidate_verdict,
     parse_integration_risk_record,
     parse_semantic_gate_verdict,
@@ -376,6 +377,27 @@ class TestEvidenceSerialization:
         """Deserializing unknown evidence kind raises ValueError."""
         with pytest.raises(ValueError, match="Unknown evidence kind: UnknownKind"):
             _deserialize_evidence({"_kind": "UnknownKind", "file_path": "test.py"})
+
+    def test_evidence_payload_serializes_tuple(self):
+        """Public payload helper serializes evidence tuples for subprocess output."""
+        payload = evidence_payload((
+            SymbolOverlap(
+                symbol_name="process",
+                symbol_type="function",
+                file_path="src/runner.py",
+            ),
+        ))
+
+        assert payload == [
+            {
+                "_kind": "SymbolOverlap",
+                "symbol_name": "process",
+                "symbol_type": "function",
+                "file_path": "src/runner.py",
+                "task_line_range": None,
+                "target_line_range": None,
+            }
+        ]
 
 
 class TestEventEmitters:

@@ -9,8 +9,8 @@ import click
 
 from dgov.archive import archive_plan
 from dgov.cli import cli
-from dgov.cli.compile import _cmd_compile
-from dgov.cli.run import _cmd_run_plan
+from dgov.cli.compile import compile_plan_dir
+from dgov.cli.run import run_compiled_plan
 from dgov.project_root import resolve_project_root
 
 
@@ -166,7 +166,7 @@ sections = ["fix"]
 
     # Compile the plan
     try:
-        _cmd_compile(plan_dir, dry_run=False, recompile_sops=False, graph=False)
+        compile_plan_dir(plan_dir, dry_run=False, recompile_sops=False, graph=False)
     except click.exceptions.Exit:
         click.echo(f"Retained unresolved fix plan at {plan_dir}", err=True)
         raise
@@ -178,7 +178,7 @@ sections = ["fix"]
     # Run the compiled plan
     compiled_path = plan_dir / "_compiled.toml"
     try:
-        run_status = _cmd_run_plan(
+        run_status = run_compiled_plan(
             str(compiled_path),
             str(project_root),
             restart=False,

@@ -271,7 +271,7 @@ def _deserialize_evidence(data: dict[str, Any]) -> OverlapEvidence:
     return _EVIDENCE_TYPES[kind](**converted)
 
 
-def _evidence_payload(evidence: tuple[OverlapEvidence, ...]) -> list[dict[str, Any]]:
+def evidence_payload(evidence: tuple[OverlapEvidence, ...]) -> list[dict[str, Any]]:
     """Convert evidence tuple to serialized list for payloads."""
     return [_serialize_evidence(e) for e in evidence]
 
@@ -793,6 +793,45 @@ def _get_symbols_at_commit(
     return all_symbols
 
 
+def collect_python_overlap_evidence(
+    *,
+    project_root: str,
+    task_base_sha: str,
+    task_commit_sha: str,
+    target_head_sha: str,
+    py_files: tuple[str, ...],
+    candidate_root: Path,
+) -> tuple[OverlapEvidence, ...]:
+    """Collect deterministic Python overlap evidence for integration-risk scoring."""
+    if not py_files or not target_head_sha or not task_commit_sha:
+        return ()
+
+    file_paths = list(py_files)
+    task_base_symbols = _get_symbols_at_commit(project_root, task_base_sha, file_paths)
+    task_commit_symbols = _get_symbols_at_commit(project_root, task_commit_sha, file_paths)
+    target_head_symbols = _get_symbols_at_commit(project_root, target_head_sha, file_paths)
+    touched_set = set(py_files)
+
+    evidence: list[OverlapEvidence] = []
+    evidence.extend(
+        _check_same_symbol_edit(
+            task_base_symbols,
+            task_commit_symbols,
+            target_head_symbols,
+            touched_set,
+        )
+    )
+    evidence.extend(_check_signature_drift(task_base_symbols, task_commit_symbols, touched_set))
+    evidence.extend(
+        _check_duplicate_definitions([
+            candidate_root / path
+            for path in py_files
+            if (candidate_root / path).exists() and (candidate_root / path).is_file()
+        ])
+    )
+    return tuple(evidence)
+
+
 def _filter_python_files(touched_files: tuple[str, ...]) -> list[str]:
     """Filter touched files to only Python files."""
     return [f for f in touched_files if f.endswith(".py")]
@@ -1071,11 +1110,13 @@ __all__ = [
     "TextConflict",
     "_deserialize_evidence",
     "_serialize_evidence",
+    "collect_python_overlap_evidence",
     "emit_integration_candidate_failed",
     "emit_integration_candidate_passed",
     "emit_integration_overlap_detected",
     "emit_integration_risk_scored",
     "emit_semantic_gate_rejected",
+    "evidence_payload",
     "parse_integration_candidate_verdict",
     "parse_integration_risk_record",
     "parse_semantic_gate_verdict",

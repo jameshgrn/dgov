@@ -46,13 +46,65 @@ class TestWorkerIsolation:
     `dgov.tool_policy` is allowed because it is a pure, dependency-free
     dataclass module shared between the worker subprocess and the main
     config loader. It imports nothing from the orchestration tier.
+
+    `dgov.workers.provider` is allowed because it owns provider calls and
+    retry policy behind a narrow worker-support object.
+
+    `dgov.workers.runtime` is allowed because it owns subprocess runtime
+    helpers shared by worker, planner, and researcher roles.
+
+    `dgov.workers.config` is allowed because it owns worker-facing config and
+    payload translation without importing orchestration modules.
     """
 
     def test_worker_no_dgov_imports(self):
         imports = _get_imports(_SRC / "worker.py")
-        allowed = {"dgov.workers.atomic", "dgov.worker", "dgov.tool_policy"}
+        allowed = {
+            "dgov.workers.atomic",
+            "dgov.workers.config",
+            "dgov.workers.provider",
+            "dgov.workers.runtime",
+            "dgov.tool_policy",
+        }
         violations = imports - allowed
         assert not violations, f"worker.py imports forbidden modules: {violations}"
+
+    def test_worker_provider_is_leaf_module(self):
+        imports = _get_imports(_SRC / "workers" / "provider.py")
+        assert not imports, f"dgov.workers.provider imports forbidden modules: {imports}"
+
+    def test_worker_config_imports_only_pure_policy(self):
+        imports = _get_imports(_SRC / "workers" / "config.py")
+        allowed = {"dgov.tool_policy"}
+        violations = imports - allowed
+        assert not violations, f"dgov.workers.config imports forbidden modules: {violations}"
+
+    def test_worker_runtime_imports_only_worker_support(self):
+        imports = _get_imports(_SRC / "workers" / "runtime.py")
+        allowed = {"dgov.workers.atomic", "dgov.workers.config"}
+        violations = imports - allowed
+        assert not violations, f"dgov.workers.runtime imports forbidden modules: {violations}"
+
+    def test_project_config_does_not_import_worker_tools(self):
+        imports = _get_imports(_SRC / "config.py")
+        assert "dgov.workers.atomic" not in imports
+
+    def test_worker_tools_module_does_not_export_config(self):
+        import dgov.workers.atomic as atomic
+
+        assert "AtomicConfig" not in vars(atomic)
+
+
+class TestAgentRoleBoundaries:
+    """Planner and researcher may share worker-support modules, not worker.py."""
+
+    def test_planner_does_not_import_worker_script(self):
+        imports = _get_imports(_SRC / "planner.py")
+        assert "dgov.worker" not in imports
+
+    def test_researcher_does_not_import_worker_script(self):
+        imports = _get_imports(_SRC / "researcher.py")
+        assert "dgov.worker" not in imports
 
 
 class TestSettlementPurity:
@@ -79,6 +131,50 @@ class TestSettlementFlowBoundary:
         forbidden = {"dgov.runner", "dgov.kernel", "dgov.worker"}
         violations = imports & forbidden
         assert not violations, f"settlement_flow.py imports forbidden modules: {violations}"
+
+    def test_settlement_flow_uses_public_semantic_api(self):
+        source = (_SRC / "settlement_flow.py").read_text()
+        tree = ast.parse(source)
+        private_names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "dgov.semantic_settlement":
+                private_names.update(
+                    alias.name for alias in node.names if alias.name.startswith("_")
+                )
+        assert not private_names, (
+            f"settlement_flow.py imports private semantic API: {private_names}"
+        )
+        assert "from dgov.semantic_settlement import _" not in source
+
+
+class TestPromptBuilderBoundary:
+    """prompt_builder.py must not depend on settlement gate orchestration."""
+
+    def test_prompt_builder_does_not_import_settlement(self):
+        imports = _get_imports(_SRC / "prompt_builder.py")
+        assert "dgov.settlement" not in imports
+
+
+class TestCliCompositionBoundary:
+    """CLI command modules may compose through public sibling APIs only."""
+
+    def test_cli_modules_do_not_import_private_sibling_helpers(self):
+        offenders: dict[str, set[str]] = {}
+        for rel_path in ("cli/fix.py", "cli/plan_create.py", "cli/run.py", "cli/sentrux.py"):
+            path = _SRC / rel_path
+            tree = ast.parse(path.read_text())
+            private_names: set[str] = set()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ImportFrom):
+                    continue
+                if node.module not in {"dgov.cli.compile", "dgov.cli.run"}:
+                    continue
+                private_names.update(
+                    alias.name for alias in node.names if alias.name.startswith("_")
+                )
+            if private_names:
+                offenders[rel_path] = private_names
+        assert not offenders, f"CLI modules import private sibling helpers: {offenders}"
 
 
 class TestWorkerLaunchBoundary:

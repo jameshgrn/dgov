@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from dgov.tool_policy import parse_tool_policy
-from dgov.workers.atomic import (
+from dgov.workers.config import (
     AtomicConfig,
     atomic_config_from_payload,
     atomic_config_to_payload,

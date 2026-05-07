@@ -19,13 +19,13 @@ from dgov.researcher import (  # noqa: E402
     _build_system_prompt,
     run_researcher,
 )
-from dgov.worker import _execute_tool_call  # noqa: E402
 from dgov.workers.atomic import (  # noqa: E402
-    AtomicConfig,
     AtomicTools,
     get_allowed_tool_names,
     get_tool_spec,
 )
+from dgov.workers.config import AtomicConfig  # noqa: E402
+from dgov.workers.runtime import execute_tool_call  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
@@ -124,10 +124,10 @@ def test_researcher_execution_rejects_disallowed_tool(tmp_path: Path) -> None:
 
     events: list[tuple[str, object]] = []
     with patch(
-        "dgov.worker.WorkerEvent.emit",
+        "dgov.workers.runtime.WorkerEvent.emit",
         lambda self: events.append((self.type, self.content)),
     ):
-        result, is_done = _execute_tool_call(
+        result, is_done = execute_tool_call(
             call,
             actuators,
             allowed_tools=get_allowed_tool_names("researcher"),
@@ -171,21 +171,17 @@ def test_run_researcher_uses_configured_iteration_budget(
         def model_dump(self, exclude_none: bool = True):
             return {"role": "assistant"}
 
-    class _FakeOpenAI:
-        def __init__(self, *args, **kwargs):
-            completions = SimpleNamespace(create=self._create)
-            self.chat = SimpleNamespace(completions=completions)
-
-        def _create(self, **kwargs):
+    class _FakeProvider:
+        def create_chat_completion(self, **kwargs):
             nonlocal call_count
             call_count += 1
             return SimpleNamespace(
                 choices=[SimpleNamespace(message=_FakeMessage(), finish_reason="length")]
             )
 
-    monkeypatch.setattr("dgov.researcher.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr("dgov.researcher.create_provider", lambda **_kwargs: _FakeProvider())
     monkeypatch.setattr(
-        "dgov.researcher.WorkerEvent.emit",
+        "dgov.workers.runtime.WorkerEvent.emit",
         lambda self: events.append((self.type, self.content)),
     )
 

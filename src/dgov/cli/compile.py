@@ -28,10 +28,10 @@ def compile_cmd(plan_root: Path, dry_run: bool, recompile_sops: bool, graph: boo
     \b
     Example: dgov compile .dgov/plans/my-plan/
     """
-    _cmd_compile(plan_root, dry_run=dry_run, recompile_sops=recompile_sops, graph=graph)
+    compile_plan_dir(plan_root, dry_run=dry_run, recompile_sops=recompile_sops, graph=graph)
 
 
-def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph: bool) -> None:
+def compile_plan_dir(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph: bool) -> None:
     """Compile pipeline: walk → merge → resolve → validate → bundle → write."""
     from dgov.config import load_project_config
     from dgov.plan_tree import (

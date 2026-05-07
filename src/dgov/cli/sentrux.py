@@ -9,7 +9,7 @@ from pathlib import Path
 import click
 
 from dgov.cli import _output, cli, want_json
-from dgov.cli.run import _run_sentrux, _sentrux_available
+from dgov.cli.run import run_sentrux, sentrux_available
 from dgov.repo_snapshot import format_structural_offender_report, likely_structural_offenders
 
 
@@ -47,7 +47,7 @@ def sentrux_check(path: Path | None, json_fmt: bool) -> None:
 
     PATH defaults to current directory if not specified.
     """
-    if not _sentrux_available():
+    if not sentrux_available():
         click.echo(
             "Error: sentrux not found. Install: https://github.com/sentrux/sentrux", err=True
         )
@@ -55,7 +55,7 @@ def sentrux_check(path: Path | None, json_fmt: bool) -> None:
 
     target = str(path) if path else "."
     try:
-        result = _run_sentrux(["check", target])
+        result = run_sentrux(["check", target])
     except subprocess.CalledProcessError as e:
         click.echo(f"Error: sentrux check failed: {e.stderr or e.stdout}", err=True)
         raise click.exceptions.Exit(code=1) from e
@@ -91,7 +91,7 @@ def sentrux_gate_save(path: Path | None) -> None:
 
     PATH defaults to current directory if not specified.
     """
-    if not _sentrux_available():
+    if not sentrux_available():
         click.echo(
             "Error: sentrux not found. Install: https://github.com/sentrux/sentrux", err=True
         )
@@ -99,7 +99,7 @@ def sentrux_gate_save(path: Path | None) -> None:
 
     target = str(path) if path else "."
     try:
-        result = _run_sentrux(["gate", "--save", target])
+        result = run_sentrux(["gate", "--save", target])
     except subprocess.CalledProcessError as e:
         click.echo(f"Error: sentrux gate-save failed: {e.stderr or e.stdout}", err=True)
         raise click.exceptions.Exit(code=1) from e
@@ -129,7 +129,7 @@ def sentrux_gate(path: Path | None, fail_on_degradation: bool) -> None:
 
     PATH defaults to current directory if not specified.
     """
-    if not _sentrux_available():
+    if not sentrux_available():
         click.echo(
             "Error: sentrux not found. Install: https://github.com/sentrux/sentrux", err=True
         )
@@ -137,7 +137,7 @@ def sentrux_gate(path: Path | None, fail_on_degradation: bool) -> None:
 
     target = str(path) if path else "."
     try:
-        result = _run_sentrux(["gate", target], check=False)
+        result = run_sentrux(["gate", target], check=False)
     except subprocess.TimeoutExpired as e:
         click.echo("Error: sentrux gate timed out", err=True)
         raise click.exceptions.Exit(code=1) from e
@@ -175,7 +175,7 @@ def sentrux_offenders(path: Path | None) -> None:
 @sentrux_cmd.command(name="status")
 def sentrux_status() -> None:
     """Check if Sentrux is installed and available."""
-    if _sentrux_available():
+    if sentrux_available():
         click.echo("sentrux: installed and available")
     else:
         click.echo("sentrux: not found in PATH")

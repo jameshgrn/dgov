@@ -625,7 +625,7 @@ def test_sentrux_check_passes_requested_path_without_chdir(
 ) -> None:
     calls: list[tuple[list[str], str | None]] = []
 
-    monkeypatch.setattr("dgov.cli.sentrux._sentrux_available", lambda: True)
+    monkeypatch.setattr("dgov.cli.sentrux.sentrux_available", lambda: True)
 
     def _mock_run(
         args: list[str],
@@ -638,7 +638,7 @@ def test_sentrux_check_passes_requested_path_without_chdir(
             ["sentrux", *args], 0, stdout="Quality: 42\n", stderr=""
         )
 
-    monkeypatch.setattr("dgov.cli.sentrux._run_sentrux", _mock_run)
+    monkeypatch.setattr("dgov.cli.sentrux.run_sentrux", _mock_run)
 
     result = runner.invoke(cli, ["sentrux", "check", "src"])
 
@@ -649,7 +649,7 @@ def test_sentrux_check_passes_requested_path_without_chdir(
 def test_sentrux_gate_fail_on_degradation_uses_command_output(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("dgov.cli.sentrux._sentrux_available", lambda: True)
+    monkeypatch.setattr("dgov.cli.sentrux.sentrux_available", lambda: True)
 
     def _mock_run(
         args: list[str],
@@ -664,7 +664,7 @@ def test_sentrux_gate_fail_on_degradation_uses_command_output(
             stderr="",
         )
 
-    monkeypatch.setattr("dgov.cli.sentrux._run_sentrux", _mock_run)
+    monkeypatch.setattr("dgov.cli.sentrux.run_sentrux", _mock_run)
 
     result = runner.invoke(cli, ["sentrux", "gate", "--fail-on-degradation"])
 
@@ -675,7 +675,7 @@ def test_sentrux_gate_fail_on_degradation_uses_command_output(
 def test_sentrux_gate_prints_structural_offender_report_on_degradation(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("dgov.cli.sentrux._sentrux_available", lambda: True)
+    monkeypatch.setattr("dgov.cli.sentrux.sentrux_available", lambda: True)
 
     def _mock_run(
         args: list[str],
@@ -690,7 +690,7 @@ def test_sentrux_gate_prints_structural_offender_report_on_degradation(
             stderr="",
         )
 
-    monkeypatch.setattr("dgov.cli.sentrux._run_sentrux", _mock_run)
+    monkeypatch.setattr("dgov.cli.sentrux.run_sentrux", _mock_run)
     monkeypatch.setattr(
         "dgov.cli.sentrux._structural_offender_report",
         lambda target: "Likely structural offenders:\n- Complex functions:",
@@ -705,7 +705,7 @@ def test_sentrux_gate_prints_structural_offender_report_on_degradation(
 def test_sentrux_gate_treats_degraded_output_as_degradation(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("dgov.cli.sentrux._sentrux_available", lambda: True)
+    monkeypatch.setattr("dgov.cli.sentrux.sentrux_available", lambda: True)
 
     def _mock_run(
         args: list[str],
@@ -720,7 +720,7 @@ def test_sentrux_gate_treats_degraded_output_as_degradation(
             stderr="",
         )
 
-    monkeypatch.setattr("dgov.cli.sentrux._run_sentrux", _mock_run)
+    monkeypatch.setattr("dgov.cli.sentrux.run_sentrux", _mock_run)
     monkeypatch.setattr("dgov.cli.sentrux._structural_offender_report", lambda target: None)
 
     result = runner.invoke(cli, ["sentrux", "gate", "--fail-on-degradation"])

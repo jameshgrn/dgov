@@ -34,10 +34,7 @@ from dgov.semantic_settlement import (
     SignatureDrift,
     SymbolOverlap,
     TextConflict,
-    _check_duplicate_definitions,
-    _check_same_symbol_edit,
-    _check_signature_drift,
-    _get_symbols_at_commit,
+    collect_python_overlap_evidence,
     emit_integration_candidate_failed,
     emit_integration_candidate_passed,
     emit_integration_overlap_detected,
@@ -62,7 +59,7 @@ import json
 import sys
 from pathlib import Path
 
-from dgov.semantic_settlement import _evidence_payload, run_python_semantic_gate
+from dgov.semantic_settlement import evidence_payload, run_python_semantic_gate
 
 payload = json.loads(sys.argv[1])
 verdict = run_python_semantic_gate(
@@ -82,7 +79,7 @@ print(
             "passed": verdict.passed,
             "failure_class": verdict.failure_class.value if verdict.failure_class else None,
             "error_message": verdict.error_message,
-            "evidence": _evidence_payload(verdict.evidence),
+            "evidence": evidence_payload(verdict.evidence),
         }
     )
 )
@@ -258,36 +255,14 @@ class SettlementFlow:
             return ()
 
         try:
-            task_base_symbols = _get_symbols_at_commit(
-                self.session_root, wt.commit, list(py_files)
+            return collect_python_overlap_evidence(
+                project_root=self.session_root,
+                task_base_sha=wt.commit,
+                task_commit_sha=task_commit_sha,
+                target_head_sha=target_head_sha,
+                py_files=py_files,
+                candidate_root=wt.path,
             )
-            task_commit_symbols = _get_symbols_at_commit(
-                self.session_root, task_commit_sha, list(py_files)
-            )
-            target_head_symbols = _get_symbols_at_commit(
-                self.session_root, target_head_sha, list(py_files)
-            )
-            touched_set = set(py_files)
-            evidence: list[OverlapEvidence] = []
-            evidence.extend(
-                _check_same_symbol_edit(
-                    task_base_symbols,
-                    task_commit_symbols,
-                    target_head_symbols,
-                    touched_set,
-                )
-            )
-            evidence.extend(
-                _check_signature_drift(task_base_symbols, task_commit_symbols, touched_set)
-            )
-            evidence.extend(
-                _check_duplicate_definitions([
-                    wt.path / path
-                    for path in py_files
-                    if (wt.path / path).exists() and (wt.path / path).is_file()
-                ])
-            )
-            return tuple(evidence)
         except Exception as exc:
             logger.warning("Failed to compute semantic overlap evidence: %s", exc)
             return ()

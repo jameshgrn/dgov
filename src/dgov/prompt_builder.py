@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 from dgov.dag_parser import DagDefinition, DagTaskSpec
+from dgov.typecheck_diagnostics import count_diagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,6 @@ def build_baseline_diag_note(config: object, session_root: str) -> str:
     Returns a short note string to prepend to worker prompts, or empty
     string if no type checker is configured or baseline is clean.
     """
-    from dgov.settlement import _count_diagnostics
-
     type_check_cmd = getattr(config, "type_check_cmd", None)
     if not type_check_cmd:
         return ""
@@ -42,7 +41,7 @@ def build_baseline_diag_note(config: object, session_root: str) -> str:
         return ""
     if res.returncode == 0:
         return ""
-    count = _count_diagnostics((res.stdout or "") + (res.stderr or ""))
+    count = count_diagnostics((res.stdout or "") + (res.stderr or ""))
     if count == 0:
         return ""
     return (

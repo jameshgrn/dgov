@@ -36,18 +36,18 @@ def runner():
 
 @pytest.fixture
 def mock_compile(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    """Mock the _cmd_compile function imported by fix.py."""
+    """Mock the compile_plan_dir function imported by fix.py."""
     mock = MagicMock()
-    monkeypatch.setattr("dgov.cli.fix._cmd_compile", mock)
+    monkeypatch.setattr("dgov.cli.fix.compile_plan_dir", mock)
     return mock
 
 
 @pytest.fixture
 def mock_run(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    """Mock the _cmd_run_plan function imported by fix.py."""
+    """Mock the run_compiled_plan function imported by fix.py."""
     mock = MagicMock()
     mock.return_value = "complete"
-    monkeypatch.setattr("dgov.cli.fix._cmd_run_plan", mock)
+    monkeypatch.setattr("dgov.cli.fix.run_compiled_plan", mock)
     return mock
 
 
@@ -424,7 +424,7 @@ class TestFixArchive:
         def mock_run_fail(*args, **kwargs):
             raise RuntimeError("Simulated run failure")
 
-        monkeypatch.setattr("dgov.cli.fix._cmd_run_plan", mock_run_fail)
+        monkeypatch.setattr("dgov.cli.fix.run_compiled_plan", mock_run_fail)
 
         result = runner.invoke(cli, ["fix", "Refactor code", "--file", "src/foo.py"])
 
@@ -449,7 +449,7 @@ class TestFixArchive:
         def mock_compile_fail(*args, **kwargs):
             raise RuntimeError("Simulated compile failure")
 
-        monkeypatch.setattr("dgov.cli.fix._cmd_compile", mock_compile_fail)
+        monkeypatch.setattr("dgov.cli.fix.compile_plan_dir", mock_compile_fail)
 
         result = runner.invoke(cli, ["fix", "Refactor code", "--file", "src/foo.py"])
 
@@ -469,7 +469,7 @@ class TestFixArchive:
     ) -> None:
         """Degraded runs stay in runtime space until the follow-up is resolved."""
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr("dgov.cli.fix._cmd_run_plan", lambda *args, **kwargs: "degraded")
+        monkeypatch.setattr("dgov.cli.fix.run_compiled_plan", lambda *args, **kwargs: "degraded")
 
         result = runner.invoke(cli, ["fix", "Refactor code", "--file", "src/foo.py"])
 
