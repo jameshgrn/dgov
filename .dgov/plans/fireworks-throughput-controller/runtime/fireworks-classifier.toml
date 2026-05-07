@@ -1,0 +1,48 @@
+[tasks.fireworks-classifier]
+summary = "Classify Fireworks serverless adaptive rate-limit failures"
+commit_message = "Classify Fireworks rate limits"
+files.edit = [
+  "src/dgov/llm_backoff.py",
+  "tests/test_llm_backoff.py",
+]
+prompt = '''
+Orient:
+Read src/dgov/llm_backoff.py and tests/test_llm_backoff.py before editing.
+This is a provider-boundary change. Keep it dependency-free and compatible with OpenAI-style clients.
+Use the Fireworks docs as design input:
+- https://docs.fireworks.ai/serverless/rate-limits says serverless uses adaptive Total Prompt TPM, Uncached Prompt TPM, and Generated TPM, and exposes effective limits in X-Ratelimit-Limit-Tokens-Prompt and X-Ratelimit-Limit-Tokens-Generated headers.
+- https://docs.fireworks.ai/guides/quotas_usage/account-quotas says firectl quota list is account/request quota, while serverless TPM and adaptive limits live on the serverless rate-limit page.
+- https://docs.fireworks.ai/guides/prompt-caching says function-calling tools are part of the prompt and cache hits require stable prefixes/session affinity.
+Do not add model routing, provider switching, or warm-up traffic in this task.
+
+Edit:
+1. Replace the current "all 429s get 5/30/90 retry" behavior with a small structured classifier:
+   - Keep retrying generic 429/rate-limit errors using the existing 5s/30s/90s jitter schedule.
+   - Parse response headers case-insensitively when available from exc.response.headers or exc.headers.
+   - Extract Retry-After when present and prefer it over the next static backoff slot, with jitter still allowed if practical.
+   - Extract Fireworks prompt/generated TPM limits from X-Ratelimit-Limit-Tokens-Prompt and X-Ratelimit-Limit-Tokens-Generated.
+2. Add a dependency-free request-size estimator for kwargs passed to chat.completions.create:
+   - Estimate prompt tokens from messages and tools by JSON/string length divided by 4, rounded up.
+   - Estimate requested generated tokens from max_tokens when present; otherwise use 0/unknown.
+   - This is a guardrail estimate, not billing truth. Keep the name explicit.
+3. If the current Fireworks prompt limit is present and the estimated prompt tokens exceed it, do NOT retry the same request. Raise a custom exception or re-raise with an actionable message that contains:
+   - "Fireworks adaptive serverless TPM"
+   - estimated prompt tokens
+   - observed prompt limit
+   - suggested actions: shrink prompt/tool schema, reduce concurrency, use dgov run --continue after cooldown, switch model/provider, or use an on-demand deployment.
+4. If generated-token limit is present and max_tokens exceeds it, treat it the same way for generated TPM.
+5. Preserve create_chat_completion_with_backoff(client, **kwargs) as the public wrapper used by worker/researcher/planner.
+6. Add targeted tests in tests/test_llm_backoff.py:
+   - generic 429 still retries on the 5/30/90 schedule.
+   - Retry-After header controls the first sleep.
+   - Fireworks prompt limit below estimated request size fails fast with no sleep.
+   - Fireworks generated limit below max_tokens fails fast with no sleep.
+   - Header lookup works case-insensitively from response.headers.
+
+Verify:
+uv run pytest -q tests/test_llm_backoff.py
+uv run ruff check src/dgov/llm_backoff.py tests/test_llm_backoff.py
+uv run ruff format --check src/dgov/llm_backoff.py tests/test_llm_backoff.py
+uv run ty check src/dgov/llm_backoff.py tests/test_llm_backoff.py
+'''
+

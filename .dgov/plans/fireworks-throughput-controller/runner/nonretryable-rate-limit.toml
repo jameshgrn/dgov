@@ -1,0 +1,36 @@
+[tasks.nonretryable-rate-limit]
+summary = "Stop treating provider adaptive-rate failures as worker-fixable retries"
+commit_message = "Fail fast on adaptive rate limits"
+depends_on = ["runtime/fireworks-classifier.fireworks-classifier"]
+files.edit = [
+  "src/dgov/runner.py",
+  "tests/test_runner.py",
+]
+files.read = [
+  "src/dgov/llm_backoff.py",
+  "src/dgov/workers/headless.py",
+  "src/dgov/worker.py",
+]
+prompt = '''
+Orient:
+Read src/dgov/runner.py around EventDagRunner._handle_interrupt and tests/test_runner.py for retry/governor-resume coverage.
+Read the error message shape introduced by the dependency task in src/dgov/llm_backoff.py.
+This is a governor classification change. It should stop wasting task retries on provider-adaptive rate-limit walls, but it must not weaken normal worker retries or settlement retries.
+
+Edit:
+1. In src/dgov/runner.py, add a private helper that recognizes non-retryable provider rate-limit errors emitted by the LLM wrapper. Prefer matching a stable marker string from the dependency task, e.g. "Fireworks adaptive serverless TPM".
+2. In _handle_interrupt, before the normal attempts < max_retries path, classify those provider errors as non-retryable. Emit/log a clear message that this is infrastructure/provider throughput, not worker-fixable.
+3. Keep the task failed, not skipped, so `dgov run --continue <plan-dir>` remains the recovery path after cooldown or provider/model changes.
+4. Do not feed "fix the 429" back into the worker retry prompt for this class.
+5. Add tests in tests/test_runner.py proving:
+   - adaptive Fireworks TPM error produces GovernorAction.FAIL immediately even when retries remain.
+   - ordinary worker errors still retry when attempts remain.
+   - the emitted GovernorResumed event records FAIL for the adaptive error.
+
+Verify:
+uv run pytest -q tests/test_runner.py -k "interrupt or governor or rate"
+uv run ruff check src/dgov/runner.py tests/test_runner.py
+uv run ruff format --check src/dgov/runner.py tests/test_runner.py
+uv run ty check src/dgov/runner.py
+'''
+
