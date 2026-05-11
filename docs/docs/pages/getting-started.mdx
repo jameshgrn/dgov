@@ -11,11 +11,12 @@ This page walks from a fresh repo to a finished run.
 Most AI coding tooling rests on a hidden assumption: that the model will be
 careful. `dgov` rests on the opposite assumption.
 
-A worker is a stranger you let run commands in your repo. It will lie about
-whether tests passed. It will edit files outside its claimed scope. It will
-mark a task `done` while the working tree is broken. None of that is a bug
-in the model. It is what probabilistic systems do under load. A better
-prompt does not fix it. Structure does.
+A worker is a stranger you let run commands in your repo. It will report
+tests as passing when no test command ran. It will edit files outside its
+claimed scope. It will emit `done` while the working tree is broken. None of
+that is a bug in the model — it is what a system that samples from text does
+when the prompt does not constrain it. A better prompt does not fix it.
+Structure does.
 
 `dgov`'s stance:
 
@@ -34,9 +35,10 @@ prompt does not fix it. Structure does.
 - **Failing closed is the point.** Out-of-scope edits fail review. Failing
   tests fail settlement. A missing API key fails before dispatch.
 
-If you want a system that infers your intent and figures things out, this is
-not that system. `dgov` assumes you know what you want to change, and gives
-you the structure to change it without trusting the model to behave.
+`dgov` assumes you know what you want to change. It gives you the structure
+to change it without granting the model unchecked authority over the merge.
+For workflows that hinge on the model inferring intent from a sentence, a
+different tool will suit you better.
 
 ## Requirements
 

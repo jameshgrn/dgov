@@ -96,9 +96,9 @@ Three stores carry different jobs:
 
 - **Event log** — lifecycle authority. Dispatch, retry, status, watch, and
   live cleanup decisions derive from events.
-- **Deploy log** — landed-output authority. This answers what actually made
-  it onto main.
-- **Runtime artifact rows** — bookkeeping. These cache worktree paths,
+- **Deploy log** — landed-output authority. The deploy log records what
+  actually made it onto main.
+- **Runtime artifact rows** — bookkeeping. These rows cache worktree paths,
   branch names, and similar operational crumbs for debugging and cleanup.
   They do not define lifecycle truth.
 
@@ -108,9 +108,9 @@ wins.
 ## Snapshot isolation
 
 Every dispatched task gets its own branch and worktree rooted at a specific
-commit. That gives `dgov` a concrete notion of "attempt." The bootstrap
-behavior is careful because the system needs a real snapshot to branch
-from — `dgov` does not need GitHub, but it does need local git state.
+commit. That gives `dgov` a concrete notion of "attempt." The bootstrap path
+is careful because branching requires a real snapshot — `dgov` does not need
+GitHub, but it does need local git state.
 
 ## Settlement
 
@@ -127,10 +127,10 @@ rejected a candidate.
 
 ## Semantic settlement
 
-A clean `git merge` is necessary but not sufficient. The semantic layer asks
-a different question: *will this work correctly when integrated with the
-current target?* It catches cases where two valid tasks combine into an
-invalid result.
+A clean `git merge` is necessary but not sufficient. The semantic layer
+checks whether the integrated result still works — not just whether git
+could replay the commit. It catches cases where two valid tasks combine
+into an invalid result.
 
 ### Failure taxonomy
 
@@ -189,9 +189,9 @@ for execution:
 - prompts define local intent
 - commit messages define merge outcomes
 
-`dgov compile` exists because of this. Compile turns a human-edited tree into
-a normalized artifact the runner executes without reinterpreting structure
-on the fly.
+`dgov compile` exists to produce that normalized artifact. Compile turns a
+human-edited tree into something the runner can execute without
+reinterpreting structure on the fly.
 
 ## Why git worktrees
 
@@ -229,7 +229,7 @@ and similar APIs.
 - failing tests fail settlement
 - rejected work does not merge
 
-That behavior is the point, not a limitation.
+Failing closed is the design, not a limitation.
 
 ## Mental model
 

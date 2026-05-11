@@ -1,6 +1,6 @@
 # CLI Reference
 
-Every `dgov` command and flag, grouped by what you do with them.
+Every `dgov` command and flag, grouped by purpose.
 
 ## Overview
 
@@ -315,7 +315,8 @@ tasks:
 
 ### `dgov watch`
 
-Stream events in real time. Useful in a second terminal during a run.
+Stream events in real time. Run this in a second terminal while a plan is
+executing.
 
 ```bash
 dgov watch
@@ -345,8 +346,9 @@ dgov tools audit --plan my-plan --role worker --limit 20
 
 ### `dgov ledger`
 
-Operational ledger — record and query bugs, rules, patterns, decisions, and
-debt. Backed by SQLite alongside the event log.
+Operational ledger — record and query operational entries: bugs, fixes,
+rules, patterns, notes, debt, capabilities, and decisions. Backed by SQLite
+alongside the event log.
 
 ```bash
 dgov ledger add <category> <content>
@@ -378,8 +380,8 @@ dgov ledger resolve 3                       # mark entry #3 resolved
 ### `dgov preflight`
 
 Run the settlement acceptance gates against the local working tree without
-spawning a worker. Useful for "does my checkout pass the same bar a task
-would have to clear?"
+spawning a worker. The result tells you whether the current checkout would
+pass the gates a dispatched task has to clear.
 
 ```bash
 dgov preflight
@@ -416,7 +418,7 @@ dgov sentrux gate --fail-on-degradation
 ### `dgov sentrux offenders`
 
 List functions in the current snapshot that exceed length or complexity
-heuristics. Use this to triage what to refactor next.
+heuristics. The output ranks candidates for refactoring.
 
 ```bash
 dgov sentrux offenders
