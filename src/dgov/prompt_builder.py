@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 from dgov.dag_parser import DagDefinition, DagTaskSpec
+from dgov.typecheck_diagnostics import count_diagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,6 @@ def build_baseline_diag_note(config: object, session_root: str) -> str:
     Returns a short note string to prepend to worker prompts, or empty
     string if no type checker is configured or baseline is clean.
     """
-    from dgov.settlement import _count_diagnostics
-
     type_check_cmd = getattr(config, "type_check_cmd", None)
     if not type_check_cmd:
         return ""
@@ -42,7 +41,7 @@ def build_baseline_diag_note(config: object, session_root: str) -> str:
         return ""
     if res.returncode == 0:
         return ""
-    count = _count_diagnostics((res.stdout or "") + (res.stderr or ""))
+    count = count_diagnostics((res.stdout or "") + (res.stderr or ""))
     if count == 0:
         return ""
     return (
@@ -133,10 +132,39 @@ class PromptBuilder:
 
         return prompt
 
-    def reviewer_prompt(self, task_slug: str, task: DagTaskSpec) -> str:
-        """Build a reviewer prompt with dependency diffs auto-injected."""
+    def _dependency_diff_section(
+        self, dep_slug: str, dep_task: DagTaskSpec, sha: str | None
+    ) -> str:
+        """Build a single dependency diff section for reviewer prompt."""
         import subprocess as sp
 
+        if not sha:
+            return f"## {dep_slug}\nNo deploy record found (not yet merged).\n"
+
+        diff_result = sp.run(
+            ["git", "show", "--stat", "--patch", sha],
+            cwd=self.session_root,
+            capture_output=True,
+            text=True,
+        )
+        diff_text = diff_result.stdout if diff_result.returncode == 0 else "(diff unavailable)"
+
+        return (
+            f"## Task: {dep_slug}\n"
+            f"Summary: {dep_task.summary}\n"
+            f"Commit: {dep_task.commit_message}\n\n"
+            f"```diff\n{diff_text}\n```\n"
+        )
+
+    @staticmethod
+    def _additional_guidance_section(task_prompt: str | None) -> str | None:
+        """Build additional review guidance section if task prompt exists."""
+        if task_prompt and task_prompt.strip():
+            return f"## Additional review guidance\n{task_prompt}\n"
+        return None
+
+    def reviewer_prompt(self, task_slug: str, task: DagTaskSpec) -> str:
+        """Build a reviewer prompt with dependency diffs auto-injected."""
         from dgov import deploy_log
 
         sections: list[str] = []
@@ -154,28 +182,11 @@ class PromptBuilder:
             if not dep_task:
                 continue
             sha = sha_by_unit.get(dep_slug)
-            if not sha:
-                sections.append(f"## {dep_slug}\nNo deploy record found (not yet merged).\n")
-                continue
+            sections.append(self._dependency_diff_section(dep_slug, dep_task, sha))
 
-            diff_result = sp.run(
-                ["git", "show", "--stat", "--patch", sha],
-                cwd=self.session_root,
-                capture_output=True,
-                text=True,
-            )
-            diff_text = diff_result.stdout if diff_result.returncode == 0 else "(diff unavailable)"
-
-            sections.append(
-                f"## Task: {dep_slug}\n"
-                f"Summary: {dep_task.summary}\n"
-                f"Commit: {dep_task.commit_message}\n\n"
-                f"```diff\n{diff_text}\n```\n"
-            )
-
-        # Append user-provided prompt guidance if any
-        if task.prompt and task.prompt.strip():
-            sections.append(f"## Additional review guidance\n{task.prompt}\n")
+        guidance = self._additional_guidance_section(task.prompt)
+        if guidance:
+            sections.append(guidance)
 
         sections.append(
             "Respond via the `done` tool with your verdict as a JSON object:\n"

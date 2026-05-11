@@ -76,32 +76,37 @@ def _has_structured_files(files: PlanUnitFiles) -> bool:
     return bool(files.create or files.edit or files.delete or files.read)
 
 
+def _has_any_files(files: PlanUnitFiles) -> bool:
+    return bool(files.create or files.edit or files.delete or files.read or files.touch)
+
+
+def _format_file_array(paths: tuple[str, ...]) -> str:
+    return f"[{', '.join(_toml_str(path) for path in paths)}]"
+
+
+def _structured_file_entries(files: PlanUnitFiles) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    return (
+        ("touch", files.touch),
+        ("create", files.create),
+        ("edit", files.edit),
+        ("delete", files.delete),
+        ("read", files.read),
+    )
+
+
 def _format_files(files: PlanUnitFiles) -> list[str]:
     """Format files section - either flat or structured depending on content."""
-    lines: list[str] = []
-    has_any = files.create or files.edit or files.delete or files.read or files.touch
+    if not _has_any_files(files):
+        return []
 
-    if not has_any:
-        return lines
-
-    # Pure touch-only case: use flat format
     if files.touch and not _has_structured_files(files):
-        lines.append(f"files = [{', '.join(_toml_str(f) for f in files.touch)}]")
-        return lines
+        return [f"files = {_format_file_array(files.touch)}"]
 
-    # Structured format with sub-keys
-    if files.touch:
-        lines.append(f"files.touch = [{', '.join(_toml_str(f) for f in files.touch)}]")
-    if files.create:
-        lines.append(f"files.create = [{', '.join(_toml_str(f) for f in files.create)}]")
-    if files.edit:
-        lines.append(f"files.edit = [{', '.join(_toml_str(f) for f in files.edit)}]")
-    if files.delete:
-        lines.append(f"files.delete = [{', '.join(_toml_str(f) for f in files.delete)}]")
-    if files.read:
-        lines.append(f"files.read = [{', '.join(_toml_str(f) for f in files.read)}]")
-
-    return lines
+    return [
+        f"files.{field_name} = {_format_file_array(paths)}"
+        for field_name, paths in _structured_file_entries(files)
+        if paths
+    ]
 
 
 def _format_task_section(fq_id: str, unit: PlanUnit, mapping: tuple[str, ...]) -> list[str]:

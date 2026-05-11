@@ -7,8 +7,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from dgov.llm_backoff import (
+from dgov.workers.provider import (
     FireworksRateLimitError,
+    OpenAICompatibleProvider,
     _estimate_request_tokens,
     _estimate_tokens_from_length,
     _extract_fireworks_limits,
@@ -17,7 +18,6 @@ from dgov.llm_backoff import (
     _get_headers_from_exc,
     _jittered_delay,
     call_with_rate_limit_backoff,
-    create_chat_completion_with_backoff,
 )
 
 pytestmark = pytest.mark.unit
@@ -383,21 +383,18 @@ def test_estimate_request_tokens_with_tool_calls_in_messages() -> None:
     assert prompt_tokens > 0  # Should count tool_calls JSON
 
 
-def test_create_chat_completion_with_backoff_passes_kwargs_for_classification() -> None:
-    """create_chat_completion_with_backoff passes kwargs to the backoff function."""
-    # Create a mock client that fails with Fireworks limit error
+def test_provider_create_chat_completion_passes_kwargs_for_classification() -> None:
     mock_client = MagicMock()
+    provider = OpenAICompatibleProvider(mock_client)
     error = _FireworksRateLimitError(prompt_limit=10)
     mock_client.chat.completions.create.side_effect = error
 
     with pytest.raises(FireworksRateLimitError):
-        create_chat_completion_with_backoff(
-            mock_client,
+        provider.create_chat_completion(
             messages=[{"role": "user", "content": "x" * 100}],  # Will estimate > 10 tokens
             max_tokens=100,
         )
 
-    # Verify the client was called with the correct kwargs
     mock_client.chat.completions.create.assert_called_once_with(
         messages=[{"role": "user", "content": "x" * 100}],
         max_tokens=100,

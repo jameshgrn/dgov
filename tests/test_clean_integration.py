@@ -95,7 +95,7 @@ def test_clean_preserves_rejected_inspection_worktree(
     monkeypatch.chdir(git_repo)
     monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
     monkeypatch.setattr(
-        "dgov.runner.validate_sandbox",
+        "dgov.settlement_flow.validate_sandbox",
         lambda *_args, **_kwargs: GateResult(passed=False, error="lint failure"),
     )
 

@@ -201,6 +201,73 @@ def compute_sop_set_hash(sops: list[Sop]) -> str:
     return hashlib.sha256(content.encode()).hexdigest()
 
 
+def _empty_bundle_result(plan: FlatPlan) -> BundleResult:
+    """Return a bundle result for empty SOP set."""
+    return BundleResult(
+        plan=plan,
+        sop_mapping={uid: () for uid in plan.units},
+        sop_set_hash="",
+    )
+
+
+def _is_cache_hit(
+    hash_val: str,
+    cached_hash: str | None,
+    cached_mapping: dict[str, tuple[str, ...]] | None,
+    unit_ids: dict[str, PlanUnit],
+) -> bool:
+    """Check if cached mapping can be reused: hash matches and all units covered."""
+    if cached_hash != hash_val:
+        return False
+    if cached_mapping is None:
+        return False
+    return all(uid in cached_mapping for uid in unit_ids)
+
+
+def _select_mapping(
+    hash_val: str,
+    cached_hash: str | None,
+    cached_mapping: dict[str, tuple[str, ...]] | None,
+    units: dict[str, PlanUnit],
+    bundler: SopBundler,
+    sops: list[Sop],
+) -> dict[str, list[str]]:
+    """Select SOP-to-unit mapping: use cache if valid, otherwise call bundler."""
+    if cached_mapping is not None and _is_cache_hit(hash_val, cached_hash, cached_mapping, units):
+        return {uid: list(names) for uid, names in cached_mapping.items()}
+    return bundler.pick(units, sops)
+
+
+def _rewrite_unit_prompt(
+    unit: PlanUnit,
+    picked_names: list[str],
+    sop_by_name: dict[str, Sop],
+) -> PlanUnit:
+    """Prepend rendered SOP blocks to unit prompt for matched SOPs."""
+    bodies = [sop_by_name[n].render_prompt_block() for n in picked_names if n in sop_by_name]
+    if bodies:
+        prompt_suffix = unit.prompt or ""
+        return replace(unit, prompt="\n\n".join(bodies) + "\n\n" + prompt_suffix)
+    return unit
+
+
+def _build_final_mapping(
+    units: dict[str, PlanUnit],
+    mapping: dict[str, list[str]],
+    sop_by_name: dict[str, Sop],
+) -> tuple[dict[str, PlanUnit], dict[str, tuple[str, ...]]]:
+    """Build rewritten units and final SOP mapping."""
+    rewritten: dict[str, PlanUnit] = {}
+    final_mapping: dict[str, tuple[str, ...]] = {}
+
+    for uid, unit in units.items():
+        picked_names = mapping.get(uid, [])
+        final_mapping[uid] = tuple(picked_names)
+        rewritten[uid] = _rewrite_unit_prompt(unit, picked_names, sop_by_name)
+
+    return rewritten, final_mapping
+
+
 def bundle(
     plan: FlatPlan,
     sops_dir: Path,
@@ -219,39 +286,13 @@ def bundle(
     sops = load_sops(sops_dir)
 
     if not sops:
-        return BundleResult(
-            plan=plan,
-            sop_mapping={uid: () for uid in plan.units},
-            sop_set_hash="",
-        )
+        return _empty_bundle_result(plan)
 
     hash_val = compute_sop_set_hash(sops)
-
-    # Cache hit: reuse mapping if hash matches and mapping covers all current units
-    if (
-        cached_hash == hash_val
-        and cached_mapping is not None
-        and all(uid in cached_mapping for uid in plan.units)
-    ):
-        mapping = {uid: list(names) for uid, names in cached_mapping.items()}
-    else:
-        mapping = bundler.pick(plan.units, sops)
-
+    mapping = _select_mapping(hash_val, cached_hash, cached_mapping, plan.units, bundler, sops)
     sop_by_name = {s.name: s for s in sops}
 
-    rewritten: dict[str, PlanUnit] = {}
-    final_mapping: dict[str, tuple[str, ...]] = {}
-
-    for uid, unit in plan.units.items():
-        picked_names = mapping.get(uid, [])
-        final_mapping[uid] = tuple(picked_names)
-
-        bodies = [sop_by_name[n].render_prompt_block() for n in picked_names if n in sop_by_name]
-        if bodies:
-            prompt_suffix = unit.prompt or ""
-            rewritten[uid] = replace(unit, prompt="\n\n".join(bodies) + "\n\n" + prompt_suffix)
-        else:
-            rewritten[uid] = unit
+    rewritten, final_mapping = _build_final_mapping(plan.units, mapping, sop_by_name)
 
     return BundleResult(
         plan=replace(plan, units=rewritten),
@@ -337,26 +378,44 @@ def _parse_sections(path: Path, body: str) -> dict[str, tuple[str, ...]]:
     heading_map: dict[str, str] = {display.lower(): key for display, key in _SECTION_ORDER}
 
     for line in body.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("## "):
-            heading = stripped[3:].strip().lower()
-            current = heading_map.get(heading)
-            if current is None:
-                raise ValueError(f"{path.name}: unknown SOP section {stripped!r}")
-            continue
-        if current is None:
-            raise ValueError(f"{path.name}: content must appear under a supported ## section")
-        if stripped.startswith("- ") or stripped.startswith("* "):
-            parsed[current].append(stripped[2:].strip())
-            continue
-        if line[:1].isspace() and parsed[current]:
-            parsed[current][-1] = f"{parsed[current][-1]} {stripped}"
-            continue
-        raise ValueError(f"{path.name}: section content must be bullet lists; got {line!r}")
+        current = _parse_section_line(path, line, current, parsed, heading_map)
 
     missing = [display for display, key in _SECTION_ORDER if not parsed[key]]
     if missing:
         raise ValueError(f"{path.name}: missing required sections: {', '.join(missing)}")
     return {key: tuple(items) for key, items in parsed.items()}
+
+
+def _parse_section_line(
+    path: Path,
+    line: str,
+    current: str | None,
+    parsed: dict[str, list[str]],
+    heading_map: dict[str, str],
+) -> str | None:
+    stripped = line.strip()
+    if not stripped:
+        return current
+    if stripped.startswith("## "):
+        return _parse_section_heading(path, stripped, heading_map)
+    if current is None:
+        raise ValueError(f"{path.name}: content must appear under a supported ## section")
+    if stripped.startswith(("- ", "* ")):
+        parsed[current].append(stripped[2:].strip())
+        return current
+    if line[:1].isspace() and parsed[current]:
+        parsed[current][-1] = f"{parsed[current][-1]} {stripped}"
+        return current
+    raise ValueError(f"{path.name}: section content must be bullet lists; got {line!r}")
+
+
+def _parse_section_heading(
+    path: Path,
+    stripped: str,
+    heading_map: dict[str, str],
+) -> str:
+    heading = stripped[3:].strip().lower()
+    current = heading_map.get(heading)
+    if current is None:
+        raise ValueError(f"{path.name}: unknown SOP section {stripped!r}")
+    return current

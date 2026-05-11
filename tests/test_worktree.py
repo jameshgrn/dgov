@@ -20,6 +20,7 @@ from dgov.worktree import (
     merge_worktree,
     prepare_worktree,
     prune_orphans,
+    remove_integration_candidate,
     remove_worktree,
 )
 
@@ -46,6 +47,31 @@ def git_repo(tmp_path):
         env=env,
     )
     return str(tmp_path)
+
+
+def _git(repo: str | Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **_GIT_ENV},
+    )
+
+
+def _commit_repo_file(repo: str | Path, rel_path: str, content: str, message: str) -> None:
+    (Path(repo) / rel_path).write_text(content)
+    _git(repo, "add", rel_path)
+    _git(repo, "commit", "-m", message)
+
+
+def _git_head(repo: str | Path) -> str:
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def _git_status(repo: str | Path) -> str:
+    return _git(repo, "status", "--porcelain").stdout.strip()
 
 
 @pytest.mark.unit
@@ -454,30 +480,8 @@ class TestIntegrationCandidate:
         failed_sha = commit_in_worktree(task_wt2, "modify base", file_claims=("base.py",))
 
         # Meanwhile, modify the file on main to create a conflict
-        (Path(git_repo) / "base.py").write_text("x = 3\n")
-        env = {**os.environ, **_GIT_ENV}
-        subprocess.run(
-            ["git", "add", "base.py"],
-            cwd=git_repo,
-            check=True,
-            capture_output=True,
-            env=env,
-        )
-        subprocess.run(
-            ["git", "commit", "-m", "change on main"],
-            cwd=git_repo,
-            check=True,
-            capture_output=True,
-            env=env,
-        )
-        target_head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=git_repo,
-            check=True,
-            capture_output=True,
-            text=True,
-            env=env,
-        ).stdout.strip()
+        _commit_repo_file(git_repo, "base.py", "x = 3\n", "change on main")
+        target_head = _git_head(git_repo)
 
         # Now try to create integration candidate - should fail
         result = create_integration_candidate(git_repo, task_wt2, "task-conflict-candidate")
@@ -496,14 +500,7 @@ class TestIntegrationCandidate:
         assert result.conflict_marker_counts["base.py"] >= 1
 
         # Verify main repo is clean (no partial cherry-pick state)
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=git_repo,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        assert status.stdout.strip() == ""
+        assert _git_status(git_repo) == ""
 
         # Clean up
         remove_worktree(git_repo, task_wt2)
@@ -522,22 +519,7 @@ class TestIntegrationCandidate:
         commit_in_worktree(task_wt, "add task code", file_claims=("task.py",))
 
         # Add new commit on main while task is working
-        env = {**os.environ, **_GIT_ENV}
-        (Path(git_repo) / "main.py").write_text("# main code\n")
-        subprocess.run(
-            ["git", "add", "main.py"],
-            cwd=git_repo,
-            check=True,
-            capture_output=True,
-            env=env,
-        )
-        subprocess.run(
-            ["git", "commit", "-m", "progress on main"],
-            cwd=git_repo,
-            check=True,
-            capture_output=True,
-            env=env,
-        )
+        _commit_repo_file(git_repo, "main.py", "# main code\n", "progress on main")
 
         # Create integration candidate
         result = create_integration_candidate(git_repo, task_wt, "task-head-candidate")
@@ -549,7 +531,5 @@ class TestIntegrationCandidate:
         assert (result.candidate_path / "task.py").exists()
 
         # Clean up
-        from dgov.worktree import remove_integration_candidate
-
         remove_integration_candidate(git_repo, result.candidate_path)
         remove_worktree(git_repo, task_wt)

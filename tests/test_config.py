@@ -2,7 +2,7 @@
 
 from dgov.config import ProjectConfig, load_project_config
 from dgov.tool_policy import ToolPolicy
-from dgov.workers.atomic import AtomicConfig
+from dgov.workers.config import AtomicConfig
 
 
 class TestProjectConfigDefaults:

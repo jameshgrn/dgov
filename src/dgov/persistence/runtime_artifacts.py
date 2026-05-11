@@ -98,6 +98,50 @@ def list_runtime_artifacts(session_root: str) -> list[dict]:
     return [_row_to_dict(row) for row in rows]
 
 
+def _compute_allowed_sources(new_state: str) -> list[TaskState]:
+    """Return list of source states that can transition to new_state."""
+    return [st for st, targets in VALID_TRANSITIONS.items() if new_state in targets]
+
+
+def _raise_if_transition_illegal(row_state: str | None, new_state: str, slug: str) -> None:
+    """Raise IllegalTransitionError if row exists and state differs from new_state."""
+    if row_state is not None and row_state != new_state:
+        raise IllegalTransitionError(row_state, new_state, slug)
+
+
+def _fetch_task_state(conn: sqlite3.Connection, slug: str) -> str | None:
+    """Fetch the current state of a task by slug."""
+    row = conn.execute("SELECT state FROM tasks WHERE slug = ?", (slug,)).fetchone()
+    return row["state"] if row else None
+
+
+def _try_non_force_update(
+    conn: sqlite3.Connection, slug: str, new_state: str, allowed_from: list[TaskState]
+) -> bool:
+    """Attempt a non-force state update.
+
+    Returns True if update succeeded.
+    Raises IllegalTransitionError if transition is not allowed.
+    """
+    if not allowed_from:
+        row_state = _fetch_task_state(conn, slug)
+        _raise_if_transition_illegal(row_state, new_state, slug)
+        return False
+
+    placeholders = ", ".join("?" * len(allowed_from))
+    cur = conn.execute(
+        f"UPDATE tasks SET state = ? WHERE slug = ? AND state IN ({placeholders})",
+        [new_state, slug, *allowed_from],
+    )
+
+    if cur.rowcount == 0:
+        row_state = _fetch_task_state(conn, slug)
+        _raise_if_transition_illegal(row_state, new_state, slug)
+        return False
+
+    return True
+
+
 def update_runtime_artifact_state(
     session_root: str, slug: str, new_state: str, force: bool = False
 ) -> None:
@@ -115,37 +159,13 @@ def update_runtime_artifact_state(
         conn.row_factory = sqlite3.Row
 
         if force:
-            cur = conn.execute(
+            conn.execute(
                 "UPDATE tasks SET state = ? WHERE slug = ? AND state != ?",
                 (new_state, slug, new_state),
             )
         else:
-            allowed_from = [
-                st for st, targets in VALID_TRANSITIONS.items() if new_state in targets
-            ]
-            if not allowed_from:
-                row = conn.execute(
-                    "SELECT state FROM tasks WHERE slug = ?",
-                    (slug,),
-                ).fetchone()
-                if row is not None and row["state"] != new_state:
-                    raise IllegalTransitionError(row["state"], new_state, slug)
-                return False
-
-            placeholders = ", ".join("?" * len(allowed_from))
-            cur = conn.execute(
-                f"UPDATE tasks SET state = ? WHERE slug = ? AND state IN ({placeholders})",
-                [new_state, slug, *allowed_from],
-            )
-
-            if cur.rowcount == 0:
-                row = conn.execute(
-                    "SELECT state FROM tasks WHERE slug = ?",
-                    (slug,),
-                ).fetchone()
-                if row is not None and row["state"] != new_state:
-                    raise IllegalTransitionError(row["state"], new_state, slug)
-                return False
+            allowed_from = _compute_allowed_sources(new_state)
+            _try_non_force_update(conn, slug, new_state, allowed_from)
 
         conn.commit()
         return True

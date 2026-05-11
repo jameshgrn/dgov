@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 
 @dataclass
@@ -33,6 +33,11 @@ class _ToolAccumulator:
         if isinstance(role, str) and role:
             self.roles.add(role)
 
+        self._add_result_status(content)
+        self._add_result_size(content)
+        self._add_result_duration(content)
+
+    def _add_result_status(self, content: dict[str, Any]) -> None:
         status = content.get("status")
         if status == "failed":
             self.failures += 1
@@ -44,10 +49,13 @@ class _ToolAccumulator:
         elif status == "success":
             self.successes += 1
 
+    def _add_result_size(self, content: dict[str, Any]) -> None:
         if content.get("result_clipped") is True:
             self.clipped_results += 1
         self.total_result_chars += _int_value(content.get("result_chars"))
         self.total_raw_result_chars += _int_value(content.get("raw_result_chars"))
+
+    def _add_result_duration(self, content: dict[str, Any]) -> None:
         duration_ms = _float_value(content.get("duration_ms"))
         if duration_ms is not None:
             self.total_duration_ms += duration_ms
@@ -173,21 +181,10 @@ def summarize_tool_events(
 ) -> ToolAuditSummary:
     accumulators: dict[str, _ToolAccumulator] = {}
     for event in events:
-        if event.get("event") != "worker_log":
+        tool_event = _tool_event(event, plan_name=plan_name, role=role)
+        if tool_event is None:
             continue
-        if plan_name is not None and event.get("plan_name") != plan_name:
-            continue
-        log_type = event.get("log_type")
-        if log_type not in ("call", "result"):
-            continue
-        content = event.get("content")
-        if not isinstance(content, dict):
-            continue
-        if role is not None and content.get("role") != role:
-            continue
-        tool = content.get("tool")
-        if not isinstance(tool, str) or not tool:
-            continue
+        log_type, tool, content = tool_event
 
         accumulator = accumulators.setdefault(tool, _ToolAccumulator(tool=tool))
         if log_type == "call":
@@ -202,6 +199,38 @@ def summarize_tool_events(
         )
     )
     return ToolAuditSummary(rows=rows, plan_name=plan_name, role=role)
+
+
+def _tool_event(
+    event: dict[str, Any],
+    *,
+    plan_name: str | None,
+    role: str | None,
+) -> tuple[str, str, dict[str, Any]] | None:
+    if event.get("event") != "worker_log":
+        return None
+    if plan_name is not None and event.get("plan_name") != plan_name:
+        return None
+    log_type = event.get("log_type")
+    if log_type not in ("call", "result"):
+        return None
+    content = _tool_event_content(event, role)
+    if content is None:
+        return None
+    tool = content.get("tool")
+    if not isinstance(tool, str) or not tool:
+        return None
+    return log_type, tool, content
+
+
+def _tool_event_content(event: dict[str, Any], role: str | None) -> dict[str, Any] | None:
+    content = event.get("content")
+    if not isinstance(content, dict):
+        return None
+    content = cast("dict[str, Any]", content)
+    if role is not None and content.get("role") != role:
+        return None
+    return content
 
 
 def _int_value(value: object) -> int:

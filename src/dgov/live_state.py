@@ -34,43 +34,45 @@ TERMINAL_STATES = frozenset({
     "skipped",
 })
 
+_EVENT_STATE_MAP = {
+    "dag_task_dispatched": "active",
+    "task_done": "done",
+    "task_abandoned": "abandoned",
+    "task_timed_out": "timed_out",
+    "review_pass": "reviewed_pass",
+    "review_fail": "reviewed_fail",
+    "merge_completed": "merged",
+    "task_merge_failed": "failed",
+    "task_closed": "closed",
+}
+
+_GOVERNOR_RESUME_STATE_MAP = {
+    "retry": "pending",
+    "skip": "skipped",
+    "fail": "failed",
+}
+
+
+def _task_key(event: dict) -> tuple[str, str] | None:
+    task_slug = event.get("task_slug")
+    if not task_slug:
+        return None
+    return str(event.get("plan_name") or ""), str(task_slug)
+
+
+def _event_id(event: dict) -> int:
+    return int(event.get("id", 0))
+
 
 def state_from_event(event: dict) -> str | None:
     """Map a lifecycle event to the task state it establishes."""
     event_name = event.get("event")
-    if event_name == "dag_task_dispatched":
-        return "active"
-    if event_name == "task_done":
-        return "done"
-    if event_name == "task_abandoned":
-        return "abandoned"
-    if event_name == "task_timed_out":
-        return "timed_out"
     if event_name == "task_failed":
         error = str(event.get("error", "")).lower()
-        if "timeout" in error:
-            return "timed_out"
-        return "failed"
-    if event_name == "review_pass":
-        return "reviewed_pass"
-    if event_name == "review_fail":
-        return "reviewed_fail"
-    if event_name == "merge_completed":
-        return "merged"
-    if event_name == "task_merge_failed":
-        return "failed"
-    if event_name == "task_closed":
-        return "closed"
+        return "timed_out" if "timeout" in error else "failed"
     if event_name == "dag_task_governor_resumed":
-        action = event.get("action")
-        if action == "retry":
-            return "pending"
-        if action == "skip":
-            return "skipped"
-        if action == "fail":
-            return "failed"
-    # Settlement phase events don't directly change state but are tracked separately
-    return None
+        return _GOVERNOR_RESUME_STATE_MAP.get(str(event.get("action") or ""))
+    return _EVENT_STATE_MAP.get(str(event_name))
 
 
 def phase_from_event(event: dict) -> str | None:
@@ -97,7 +99,7 @@ def latest_run_start_ids(events: list[dict]) -> dict[str, int]:
         plan_name = event.get("plan_name")
         if not plan_name:
             continue
-        latest[str(plan_name)] = max(latest.get(str(plan_name), 0), int(event.get("id", 0)))
+        latest[str(plan_name)] = max(latest.get(str(plan_name), 0), _event_id(event))
     return latest
 
 
@@ -110,8 +112,63 @@ def latest_run_completed_ids(events: list[dict]) -> dict[str, int]:
         plan_name = event.get("plan_name")
         if not plan_name:
             continue
-        latest[str(plan_name)] = max(latest.get(str(plan_name), 0), int(event.get("id", 0)))
+        latest[str(plan_name)] = max(latest.get(str(plan_name), 0), _event_id(event))
     return latest
+
+
+def _event_is_in_latest_run_window(
+    event: dict,
+    *,
+    latest_run_ids: dict[str, int],
+    latest_completed_ids: dict[str, int],
+) -> bool:
+    plan_name = str(event.get("plan_name") or "")
+    latest_run_id = latest_run_ids.get(plan_name, 0)
+    if _event_id(event) <= latest_run_id:
+        return False
+    return latest_completed_ids.get(plan_name, 0) <= latest_run_id
+
+
+def _record_task_state(
+    task_statuses: dict[tuple[str, str], dict[str, str]],
+    task_phases: dict[tuple[str, str], str],
+    key: tuple[str, str],
+    state: str,
+) -> None:
+    plan_name, task_slug = key
+    task_statuses[key] = {
+        "slug": task_slug,
+        "state": state,
+        "plan_name": plan_name,
+    }
+    if state in TERMINAL_STATES:
+        task_phases.pop(key, None)
+
+
+def _record_task_phase(
+    task_phases: dict[tuple[str, str], str],
+    key: tuple[str, str],
+    event: dict,
+) -> None:
+    phase = phase_from_event(event)
+    if phase is not None:
+        task_phases[key] = phase
+    elif event.get("event") == "settlement_phase_completed":
+        task_phases.pop(key, None)
+
+
+def _apply_task_phases(
+    task_statuses: dict[tuple[str, str], dict[str, str]],
+    task_phases: dict[tuple[str, str], str],
+) -> None:
+    for key, phase in task_phases.items():
+        if key not in task_statuses:
+            continue
+        if phase.startswith("settling:"):
+            task_statuses[key]["state"] = "settling"
+            task_statuses[key]["phase"] = phase.split(":", 1)[1]
+        else:
+            task_statuses[key]["phase"] = phase
 
 
 def tasks_from_events(project_root: str, *, latest_run_only: bool) -> list[dict[str, str]]:
@@ -130,47 +187,23 @@ def tasks_from_events(project_root: str, *, latest_run_only: bool) -> list[dict[
     task_phases: dict[tuple[str, str], str] = {}
 
     for event in events:
-        task_slug = event.get("task_slug")
-        if not task_slug:
+        key = _task_key(event)
+        if key is None:
             continue
-        plan_name = str(event.get("plan_name") or "")
-        if latest_run_only:
-            latest_run_id = latest_run_ids.get(plan_name, 0)
-            if int(event.get("id", 0)) <= latest_run_id:
-                continue
-            if latest_completed_ids.get(plan_name, 0) > latest_run_id:
-                continue
+        if latest_run_only and not _event_is_in_latest_run_window(
+            event,
+            latest_run_ids=latest_run_ids,
+            latest_completed_ids=latest_completed_ids,
+        ):
+            continue
 
-        # Track state transitions
         state = state_from_event(event)
         if state is not None:
-            task_statuses[(plan_name, str(task_slug))] = {
-                "slug": str(task_slug),
-                "state": state,
-                "plan_name": plan_name,
-            }
-            # Clear phase when reaching terminal state
-            if state in TERMINAL_STATES:
-                task_phases.pop((plan_name, str(task_slug)), None)
+            _record_task_state(task_statuses, task_phases, key, state)
 
-        # Track settlement phases
-        phase = phase_from_event(event)
-        if phase is not None:
-            task_phases[(plan_name, str(task_slug))] = phase
-        elif event.get("event") == "settlement_phase_completed":
-            # Clear phase when settlement phase completes
-            # The final state will be set by merge_completed/task_merge_failed
-            task_phases.pop((plan_name, str(task_slug)), None)
+        _record_task_phase(task_phases, key, event)
 
-    # Merge phase info into task statuses
-    for key, phase in task_phases.items():
-        if key in task_statuses:
-            # If task has an open settlement phase, mark it as settling
-            if phase.startswith("settling:"):
-                task_statuses[key]["state"] = "settling"
-                task_statuses[key]["phase"] = phase.split(":", 1)[1]
-            else:
-                task_statuses[key]["phase"] = phase
+    _apply_task_phases(task_statuses, task_phases)
 
     return sorted(
         task_statuses.values(),

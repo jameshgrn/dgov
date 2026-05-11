@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 import tomllib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from difflib import get_close_matches
 from pathlib import Path
@@ -60,6 +60,44 @@ class FlatPlan:
     source_mtime_max: float
 
 
+def _load_root_meta(root_file: Path) -> RootMeta:
+    raw = tomllib.loads(root_file.read_text())
+    plan_section = raw.get("plan")
+    if not plan_section:
+        raise ValueError(f"_root.toml missing [plan] section: {root_file}")
+
+    name = plan_section.get("name")
+    if not name:
+        raise ValueError(f"_root.toml [plan] missing 'name': {root_file}")
+
+    sections = plan_section.get("sections", [])
+    if not isinstance(sections, list):
+        raise ValueError(f"_root.toml [plan].sections must be a list: {root_file}")
+    if not all(isinstance(s, str) for s in sections):
+        raise ValueError(f"_root.toml [plan].sections must contain only strings: {root_file}")
+
+    return RootMeta(
+        name=name,
+        summary=plan_section.get("summary", ""),
+        sections=tuple(sections),
+    )
+
+
+def _section_unit_files(plan_root: Path, section: str) -> tuple[Path, ...]:
+    section_dir = plan_root / section
+    if not section_dir.is_dir():
+        raise ValueError(f"Declared section '{section}' has no directory at {section_dir}")
+    files = sorted(
+        p
+        for p in section_dir.iterdir()
+        if p.is_file()
+        and p.suffix == ".toml"
+        and not p.name.startswith(".")
+        and not p.name.startswith("_")
+    )
+    return tuple(files)
+
+
 def walk_tree(plan_root: Path) -> PlanTree:
     """Walk a plan tree rooted at plan_root.
 
@@ -75,40 +113,14 @@ def walk_tree(plan_root: Path) -> PlanTree:
     if not root_file.exists():
         raise FileNotFoundError(f"_root.toml not found in {plan_root}")
 
-    raw = tomllib.loads(root_file.read_text())
-    plan_section = raw.get("plan")
-    if not plan_section:
-        raise ValueError(f"_root.toml missing [plan] section: {root_file}")
-
-    name = plan_section.get("name")
-    if not name:
-        raise ValueError(f"_root.toml [plan] missing 'name': {root_file}")
-    summary = plan_section.get("summary", "")
-    sections = plan_section.get("sections", [])
-
-    if not isinstance(sections, list):
-        raise ValueError(f"_root.toml [plan].sections must be a list: {root_file}")
-    if not all(isinstance(s, str) for s in sections):
-        raise ValueError(f"_root.toml [plan].sections must contain only strings: {root_file}")
-
+    root_meta = _load_root_meta(root_file)
     section_files: dict[str, tuple[Path, ...]] = {}
-    for section in sections:
-        section_dir = plan_root / section
-        if not section_dir.is_dir():
-            raise ValueError(f"Declared section '{section}' has no directory at {section_dir}")
-        files = sorted(
-            p
-            for p in section_dir.iterdir()
-            if p.is_file()
-            and p.suffix == ".toml"
-            and not p.name.startswith(".")
-            and not p.name.startswith("_")
-        )
-        section_files[section] = tuple(files)
+    for section in root_meta.sections:
+        section_files[section] = _section_unit_files(plan_root, section)
 
     return PlanTree(
         plan_root=plan_root,
-        root_meta=RootMeta(name=name, summary=summary, sections=tuple(sections)),
+        root_meta=root_meta,
         section_files=section_files,
     )
 
@@ -298,6 +310,16 @@ class ValidationReport:
     unreachable: tuple[str, ...]
 
 
+@dataclass
+class _CycleSearchState:
+    index_counter: int = 0
+    indices: dict[str, int] = field(default_factory=dict)
+    lowlinks: dict[str, int] = field(default_factory=dict)
+    stack: list[str] = field(default_factory=list)
+    on_stack: set[str] = field(default_factory=set)
+    components: list[tuple[str, ...]] = field(default_factory=list)
+
+
 def validate(plan: FlatPlan) -> ValidationReport:
     """Run structural DAG checks on a resolved plan: cycles + unreachability.
 
@@ -313,43 +335,66 @@ def validate(plan: FlatPlan) -> ValidationReport:
 
 def _find_cycles(units: dict[str, PlanUnit]) -> tuple[tuple[str, ...], ...]:
     """Return every non-trivial SCC as a sorted fq_id tuple (Tarjan's)."""
-    index_counter = 0
-    indices: dict[str, int] = {}
-    lowlinks: dict[str, int] = {}
-    stack: list[str] = []
-    on_stack: set[str] = set()
-    components: list[tuple[str, ...]] = []
-
-    def strongconnect(node: str) -> None:
-        nonlocal index_counter
-        indices[node] = index_counter
-        lowlinks[node] = index_counter
-        index_counter += 1
-        stack.append(node)
-        on_stack.add(node)
-        for dep in units[node].depends_on:
-            if dep not in units:
-                continue
-            if dep not in indices:
-                strongconnect(dep)
-                lowlinks[node] = min(lowlinks[node], lowlinks[dep])
-            elif dep in on_stack:
-                lowlinks[node] = min(lowlinks[node], indices[dep])
-        if lowlinks[node] == indices[node]:
-            scc: list[str] = []
-            while True:
-                w = stack.pop()
-                on_stack.discard(w)
-                scc.append(w)
-                if w == node:
-                    break
-            if len(scc) > 1 or (len(scc) == 1 and scc[0] in units[scc[0]].depends_on):
-                components.append(tuple(sorted(scc)))
-
+    state = _CycleSearchState()
     for node in sorted(units):
-        if node not in indices:
-            strongconnect(node)
-    return tuple(sorted(components))
+        if node not in state.indices:
+            _connect_cycle_node(units, state, node)
+    return tuple(sorted(state.components))
+
+
+def _connect_cycle_node(units: dict[str, PlanUnit], state: _CycleSearchState, node: str) -> None:
+    _push_cycle_node(state, node)
+    for dep in units[node].depends_on:
+        _visit_cycle_dependency(units, state, node, dep)
+    if state.lowlinks[node] == state.indices[node]:
+        _record_cycle_component(units, state, node)
+
+
+def _push_cycle_node(state: _CycleSearchState, node: str) -> None:
+    state.indices[node] = state.index_counter
+    state.lowlinks[node] = state.index_counter
+    state.index_counter += 1
+    state.stack.append(node)
+    state.on_stack.add(node)
+
+
+def _visit_cycle_dependency(
+    units: dict[str, PlanUnit],
+    state: _CycleSearchState,
+    node: str,
+    dep: str,
+) -> None:
+    if dep not in units:
+        return
+    if dep not in state.indices:
+        _connect_cycle_node(units, state, dep)
+        state.lowlinks[node] = min(state.lowlinks[node], state.lowlinks[dep])
+    elif dep in state.on_stack:
+        state.lowlinks[node] = min(state.lowlinks[node], state.indices[dep])
+
+
+def _record_cycle_component(
+    units: dict[str, PlanUnit],
+    state: _CycleSearchState,
+    node: str,
+) -> None:
+    component = _pop_cycle_component(state, node)
+    if _is_cycle_component(units, component):
+        state.components.append(tuple(sorted(component)))
+
+
+def _pop_cycle_component(state: _CycleSearchState, node: str) -> list[str]:
+    component: list[str] = []
+    while True:
+        item = state.stack.pop()
+        state.on_stack.discard(item)
+        component.append(item)
+        if item == node:
+            return component
+
+
+def _is_cycle_component(units: dict[str, PlanUnit], component: list[str]) -> bool:
+    return len(component) > 1 or component[0] in units[component[0]].depends_on
 
 
 def _find_unreachable(units: dict[str, PlanUnit]) -> tuple[str, ...]:

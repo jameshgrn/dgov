@@ -85,6 +85,101 @@ def _lifecycle(
     return base
 
 
+def _event_reader(events: list[dict]):
+    def _fake_read_events(session_root, **kwargs):
+        plan_name = kwargs.get("plan_name")
+        task_slug = kwargs.get("task_slug")
+        pane = kwargs.get("slug")
+        after_id = kwargs.get("after_id", 0)
+        filtered = _filter_events(events, plan_name=plan_name, task_slug=task_slug, pane=pane)
+        return [ev for ev in filtered if ev.get("id", 0) > after_id]
+
+    return _fake_read_events
+
+
+def _filter_events(
+    events: list[dict],
+    *,
+    plan_name: str | None,
+    task_slug: str | None,
+    pane: str | None,
+) -> list[dict]:
+    filtered = events
+    if plan_name is not None:
+        filtered = [ev for ev in filtered if ev.get("plan_name") == plan_name]
+    if task_slug is not None:
+        filtered = [ev for ev in filtered if ev.get("task_slug") == task_slug]
+    if pane is not None:
+        filtered = [ev for ev in filtered if ev.get("pane") == pane]
+    return filtered
+
+
+def _same_slug_plan_events() -> list[dict]:
+    return [
+        _lifecycle(100, "run_start", "_", "p"),
+        _lifecycle(101, "dag_task_dispatched", "tasks/main.a", "p", pane="pane-p"),
+        _worker_log(
+            102, "tasks/main.a", "thought", "CURRENT thought", plan_name="p", pane="pane-p"
+        ),
+        _worker_log(103, "tasks/main.a", "done", "CURRENT summary", plan_name="p", pane="pane-p"),
+        _lifecycle(
+            104, "merge_completed", "tasks/main.a", "p", merge_sha="abc1234", pane="pane-p"
+        ),
+        _worker_log(
+            105,
+            "tasks/main.a",
+            "thought",
+            "OTHER thought",
+            plan_name="other",
+            pane="pane-other",
+        ),
+        _worker_log(
+            106,
+            "tasks/main.a",
+            "call",
+            {"tool": "edit_file"},
+            plan_name="other",
+            pane="pane-other",
+        ),
+    ]
+
+
+def _prior_run_events(unit_id: str = "tasks/main.a", plan_name: str = "p") -> list[dict]:
+    """Build prior-run events (run_start through failed merge) for scoping tests."""
+    return [
+        _lifecycle(1, "run_start", "_", plan_name),
+        _worker_log(2, unit_id, "thought", "PRIOR thought"),
+        _worker_log(3, unit_id, "call", {"tool": "edit_file"}),
+        _lifecycle(4, "review_fail", unit_id, plan_name, verdict="empty_diff", error=""),
+        _lifecycle(5, "task_merge_failed", unit_id, plan_name),
+    ]
+
+
+def _current_run_events(unit_id: str = "tasks/main.a", plan_name: str = "p") -> list[dict]:
+    """Build current-run events (run_start through successful merge) for scoping tests."""
+    return [
+        _lifecycle(100, "run_start", "_", plan_name),
+        _lifecycle(101, "dag_task_dispatched", unit_id, plan_name),
+        _worker_log(102, unit_id, "thought", "CURRENT thought"),
+        _worker_log(103, unit_id, "call", {"tool": "edit_file"}),
+        _worker_log(104, unit_id, "done", "CURRENT summary"),
+        _lifecycle(105, "merge_completed", unit_id, plan_name, merge_sha="abc1234"),
+    ]
+
+
+def _assert_review_scoped_to_current_run(review: PlanReview) -> None:
+    """Assert that a loaded PlanReview contains only current-run activity."""
+    assert isinstance(review, PlanReview)
+    assert review.plan_name == "p"
+    assert len(review.units) == 1
+    unit = review.units[0]
+    assert unit.status == "deployed"
+    # Only CURRENT-run thoughts survive the run_start scoping
+    assert "CURRENT thought" in unit.thoughts
+    assert "PRIOR thought" not in unit.thoughts
+    assert unit.done_summary == "CURRENT summary"
+
+
 def _make_compiled(tmp_path: Path, name: str, tasks: dict[str, dict]) -> Path:
     """Write a minimal _compiled.toml into a plan directory."""
     plan_dir = tmp_path / ".dgov" / "plans" / name
@@ -716,41 +811,13 @@ class TestLoadReview:
             tasks={"tasks/main.a": {"summary": "do a"}},
         )
 
-        # Two runs: prior run produced events 1-5, current run starts at 100.
-        prior_run_events = [
-            _lifecycle(1, "run_start", "_", "p"),
-            _worker_log(2, "tasks/main.a", "thought", "PRIOR thought"),
-            _worker_log(3, "tasks/main.a", "call", {"tool": "edit_file"}),
-            _lifecycle(4, "review_fail", "tasks/main.a", "p", verdict="empty_diff", error=""),
-            _lifecycle(5, "task_merge_failed", "tasks/main.a", "p"),
-        ]
-        current_run_events = [
-            _lifecycle(100, "run_start", "_", "p"),
-            _lifecycle(101, "dag_task_dispatched", "tasks/main.a", "p"),
-            _worker_log(102, "tasks/main.a", "thought", "CURRENT thought"),
-            _worker_log(103, "tasks/main.a", "call", {"tool": "edit_file"}),
-            _worker_log(104, "tasks/main.a", "done", "CURRENT summary"),
-            _lifecycle(105, "merge_completed", "tasks/main.a", "p", merge_sha="abc1234"),
-        ]
-        all_events = prior_run_events + current_run_events
-
-        def _fake_read_events(session_root, **kwargs):
-            plan_name = kwargs.get("plan_name")
-            task_slug = kwargs.get("task_slug")
-            after_id = kwargs.get("after_id", 0)
-            filtered = all_events
-            if plan_name is not None:
-                filtered = [ev for ev in filtered if ev.get("plan_name") == plan_name]
-            if task_slug is not None:
-                filtered = [ev for ev in filtered if ev.get("task_slug") == task_slug]
-            return [ev for ev in filtered if ev.get("id", 0) > after_id]
-
+        all_events = _prior_run_events() + _current_run_events()
         deploy = _FakeDeploy(
             plan="p", unit="tasks/main.a", sha="abc1234", ts="2026-04-10T12:05:00Z"
         )
 
         with (
-            patch("dgov.plan_review.read_events", side_effect=_fake_read_events),
+            patch("dgov.plan_review.read_events", side_effect=_event_reader(all_events)),
             patch("dgov.plan_review.read_deploy_log", return_value=[deploy]),
             patch("dgov.plan_review._git_show_message", return_value="feat: did a"),
             patch("dgov.plan_review._git_show_stat", return_value=None),
@@ -761,15 +828,7 @@ class TestLoadReview:
                 iteration_budget=30,
             )
 
-        assert isinstance(review, PlanReview)
-        assert review.plan_name == "p"
-        assert len(review.units) == 1
-        unit = review.units[0]
-        assert unit.status == "deployed"
-        # Only CURRENT-run thoughts survive the run_start scoping
-        assert "CURRENT thought" in unit.thoughts
-        assert "PRIOR thought" not in unit.thoughts
-        assert unit.done_summary == "CURRENT summary"
+        _assert_review_scoped_to_current_run(review)
 
     def test_only_filters_to_single_unit(self, tmp_path: Path):
         compiled = _make_compiled(
@@ -801,56 +860,14 @@ class TestLoadReview:
             tasks={"tasks/main.a": {"summary": "do a"}},
         )
 
-        all_events = [
-            _lifecycle(100, "run_start", "_", "p"),
-            _lifecycle(101, "dag_task_dispatched", "tasks/main.a", "p", pane="pane-p"),
-            _worker_log(
-                102, "tasks/main.a", "thought", "CURRENT thought", plan_name="p", pane="pane-p"
-            ),
-            _worker_log(
-                103, "tasks/main.a", "done", "CURRENT summary", plan_name="p", pane="pane-p"
-            ),
-            _lifecycle(
-                104, "merge_completed", "tasks/main.a", "p", merge_sha="abc1234", pane="pane-p"
-            ),
-            _worker_log(
-                105,
-                "tasks/main.a",
-                "thought",
-                "OTHER thought",
-                plan_name="other",
-                pane="pane-other",
-            ),
-            _worker_log(
-                106,
-                "tasks/main.a",
-                "call",
-                {"tool": "edit_file"},
-                plan_name="other",
-                pane="pane-other",
-            ),
-        ]
-
-        def _fake_read_events(session_root, **kwargs):
-            plan_name = kwargs.get("plan_name")
-            task_slug = kwargs.get("task_slug")
-            pane = kwargs.get("slug")
-            after_id = kwargs.get("after_id", 0)
-            filtered = all_events
-            if plan_name is not None:
-                filtered = [ev for ev in filtered if ev.get("plan_name") == plan_name]
-            if task_slug is not None:
-                filtered = [ev for ev in filtered if ev.get("task_slug") == task_slug]
-            if pane is not None:
-                filtered = [ev for ev in filtered if ev.get("pane") == pane]
-            return [ev for ev in filtered if ev.get("id", 0) > after_id]
-
         deploy = _FakeDeploy(
             plan="p", unit="tasks/main.a", sha="abc1234", ts="2026-04-10T12:05:00Z"
         )
 
         with (
-            patch("dgov.plan_review.read_events", side_effect=_fake_read_events),
+            patch(
+                "dgov.plan_review.read_events", side_effect=_event_reader(_same_slug_plan_events())
+            ),
             patch("dgov.plan_review.read_deploy_log", return_value=[deploy]),
             patch("dgov.plan_review._git_show_message", return_value="feat: did a"),
             patch("dgov.plan_review._git_show_stat", return_value=None),

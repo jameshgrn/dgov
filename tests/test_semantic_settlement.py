@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+
+if TYPE_CHECKING:
+    from unittest.mock import AsyncMock
+
+    from dgov.dag_parser import DagTaskSpec
+    from dgov.runner import EventDagRunner
 
 from dgov.semantic_settlement import (
     DuplicateDefinition,
@@ -26,6 +32,7 @@ from dgov.semantic_settlement import (
     emit_integration_overlap_detected,
     emit_integration_risk_scored,
     emit_semantic_gate_rejected,
+    evidence_payload,
     parse_integration_candidate_verdict,
     parse_integration_risk_record,
     parse_semantic_gate_verdict,
@@ -71,6 +78,59 @@ def _commit_all(repo: Path, message: str) -> str:
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", message)
     return _git(repo, "rev-parse", "HEAD")
+
+
+# Fixtures for class-method collision testing in semantic gate
+_PROCESSOR_CLASS_BASE = """
+class Processor:
+    def process(self):
+        return "base"
+"""
+
+_PROCESSOR_CLASS_TASK = """
+class Processor:
+    def process(self):
+        return "task version"
+"""
+
+_PROCESSOR_CLASS_TARGET = """
+class Processor:
+    def process(self):
+        return "target version"
+"""
+
+
+def _setup_collision_repo_with_class_method(
+    repo: Path,
+    module_name: str = "module.py",
+) -> tuple[str, str, str]:
+    """Set up a repo with class method collision between task and target.
+
+    Creates base commit with Processor class, then diverges:
+    - task-branch: modifies process() to return "task version"
+    - main (target): modifies process() to return "target version"
+
+    Returns (base_sha, task_head_sha, target_head_sha) for symbol comparison.
+    """
+    # Initialize repo
+    _init_git_repo(repo)
+
+    # Create initial file with base class
+    cls_file = repo / module_name
+    cls_file.write_text(_PROCESSOR_CLASS_BASE)
+    base_sha = _commit_all(repo, "initial")
+
+    # Create task branch with changes
+    _git(repo, "checkout", "-b", "task-branch")
+    cls_file.write_text(_PROCESSOR_CLASS_TASK)
+    task_sha = _commit_all(repo, "task change")
+
+    # Return to main and make target changes
+    _git(repo, "checkout", "main")
+    cls_file.write_text(_PROCESSOR_CLASS_TARGET)
+    target_sha = _commit_all(repo, "target change")
+
+    return base_sha, task_sha, target_sha
 
 
 class TestFailureClassEnum:
@@ -376,6 +436,27 @@ class TestEvidenceSerialization:
         """Deserializing unknown evidence kind raises ValueError."""
         with pytest.raises(ValueError, match="Unknown evidence kind: UnknownKind"):
             _deserialize_evidence({"_kind": "UnknownKind", "file_path": "test.py"})
+
+    def test_evidence_payload_serializes_tuple(self):
+        """Public payload helper serializes evidence tuples for subprocess output."""
+        payload = evidence_payload((
+            SymbolOverlap(
+                symbol_name="process",
+                symbol_type="function",
+                file_path="src/runner.py",
+            ),
+        ))
+
+        assert payload == [
+            {
+                "_kind": "SymbolOverlap",
+                "symbol_name": "process",
+                "symbol_type": "function",
+                "file_path": "src/runner.py",
+                "task_line_range": None,
+                "target_line_range": None,
+            }
+        ]
 
 
 class TestEventEmitters:
@@ -933,14 +1014,92 @@ class MyClass:
 class TestSettlementFlowSemanticRisk:
     """Tests for Phase 2 semantic risk computation before integration."""
 
-    def test_compute_semantic_risk_populates_symbol_overlap_evidence(self, tmp_path: Path):
-        from dgov.actions import MergeTask
-        from dgov.config import ProjectConfig
-        from dgov.settlement_flow import SettlementFlow
-        from dgov.types import Worktree
+    def _setup_test_runner(
+        self,
+        tmp_path: Path,
+        file_claims: tuple[str, ...],
+    ) -> tuple[DagTaskSpec, EventDagRunner]:
+        """Create a DagTaskSpec and EventDagRunner for semantic risk tests."""
+        from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
+        from dgov.runner import EventDagRunner
 
+        task = DagTaskSpec(
+            slug="task",
+            summary="Task",
+            prompt="Edit module",
+            commit_message="Edit module",
+            files=DagFileSpec(edit=file_claims),
+        )
+        runner = EventDagRunner(
+            DagDefinition(
+                name="test-plan",
+                dag_file="test.toml",
+                project_root=str(tmp_path),
+                session_root=str(tmp_path),
+                tasks={"task": task},
+            ),
+            session_root=str(tmp_path),
+            restart=True,
+        )
+        return task, runner
+
+    def _create_critical_risk_record(
+        self,
+        task_slug: str,
+        file_claims: tuple[str, ...],
+    ) -> IntegrationRiskRecord:
+        """Create an IntegrationRiskRecord with CRITICAL risk level."""
+        return IntegrationRiskRecord(
+            task_slug=task_slug,
+            target_head_sha="target",
+            task_base_sha="base",
+            task_commit_sha="task",
+            risk_level=RiskLevel.CRITICAL,
+            claimed_files=file_claims,
+            changed_files=file_claims,
+            python_overlap_detected=True,
+            overlap_evidence=(
+                SymbolOverlap(
+                    symbol_name="process",
+                    symbol_type="function",
+                    file_path=file_claims[0],
+                ),
+            ),
+        )
+
+    def _patch_settlement_flow(
+        self,
+        runner: EventDagRunner,
+        risk_record: IntegrationRiskRecord,
+    ) -> AsyncMock:
+        """Patch settlement flow methods and return the mocked create_integration_candidate."""
+        from unittest.mock import AsyncMock
+
+        create_candidate = AsyncMock()
+        sf = runner._settlement_flow
+        object.__setattr__(sf, "prepare_and_commit", AsyncMock(return_value=(None, True)))
+        object.__setattr__(
+            sf,
+            "run_isolated_validation",
+            AsyncMock(return_value=(None, risk_record)),
+        )
+        object.__setattr__(sf, "create_integration_candidate_with_emit", create_candidate)
+        return create_candidate
+
+    def _setup_symbol_overlap_repo(
+        self,
+        tmp_path: Path,
+        module_name: str = "module.py",
+    ) -> tuple[str, str, str]:
+        """Initialize git repo with base, task, and target commits for symbol overlap testing.
+
+        Returns (base_sha, task_sha, target_sha) where:
+        - base: initial file with base process() function
+        - task: branch with modified process() body
+        - target: main branch with modified process() signature
+        """
         _init_git_repo(tmp_path)
-        module = tmp_path / "module.py"
+        module = tmp_path / module_name
         module.write_text("""
 def process(value):
     return value
@@ -962,11 +1121,26 @@ def process(value, default):
 """)
         target_sha = _commit_all(tmp_path, "target change")
 
-        flow = SettlementFlow(
+        return base_sha, task_sha, target_sha
+
+    def _make_settlement_flow(self, tmp_path: Path):
+        """Create a SettlementFlow instance for testing."""
+        from dgov.config import ProjectConfig
+        from dgov.settlement_flow import SettlementFlow
+
+        return SettlementFlow(
             session_root=str(tmp_path),
             plan_name="test-plan",
             project_config=ProjectConfig(),
         )
+
+    def test_compute_semantic_risk_populates_symbol_overlap_evidence(self, tmp_path: Path):
+        from dgov.actions import MergeTask
+        from dgov.types import Worktree
+
+        base_sha, task_sha, target_sha = self._setup_symbol_overlap_repo(tmp_path)
+        flow = self._make_settlement_flow(tmp_path)
+
         record = flow.compute_semantic_risk(
             action=MergeTask("task", "pane", ("module.py",)),
             wt=Worktree(path=tmp_path, branch="task-branch", commit=base_sha),
@@ -1018,61 +1192,18 @@ def process(value, default):
 
     def test_critical_risk_short_circuits_candidate_creation(self, tmp_path: Path):
         import asyncio
-        from unittest.mock import AsyncMock
 
         from dgov.actions import MergeTask
-        from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
-        from dgov.runner import EventDagRunner
         from dgov.types import Worktree
 
-        task = DagTaskSpec(
-            slug="task",
-            summary="Task",
-            prompt="Edit module",
-            commit_message="Edit module",
-            files=DagFileSpec(edit=("module.py",)),
-        )
-        runner = EventDagRunner(
-            DagDefinition(
-                name="test-plan",
-                dag_file="test.toml",
-                project_root=str(tmp_path),
-                session_root=str(tmp_path),
-                tasks={"task": task},
-            ),
-            session_root=str(tmp_path),
-            restart=True,
-        )
-        risk_record = IntegrationRiskRecord(
-            task_slug="task",
-            target_head_sha="target",
-            task_base_sha="base",
-            task_commit_sha="task",
-            risk_level=RiskLevel.CRITICAL,
-            claimed_files=("module.py",),
-            changed_files=("module.py",),
-            python_overlap_detected=True,
-            overlap_evidence=(
-                SymbolOverlap(
-                    symbol_name="process",
-                    symbol_type="function",
-                    file_path="module.py",
-                ),
-            ),
-        )
-        create_candidate = AsyncMock()
-        sf = runner._settlement_flow
-        object.__setattr__(sf, "prepare_and_commit", AsyncMock(return_value=(None, True)))
-        object.__setattr__(
-            sf,
-            "run_isolated_validation",
-            AsyncMock(return_value=(None, risk_record)),
-        )
-        object.__setattr__(sf, "create_integration_candidate_with_emit", create_candidate)
+        file_claims = ("module.py",)
+        task, runner = self._setup_test_runner(tmp_path, file_claims)
+        risk_record = self._create_critical_risk_record(task.slug, file_claims)
+        create_candidate = self._patch_settlement_flow(runner, risk_record)
 
         async def _run_check() -> None:
             error, was_settlement = await runner._settle_and_merge(
-                MergeTask("task", "pane", ("module.py",)),
+                MergeTask("task", "pane", file_claims),
                 Worktree(path=tmp_path, branch="task-branch", commit="base"),
             )
             assert error is not None
@@ -1089,67 +1220,11 @@ class TestPythonSemanticGateIntegration:
 
     def test_semantic_gate_detects_class_method_collision(self, tmp_path: Path):
         """Gate detects when both sides modify the same class method."""
-        import subprocess
-
         from dgov.semantic_settlement import (
             _get_symbols_at_commit,
         )
 
-        # Initialize git repo
-        subprocess.run(
-            ["git", "init", "-b", "main"], cwd=tmp_path, check=True, capture_output=True
-        )
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, check=True)
-        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
-
-        # Create initial file with class
-        cls_file = tmp_path / "module.py"
-        cls_file.write_text("""
-class Processor:
-    def process(self):
-        return "base"
-""")
-        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True
-        )
-
-        # Get base commit
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
-        )
-        base_sha = result.stdout.strip()
-
-        # Create a branch with changes (task side)
-        subprocess.run(
-            ["git", "checkout", "-b", "task-branch"], cwd=tmp_path, check=True, capture_output=True
-        )
-        cls_file.write_text("""
-class Processor:
-    def process(self):
-        return "task version"
-""")
-        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", "task change"], cwd=tmp_path, check=True, capture_output=True
-        )
-
-        # Go back to main and make target changes
-        subprocess.run(["git", "checkout", "main"], cwd=tmp_path, check=True, capture_output=True)
-        cls_file.write_text("""
-class Processor:
-    def process(self):
-        return "target version"
-""")
-        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", "target change"], cwd=tmp_path, check=True, capture_output=True
-        )
-
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
-        )
-        target_sha = result.stdout.strip()
+        base_sha, _task_sha, target_sha = _setup_collision_repo_with_class_method(tmp_path)
 
         # Get symbols at both commits
         task_symbols = _get_symbols_at_commit(str(tmp_path), base_sha, ["module.py"])

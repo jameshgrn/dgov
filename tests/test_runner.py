@@ -7,6 +7,7 @@ Tests: the kernel<->runner contract under happy, failure, and concurrent scenari
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import subprocess
@@ -61,6 +62,43 @@ def _chain_dag() -> DagDefinition:
 
 def _parallel_dag() -> DagDefinition:
     return _dag({"a": _task("a"), "b": _task("b")})
+
+
+def _verification_scope_task() -> DagTaskSpec:
+    """Return a task with test files in create/touch/read for verify_test_targets testing."""
+    return DagTaskSpec(
+        slug="a",
+        summary="scope",
+        prompt="Do a",
+        commit_message="feat: a",
+        agent="test-agent",
+        files=DagFileSpec(
+            create=("tests/test_created.py",),
+            edit=("src/core.py",),
+            touch=("tests/test_touch.py",),
+            read=("tests/test_read.py", "README.md"),
+        ),
+    )
+
+
+def _capture_scope_factory(captured: dict[str, object]):
+    """Return an async headless worker that captures task_scope into the dict."""
+
+    async def _capture(
+        project_root,
+        plan_name,
+        task_slug,
+        pane_slug,
+        wt_path,
+        task,
+        task_scope,
+        on_exit,
+        on_event=None,
+    ):
+        captured["task_scope"] = task_scope
+        on_exit(task_slug, pane_slug, 0, "")
+
+    return _capture
 
 
 def _mock_create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") -> Worktree:
@@ -240,19 +278,14 @@ def _make_runner(dag: DagDefinition) -> EventDagRunner:
     return runner
 
 
-def _io_patches(
-    headless=_fake_worker_success,
-    review=_mock_review_pass,
-    validate=_mock_gate_pass,
-    create_wt=_mock_create_worktree,
-    merge_wt=None,
-    candidate=_mock_integration_candidate_pass,
-    semantic_gate=_mock_semantic_gate_pass,
-    deploy_records=None,
-):
-    """Return a context manager that patches all I/O boundaries."""
-    import contextlib
+def _make_deploy_log_callbacks(deploy_records=None):
+    """Return callbacks for deploy-log record/read and the mutable store.
 
+    Returns (append_deploy, read_deploys, recorded_deploys) where:
+    - append_deploy: appends a DeployRecord to the store
+    - read_deploys: returns records filtered by plan name
+    - recorded_deploys: the mutable list (copy of input if provided)
+    """
     from dgov.deploy_log import DeployRecord
 
     recorded_deploys: list[DeployRecord] = list(deploy_records or [])
@@ -276,30 +309,67 @@ def _io_patches(
     def _read_deploys(project_root: str, plan_name: str):
         return [record for record in recorded_deploys if record.plan == plan_name]
 
-    @contextlib.contextmanager
-    def _ctx():
-        with (
-            patch(_P_CREATE_WT, side_effect=create_wt),
-            patch(_P_MERGE_WT, side_effect=merge_wt, return_value="abc123merge"),
-            patch(_P_REMOVE_WT),
-            patch(_P_COMMIT_WT, return_value="deadbeef"),
-            patch(_P_AUTOFIX),
-            patch(_P_VALIDATE, side_effect=validate),
-            patch(_P_PREPARE_WT),
-            patch(_P_RECORD_ARTIFACT),
-            patch(_P_EMIT_EVENT),
-            patch(_P_DEPLOY_APPEND, side_effect=_append_deploy),
-            patch(_P_HEADLESS, side_effect=headless),
-            patch(_P_REVIEW, side_effect=review),
-            patch(_P_CREATE_CANDIDATE, side_effect=candidate),
-            patch(_P_REMOVE_CANDIDATE),
-            patch(_P_SEMANTIC_GATE, side_effect=semantic_gate),
-            patch(_P_COMPUTE_RISK, side_effect=_mock_compute_risk),
-            patch("dgov.deploy_log.read", side_effect=_read_deploys),
-        ):
-            yield
+    return _append_deploy, _read_deploys, recorded_deploys
 
-    return _ctx()
+
+@contextlib.contextmanager
+def _patch_io_context(
+    headless,
+    review,
+    validate,
+    create_wt,
+    merge_wt,
+    candidate,
+    semantic_gate,
+    append_deploy,
+    read_deploys,
+):
+    """Yield with all I/O boundaries patched."""
+    with (
+        patch(_P_CREATE_WT, side_effect=create_wt),
+        patch(_P_MERGE_WT, side_effect=merge_wt, return_value="abc123merge"),
+        patch(_P_REMOVE_WT),
+        patch(_P_COMMIT_WT, return_value="deadbeef"),
+        patch(_P_AUTOFIX),
+        patch(_P_VALIDATE, side_effect=validate),
+        patch(_P_PREPARE_WT),
+        patch(_P_RECORD_ARTIFACT),
+        patch(_P_EMIT_EVENT),
+        patch(_P_DEPLOY_APPEND, side_effect=append_deploy),
+        patch(_P_HEADLESS, side_effect=headless),
+        patch(_P_REVIEW, side_effect=review),
+        patch(_P_CREATE_CANDIDATE, side_effect=candidate),
+        patch(_P_REMOVE_CANDIDATE),
+        patch(_P_SEMANTIC_GATE, side_effect=semantic_gate),
+        patch(_P_COMPUTE_RISK, side_effect=_mock_compute_risk),
+        patch("dgov.deploy_log.read", side_effect=read_deploys),
+    ):
+        yield
+
+
+def _io_patches(
+    headless=_fake_worker_success,
+    review=_mock_review_pass,
+    validate=_mock_gate_pass,
+    create_wt=_mock_create_worktree,
+    merge_wt=None,
+    candidate=_mock_integration_candidate_pass,
+    semantic_gate=_mock_semantic_gate_pass,
+    deploy_records=None,
+):
+    """Return a context manager that patches all I/O boundaries."""
+    append_deploy, read_deploys, _ = _make_deploy_log_callbacks(deploy_records)
+    return _patch_io_context(
+        headless=headless,
+        review=review,
+        validate=validate,
+        create_wt=create_wt,
+        merge_wt=merge_wt,
+        candidate=candidate,
+        semantic_gate=semantic_gate,
+        append_deploy=append_deploy,
+        read_deploys=read_deploys,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -813,40 +883,47 @@ class TestCleanup:
         assert results["a"] == "merged"
 
 
+def _settlement_retry_task() -> DagTaskSpec:
+    """Return a task spec for settlement retry testing with test files."""
+    return DagTaskSpec(
+        slug="a",
+        summary="scope",
+        prompt="Do a",
+        commit_message="feat: a",
+        agent="test-agent",
+        files=DagFileSpec(
+            create=("src/new.py",),
+            read=("tests/test_a.py",),
+        ),
+    )
+
+
+def _capture_retry_scope_factory(captured: dict[str, object]):
+    """Return an async headless worker that captures task_scope into the dict for retry testing."""
+
+    async def _capture(
+        session_root,
+        plan_name,
+        task_slug,
+        pane_slug,
+        worktree,
+        retry_task,
+        task_scope,
+        on_exit,
+        on_event=None,
+    ):
+        captured["task_scope"] = task_scope
+
+    return _capture
+
+
 class TestVerificationScope:
     def test_dispatch_passes_verify_test_targets(self):
         captured: dict[str, object] = {}
-
-        async def _capture_scope(
-            project_root,
-            plan_name,
-            task_slug,
-            pane_slug,
-            wt_path,
-            task,
-            task_scope,
-            on_exit,
-            on_event=None,
-        ):
-            captured["task_scope"] = task_scope
-            on_exit(task_slug, pane_slug, 0, "")
-
-        task = DagTaskSpec(
-            slug="a",
-            summary="scope",
-            prompt="Do a",
-            commit_message="feat: a",
-            agent="test-agent",
-            files=DagFileSpec(
-                create=("tests/test_created.py",),
-                edit=("src/core.py",),
-                touch=("tests/test_touch.py",),
-                read=("tests/test_read.py", "README.md"),
-            ),
-        )
+        task = _verification_scope_task()
         dag = _dag({"a": task})
 
-        with _io_patches(headless=_capture_scope):
+        with _io_patches(headless=_capture_scope_factory(captured)):
             runner = _make_runner(dag)
             asyncio.run(runner._dispatch(MagicMock(task_slug="a")))
 
@@ -899,34 +976,11 @@ class TestVerificationScope:
         assert _test_failure_command("Lint failure:\nE501") is None
 
     def test_settlement_retry_requires_successful_tests_after_test_failure(self, tmp_path: Path):
-        task = DagTaskSpec(
-            slug="a",
-            summary="scope",
-            prompt="Do a",
-            commit_message="feat: a",
-            agent="test-agent",
-            files=DagFileSpec(
-                create=("src/new.py",),
-                read=("tests/test_a.py",),
-            ),
-        )
-        runner = _make_runner(_dag({"a": task}))
+        """Settlement retry sets required test verification when tests previously failed."""
+        runner = _make_runner(_dag({"a": _settlement_retry_task()}))
         captured: dict[str, object] = {}
 
-        async def _capture_retry(
-            session_root,
-            plan_name,
-            task_slug,
-            pane_slug,
-            worktree,
-            retry_task,
-            task_scope,
-            on_exit,
-            on_event=None,
-        ):
-            captured["task_scope"] = task_scope
-
-        with patch("dgov.runner.run_headless_worker", _capture_retry):
+        with patch("dgov.runner.run_headless_worker", _capture_retry_scope_factory(captured)):
             asyncio.run(
                 runner._settlement_retry(
                     MergeTask("a", "pane-a", ("src/new.py",)),
@@ -2001,7 +2055,10 @@ class TestSettlementPhaseBoundaries:
 
 
 def _task_with_fork(
-    slug: str, max_fork_depth: int = 1, depends_on: tuple[str, ...] = ()
+    slug: str,
+    max_fork_depth: int = 1,
+    depends_on: tuple[str, ...] = (),
+    self_review: bool = False,
 ) -> DagTaskSpec:
     return DagTaskSpec(
         slug=slug,
@@ -2012,7 +2069,38 @@ def _task_with_fork(
         depends_on=depends_on,
         files=DagFileSpec(create=(f"{slug}.py",)),
         max_fork_depth=max_fork_depth,
+        self_review=self_review,
     )
+
+
+def _fake_worker_exhaust_fork_review(call_count: dict):
+    """Factory for worker that exhausts, forks, and approves self-review."""
+
+    async def _worker(
+        project_root,
+        plan_name,
+        task_slug,
+        pane_slug,
+        wt_path,
+        task,
+        task_scope,
+        on_exit,
+        on_event=None,
+    ):
+        await asyncio.sleep(0.01)
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # First worker exhausts
+            on_exit(task_slug, pane_slug, 1, "Exceeded max iterations (50)")
+        elif "-self-review" in task_slug and on_event:
+            # Reviewer approves
+            on_event(task_slug, "done", '{"approved": true, "issues": []}')
+            on_exit(task_slug, pane_slug, 0, "")
+        else:
+            # Forked worker succeeds
+            on_exit(task_slug, pane_slug, 0, "")
+
+    return _worker
 
 
 async def _fake_diff(_self, _wt):
@@ -2180,44 +2268,9 @@ class TestContextFork:
     def test_fork_then_self_review_combined(self):
         """Task with both max_fork_depth=1 and self_review=True works end-to-end."""
         call_count = {"n": 0}
-
-        async def _exhaust_then_succeed_with_review(
-            project_root,
-            plan_name,
-            task_slug,
-            pane_slug,
-            wt_path,
-            task,
-            task_scope,
-            on_exit,
-            on_event=None,
-        ):
-            await asyncio.sleep(0.01)
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                # First worker exhausts
-                on_exit(task_slug, pane_slug, 1, "Exceeded max iterations (50)")
-            elif "-self-review" in task_slug and on_event:
-                # Reviewer approves
-                on_event(task_slug, "done", '{"approved": true, "issues": []}')
-                on_exit(task_slug, pane_slug, 0, "")
-            else:
-                # Forked worker succeeds
-                on_exit(task_slug, pane_slug, 0, "")
-
-        task = DagTaskSpec(
-            slug="a",
-            summary="Test task a",
-            prompt="Do a",
-            commit_message="feat: a",
-            agent="test-agent",
-            files=DagFileSpec(create=("a.py",)),
-            max_fork_depth=1,
-            self_review=True,
-        )
-        dag = _dag({"a": task})
+        dag = _dag({"a": _task_with_fork("a", max_fork_depth=1, self_review=True)})
         with (
-            _io_patches(headless=_exhaust_then_succeed_with_review),
+            _io_patches(headless=_fake_worker_exhaust_fork_review(call_count)),
             patch(_P_GET_DIFF, _fake_diff),
         ):
             runner = _make_runner(dag)
@@ -2513,16 +2566,16 @@ class TestAsyncErrorPaths:
         assert done_events[0].prompt_tokens == 1500
         assert done_events[0].completion_tokens == 500
 
-    @pytest.mark.unit
-    def test_token_usage_accumulates_across_forked_worker_exits(self):
-        """Runner token_usage includes the original and forked worker attempts."""
-        call_count = 0
-        emitted: list = []
+    def _fork_token_worker(self):
+        """Return a worker that fails then succeeds with token tracking.
 
-        def _capture_emit(session_root, event):
-            emitted.append(event)
+        Returns (worker_func, call_count) where:
+        - worker_func: async headless worker that fails on first call, succeeds on second
+        - call_count: mutable list with single int for tracking invocations
+        """
+        call_count = [0]
 
-        async def _worker_with_fork_tokens(
+        async def _worker(
             project_root,
             plan_name,
             task_slug,
@@ -2533,13 +2586,32 @@ class TestAsyncErrorPaths:
             on_exit,
             on_event=None,
         ):
-            nonlocal call_count
-            call_count += 1
+            call_count[0] += 1
             await asyncio.sleep(0.01)
-            if call_count == 1:
+            if call_count[0] == 1:
                 on_exit(task_slug, pane_slug, 1, "Exceeded max iterations (50)", 1000, 200)
                 return
             on_exit(task_slug, pane_slug, 0, "", 300, 50)
+
+        return _worker, call_count
+
+    def _assert_fork_token_results(self, results, runner, emitted, task_slug="a"):
+        """Assert merged results, runner token usage, and final task_done tokens."""
+        assert results[task_slug] == "merged"
+        assert runner.token_usage == {task_slug: (1300, 250)}
+        done_events = [e for e in emitted if getattr(e, "event_type", None) == "task_done"]
+        assert done_events[-1].prompt_tokens == 1300
+        assert done_events[-1].completion_tokens == 250
+
+    @pytest.mark.unit
+    def test_token_usage_accumulates_across_forked_worker_exits(self):
+        """Runner token_usage includes the original and forked worker attempts."""
+        emitted: list = []
+
+        def _capture_emit(session_root, event):
+            emitted.append(event)
+
+        worker, _call_count = self._fork_token_worker()
 
         task = DagTaskSpec(
             slug="a",
@@ -2552,18 +2624,14 @@ class TestAsyncErrorPaths:
         )
         dag = _dag({"a": task})
         with (
-            _io_patches(headless=_worker_with_fork_tokens),
+            _io_patches(headless=worker),
             patch(_P_GET_DIFF, return_value=""),
             patch(_P_EMIT_EVENT, _capture_emit),
         ):
             runner = _make_runner(dag)
             results = asyncio.run(runner.run())
 
-        assert results["a"] == "merged"
-        assert runner.token_usage == {"a": (1300, 250)}
-        done_events = [e for e in emitted if getattr(e, "event_type", None) == "task_done"]
-        assert done_events[-1].prompt_tokens == 1300
-        assert done_events[-1].completion_tokens == 250
+        self._assert_fork_token_results(results, runner, emitted)
 
     def test_concurrent_failures_both_reported(self):
         """When two parallel tasks both fail, both are reported as failed."""

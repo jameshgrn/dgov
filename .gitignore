@@ -11,6 +11,7 @@ _compiled.toml
 .venv/
 __pycache__/
 *.pyc
+.DS_Store
 *.db-shm
 *.db-wal
 config.toml

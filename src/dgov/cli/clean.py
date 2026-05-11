@@ -22,6 +22,40 @@ def _delete_dir(path: Path, dry_run: bool) -> bool:
     return True
 
 
+def _clean_child_dirs(path: Path, dry_run: bool) -> int:
+    deleted_count = 0
+    if not path.exists():
+        return deleted_count
+    for item in path.iterdir():
+        if not item.is_dir():
+            continue
+        try:
+            deleted_count += int(_delete_dir(item, dry_run))
+        except Exception as exc:
+            click.echo(f"Error deleting {item}: {exc}", err=True)
+    return deleted_count
+
+
+def _prune_orphan_worktrees(project_root: Path, dry_run: bool) -> None:
+    prune_counts = prune_orphans(str(project_root), dry_run=dry_run)
+    verb = "Would prune" if dry_run else "Pruned"
+    click.echo(
+        f"{verb} {prune_counts['worktrees']} orphan worktree(s) "
+        f"and {prune_counts['branches']} merged dgov/* branch(es)."
+    )
+
+
+def _runtime_fix_plan_archive(dgov_dir: Path) -> Path:
+    return dgov_dir / "runtime" / "fix-plans" / "archive"
+
+
+def _echo_clean_complete(dry_run: bool, deleted_count: int) -> None:
+    if dry_run:
+        click.echo("Dry run complete. Use without --dry-run to delete.")
+    else:
+        click.echo(f"Clean complete. Deleted {deleted_count} directories.")
+
+
 @cli.command(name="clean")
 @click.option("--dry-run", is_flag=True, help="Show what would be deleted without deleting")
 def clean_cmd(dry_run: bool) -> None:
@@ -41,40 +75,9 @@ def clean_cmd(dry_run: bool) -> None:
     """
     project_root = resolve_project_root()
     dgov_dir = project_root / ".dgov"
-    out_dir = dgov_dir / "out"
-    runtime_fix_plans_dir = dgov_dir / "runtime" / "fix-plans"
 
-    deleted_count = 0
+    deleted_count = _clean_child_dirs(dgov_dir / "out", dry_run)
+    _prune_orphan_worktrees(project_root, dry_run)
+    deleted_count += _clean_child_dirs(_runtime_fix_plan_archive(dgov_dir), dry_run)
 
-    # 1. Clean .dgov/out/ — delete all directories
-    if out_dir.exists():
-        for item in out_dir.iterdir():
-            if item.is_dir():
-                try:
-                    deleted_count += int(_delete_dir(item, dry_run))
-                except Exception as exc:
-                    click.echo(f"Error deleting {item}: {exc}", err=True)
-
-    # 2. Prune orphan worktrees + merged dgov/* branches (git-level, safe).
-    prune_counts = prune_orphans(str(project_root), dry_run=dry_run)
-    verb = "Would prune" if dry_run else "Pruned"
-    click.echo(
-        f"{verb} {prune_counts['worktrees']} orphan worktree(s) "
-        f"and {prune_counts['branches']} merged dgov/* branch(es)."
-    )
-
-    # 3. Clean resolved runtime fix-plan archives. Live runtime fix plans are preserved.
-    if runtime_fix_plans_dir.exists():
-        archive_dir = runtime_fix_plans_dir / "archive"
-        if archive_dir.exists():
-            for item in archive_dir.iterdir():
-                if item.is_dir():
-                    try:
-                        deleted_count += int(_delete_dir(item, dry_run))
-                    except Exception as exc:
-                        click.echo(f"Error deleting {item}: {exc}", err=True)
-
-    if dry_run:
-        click.echo("Dry run complete. Use without --dry-run to delete.")
-    else:
-        click.echo(f"Clean complete. Deleted {deleted_count} directories.")
+    _echo_clean_complete(dry_run, deleted_count)

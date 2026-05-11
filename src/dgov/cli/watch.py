@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -55,6 +56,21 @@ _PALETTE = [
     "bright_magenta",
     "bright_blue",
 ]
+_VERIFY_TOOLS = frozenset({
+    "run_tests",
+    "lint_check",
+    "lint_fix",
+    "format_file",
+    "type_check",
+    "check_syntax",
+})
+
+
+@dataclass
+class _WatchState:
+    active_plan_name: str | None
+    last_id: int
+    last_task: str = ""
 
 
 def _get_task_color(slug: str) -> str:
@@ -132,108 +148,127 @@ def _format_event(
 ) -> RenderableType | None:
     """Format a single event. Returns a Renderable or None to suppress."""
     task_slug = getattr(event, "task_slug", "")
-
-    # Handle WorkerLog separately
     if isinstance(event, WorkerLog):
         return _format_worker_log(event, ts, task_slug)
-
-    # Suppress review_pass — merged line is enough for happy path
     if isinstance(event, ReviewPass):
         return None
-
-    # Dispatch header
     if isinstance(event, EvtTaskDispatched):
-        agent = event.agent
-        # Resolve from project config mapping if available
-        if agents and agent in agents:
-            agent = agents[agent]
-        agent_short = agent.rsplit("/", 1)[-1] if agent else ""
-        return _make_row(ts, "⚙", "start", "bold blue", task_slug, f"agent: {agent_short}")
+        return _format_dispatch_event(event, ts, agents)
+    if isinstance(event, (TaskDone, TaskFailed)):
+        return _format_task_completion_event(event, ts, task_slug)
+    if isinstance(
+        event,
+        (ReviewFail, TaskMergeFailed, MergeCompleted, SettlementRetry, IterationFork),
+    ):
+        return _format_settlement_event(event, ts, task_slug)
+    if isinstance(
+        event,
+        (
+            SelfReviewPassed,
+            SelfReviewRejected,
+            SelfReviewAutoPassed,
+            SelfReviewFixStarted,
+            SelfReviewError,
+        ),
+    ):
+        return _format_self_review_event(event, ts, task_slug)
+    return _format_default_event(event, ts, task_slug)
 
-    # task_done - suppress lifecycle done without token metadata
+
+def _format_dispatch_event(
+    event: EvtTaskDispatched, ts: str, agents: dict[str, str] | None
+) -> RenderableType:
+    task_slug = event.task_slug
+    agent = event.agent
+    if agents and agent in agents:
+        agent = agents[agent]
+    agent_short = agent.rsplit("/", 1)[-1] if agent else ""
+    return _make_row(ts, "⚙", "start", "bold blue", task_slug, f"agent: {agent_short}")
+
+
+def _format_task_completion_event(
+    event: TaskDone | TaskFailed, ts: str, task_slug: str
+) -> RenderableType | None:
     if isinstance(event, TaskDone):
         token_summary = _format_token_summary(event)
         if token_summary is None:
             return None
         return _make_row(ts, "✓", "done", "green", task_slug, token_summary)
+    return _format_task_failed_event(event, ts, task_slug)
 
-    # task_failed
-    if isinstance(event, TaskFailed):
-        token_summary = _format_token_summary(event)
-        label = "FAILED"
-        error = event.error or ""
-        content: str | Text = error
-        full_width = bool(error)
-        if token_summary is not None:
-            if error:
-                content_text = Text(error)
-                content_text.append(f"  {token_summary.plain}", style="dim")
-                content = content_text
-            else:
-                content = token_summary
-                full_width = False
-        return _make_row(ts, "✖", label, "bold red", task_slug, content, full_width=full_width)
 
-    # review_fail
+def _format_task_failed_event(event: TaskFailed, ts: str, task_slug: str) -> RenderableType:
+    token_summary = _format_token_summary(event)
+    error = event.error or ""
+    content: str | Text = error
+    full_width = bool(error)
+    if token_summary is not None:
+        if error:
+            content_text = Text(error)
+            content_text.append(f"  {token_summary.plain}", style="dim")
+            content = content_text
+        else:
+            content = token_summary
+            full_width = False
+    return _make_row(ts, "✖", "FAILED", "bold red", task_slug, content, full_width=full_width)
+
+
+def _format_settlement_event(
+    event: ReviewFail | TaskMergeFailed | MergeCompleted | SettlementRetry | IterationFork,
+    ts: str,
+    task_slug: str,
+) -> RenderableType:
     if isinstance(event, ReviewFail):
         error = event.verdict or ""
         return _make_row(ts, "✖", "rev FAIL", "bold red", task_slug, error, full_width=True)
-
-    # task_merge_failed
     if isinstance(event, TaskMergeFailed):
         error = event.error or ""
         return _make_row(ts, "✖", "merge FAIL", "bold red", task_slug, error, full_width=True)
-
-    # Merged
     if isinstance(event, MergeCompleted):
         return _make_row(ts, "●", "merged", "bold green", task_slug, "")
-
-    # Settlement retry
     if isinstance(event, SettlementRetry):
         return _make_row(ts, "⟳", "retry", "bold yellow", task_slug, event.error, full_width=True)
+    depth = event.fork_depth
+    return _make_row(ts, "⑂", "fork", "bold yellow", task_slug, f"depth {depth}")
 
-    # Iteration fork
-    if isinstance(event, IterationFork):
-        depth = event.fork_depth
-        return _make_row(ts, "⑂", "fork", "bold yellow", task_slug, f"depth {depth}")
 
-    # Self-review events
+def _format_self_review_event(
+    event: SelfReviewPassed
+    | SelfReviewRejected
+    | SelfReviewAutoPassed
+    | SelfReviewFixStarted
+    | SelfReviewError,
+    ts: str,
+    task_slug: str,
+) -> RenderableType:
     if isinstance(event, SelfReviewPassed):
         return _make_row(ts, "✔", "self-rev ok", "green", task_slug, "")
-
     if isinstance(event, SelfReviewRejected):
         findings = event.findings or ""
         preview = findings[:120] + "…" if len(findings) > 120 else findings
         return _make_row(ts, "✖", "self-rev ✗", "bold yellow", task_slug, preview, full_width=True)
-
     if isinstance(event, SelfReviewAutoPassed):
         return _make_row(ts, "⟳", "self-rev auto", "yellow", task_slug, "auto-passed after fix")
-
     if isinstance(event, SelfReviewFixStarted):
         return _make_row(ts, "⟳", "self-rev fix", "yellow", task_slug, "relaunching worker")
+    error = event.error or ""
+    return _make_row(
+        ts,
+        "✖",
+        "self-rev err",
+        "bold red",
+        task_slug,
+        f"auto-passed: {error}",
+        full_width=True,
+    )
 
-    if isinstance(event, SelfReviewError):
-        error = event.error or ""
-        return _make_row(
-            ts,
-            "✖",
-            "self-rev err",
-            "bold red",
-            task_slug,
-            f"auto-passed: {error}",
-            full_width=True,
-        )
 
-    # TaskAbandoned - no special formatting, uses default label
+def _format_default_event(event: DgovEvent, ts: str, task_slug: str) -> RenderableType:
     if isinstance(event, TaskAbandoned):
         return _make_row(ts, " ", "task_abandoned", "dim", task_slug, "")
-
-    # UnknownEvent - fall through to default label rendering
     if isinstance(event, UnknownEvent):
         label = event.event_name or "unknown_event"
         return _make_row(ts, " ", label, "dim", task_slug, "")
-
-    # Everything else - use event_type as label
     label = getattr(event, "event_type", "unknown")
     return _make_row(ts, " ", label, "dim", task_slug, "")
 
@@ -242,58 +277,154 @@ def _format_worker_log(event: WorkerLog, ts: str, task_slug: str) -> RenderableT
     """Format worker_log events. Returns Renderable or None to suppress."""
     log_type = event.log_type
     content = event.content
-    verify_tools = frozenset({
-        "run_tests",
-        "lint_check",
-        "lint_fix",
-        "format_file",
-        "type_check",
-        "check_syntax",
-    })
-
     if log_type == "error":
         return _make_row(ts, "✖", "error", "bold red", task_slug, str(content), full_width=True)
     if log_type == "done":
         text = str(content) if content else ""
-        # Render summaries as Markdown for beautiful lists and bolding
         return _make_row(ts, "✔", "ok", "green", task_slug, Markdown(text), full_width=True)
     if log_type == "thought":
         text = str(content) if content else ""
         return _make_row(ts, "…", "thought", "dim", task_slug, text, content_dim=True)
     if log_type == "call":
-        if isinstance(content, dict):
-            tool = content.get("tool", "?")
-            args = content.get("args", {})
-            summary = ", ".join(f"{k}={repr(v)[:80]}" for k, v in args.items())
+        return _format_worker_call(ts, task_slug, content)
+    if log_type == "result":
+        return _format_worker_result(ts, task_slug, content)
+    return _make_row(ts, " ", log_type, "dim", task_slug, str(content), content_dim=True)
 
-            content_text = Text()
-            content_text.append(tool, style="bold yellow")
-            content_text.append("(", style="dim")
-            content_text.append(summary, style="dim")
-            content_text.append(")", style="dim")
-            return _make_row(ts, "○", "call", "blue", task_slug, content_text)
 
+def _format_worker_call(ts: str, task_slug: str, content) -> RenderableType:
+    if not isinstance(content, dict):
         content_text = Text(str(content))
         content_text.stylize("dim")
         return _make_row(ts, "○", "call", "blue", task_slug, content_text)
 
-    if log_type == "result":
-        if isinstance(content, dict) and content.get("status") == "success":
-            tool = content.get("tool", "?")
-            if tool in verify_tools:
-                content_text = Text()
-                content_text.append("tool: ", style="dim")
-                content_text.append(str(tool), style="bold green")
-                return _make_row(ts, "✔", "ok", "green", task_slug, content_text)
-        if isinstance(content, dict) and content.get("status") == "failed":
-            tool = content.get("tool", "?")
-            content_text = Text()
-            content_text.append("tool: ", style="dim")
-            content_text.append(tool, style="bold red")
-            return _make_row(ts, "✖", "fail", "red", task_slug, content_text)
-        return None
+    tool = content.get("tool", "?")
+    args = content.get("args", {})
+    summary = ", ".join(f"{k}={repr(v)[:80]}" for k, v in args.items())
+    content_text = Text()
+    content_text.append(tool, style="bold yellow")
+    content_text.append("(", style="dim")
+    content_text.append(summary, style="dim")
+    content_text.append(")", style="dim")
+    return _make_row(ts, "○", "call", "blue", task_slug, content_text)
 
-    return _make_row(ts, " ", log_type, "dim", task_slug, str(content), content_dim=True)
+
+def _format_worker_result(ts: str, task_slug: str, content) -> RenderableType | None:
+    if not isinstance(content, dict):
+        return None
+    status = content.get("status")
+    if status == "success":
+        return _format_successful_worker_result(ts, task_slug, content.get("tool", "?"))
+    if status == "failed":
+        return _format_failed_worker_result(ts, task_slug, content.get("tool", "?"))
+    return None
+
+
+def _format_successful_worker_result(ts: str, task_slug: str, tool) -> RenderableType | None:
+    if tool not in _VERIFY_TOOLS:
+        return None
+    content_text = Text()
+    content_text.append("tool: ", style="dim")
+    content_text.append(str(tool), style="bold green")
+    return _make_row(ts, "✔", "ok", "green", task_slug, content_text)
+
+
+def _format_failed_worker_result(ts: str, task_slug: str, tool) -> RenderableType:
+    content_text = Text()
+    content_text.append("tool: ", style="dim")
+    content_text.append(str(tool), style="bold red")
+    return _make_row(ts, "✖", "fail", "red", task_slug, content_text)
+
+
+def _create_row_table() -> Table:
+    """Create a grid table with fixed column widths for watch rows."""
+    table = Table.grid(padding=(0, 1))
+    table.add_column(width=9)  # TS
+    table.add_column(width=10)  # Symbol + Label
+    table.add_column(width=24)  # Slug
+    table.add_column(width=1)  # Separator
+    table.add_column()  # Content (flexible)
+    return table
+
+
+def _prepare_slug_and_color(slug: str) -> tuple[str, str]:
+    """Return cleaned slug and assigned color for the task."""
+    clean_slug = _clean_slug(slug)
+    slug_color = _get_task_color(slug)
+    return clean_slug, slug_color
+
+
+def _add_header_row(
+    table: Table,
+    ts: str,
+    symbol: str,
+    label: str,
+    label_style: str,
+    clean_slug: str,
+    slug_color: str,
+) -> None:
+    """Add header row with empty content column for full-width layout."""
+    table.add_row(
+        Text(ts, style="dim"),
+        Text(f"{symbol} {label}", style=label_style),
+        Text(clean_slug, style=f"bold {slug_color}"),
+        Text("│", style="dim"),
+        "",
+    )
+
+
+def _render_content(content: str | RenderableType, content_dim: bool) -> RenderableType:
+    """Convert content to renderable, applying dim style if requested."""
+    if isinstance(content, Text):
+        if content_dim:
+            content.stylize("dim")
+        return content
+    if isinstance(content, str):
+        c_style = "dim" if content_dim else ""
+        return Text(content, style=c_style)
+    return content
+
+
+def _make_full_width_row(
+    ts: str,
+    symbol: str,
+    label: str,
+    label_style: str,
+    clean_slug: str,
+    slug_color: str,
+    content: str | RenderableType,
+    content_dim: bool,
+) -> RenderableType:
+    """Build a full-width row with content on a second line."""
+    table = _create_row_table()
+    _add_header_row(table, ts, symbol, label, label_style, clean_slug, slug_color)
+
+    c_renderable = content if not isinstance(content, str) else Text(content)
+    if content_dim and isinstance(c_renderable, Text):
+        c_renderable.stylize("dim")
+
+    return Group(table, Padding(c_renderable, (0, 0, 1, 4)))
+
+
+def _make_normal_row(
+    ts: str,
+    symbol: str,
+    label: str,
+    label_style: str,
+    clean_slug: str,
+    slug_color: str,
+    content: RenderableType,
+) -> RenderableType:
+    """Build a normal row with all content in a single table row."""
+    table = _create_row_table()
+    table.add_row(
+        Text(ts, style="dim"),
+        Text(f"{symbol} {label}", style=label_style),
+        Text(clean_slug, style=slug_color),
+        Text("│", style="dim"),
+        content,
+    )
+    return table
 
 
 def _make_row(
@@ -307,51 +438,17 @@ def _make_row(
     full_width: bool = False,
 ) -> RenderableType:
     """Assemble a beautiful grid-aligned row. Optionally puts content on new line."""
-    table = Table.grid(padding=(0, 1))
-    table.add_column(width=9)  # TS
-    table.add_column(width=10)  # Symbol + Label
-    table.add_column(width=24)  # Slug
-    table.add_column(width=1)  # Separator
-    table.add_column()  # Content (flexible)
+    clean_slug, slug_color = _prepare_slug_and_color(slug)
 
-    clean_slug = _clean_slug(slug)
-    slug_color = _get_task_color(slug)
-
-    # If full_width, we print the content on a second line with a slight indent
     if full_width and content:
-        # Header row with empty content
-        table.add_row(
-            Text(ts, style="dim"),
-            Text(f"{symbol} {label}", style=label_style),
-            Text(clean_slug, style=f"bold {slug_color}"),
-            Text("│", style="dim"),
-            "",
+        return _make_full_width_row(
+            ts, symbol, label, label_style, clean_slug, slug_color, content, content_dim
         )
 
-        c_renderable = content if not isinstance(content, str) else Text(content)
-        if content_dim and isinstance(c_renderable, Text):
-            c_renderable.stylize("dim")
-
-        return Group(table, Padding(c_renderable, (0, 0, 1, 4)))
-
-    if isinstance(content, Text):
-        content_renderable = content
-        if content_dim:
-            content_renderable.stylize("dim")
-    elif isinstance(content, str):
-        c_style = "dim" if content_dim else ""
-        content_renderable = Text(content, style=c_style)
-    else:
-        content_renderable = content
-
-    table.add_row(
-        Text(ts, style="dim"),
-        Text(f"{symbol} {label}", style=label_style),
-        Text(clean_slug, style=slug_color),
-        Text("│", style="dim"),
-        content_renderable,
+    content_renderable = _render_content(content, content_dim)
+    return _make_normal_row(
+        ts, symbol, label, label_style, clean_slug, slug_color, content_renderable
     )
-    return table
 
 
 def _cmd_watch(
@@ -365,8 +462,33 @@ def _cmd_watch(
     console.print("dgov watch", style="bold cyan")
     config = load_project_config(project_root)
     agents = config.agents if config else {}
-    active_plan_name, last_id = _default_watch_state(project_root, watch_all, plan_name)
+    state = _initial_watch_state(project_root, watch_all, plan_name)
+    _print_watch_scope(watch_all, plan_name, state.active_plan_name)
 
+    try:
+        while True:
+            _refresh_watch_plan_filter(project_root, state, watch_all, plan_name)
+            _reset_watch_state_if_needed(project_root, state, watch_all, plan_name)
+            _print_new_watch_events(project_root, state, agents)
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        console.print("\n[dim]stopped watch[/dim]")
+
+
+def _initial_watch_state(
+    project_root: str,
+    watch_all: bool,
+    plan_name: str | None,
+) -> _WatchState:
+    active_plan_name, last_id = _default_watch_state(project_root, watch_all, plan_name)
+    return _WatchState(active_plan_name=active_plan_name, last_id=last_id)
+
+
+def _print_watch_scope(
+    watch_all: bool,
+    plan_name: str | None,
+    active_plan_name: str | None,
+) -> None:
     if plan_name:
         console.print(f"  plan: {plan_name}", style="dim")
     elif watch_all:
@@ -377,41 +499,62 @@ def _cmd_watch(
         console.print("  scope: live tail (no active plan inferred)", style="dim")
     console.print("  (Ctrl-C to exit)\n", style="dim")
 
-    last_task = ""
-    try:
-        while True:
-            if active_plan_name is None and not watch_all and plan_name is None:
-                active_plan_name = _infer_plan_name_from_active_tasks(project_root)
 
-            # Detect DB reset (new run started) — last_id would be ahead of max
-            current_max = latest_event_id(project_root)
-            if current_max < last_id:
-                console.print("\n  --- [bold]new run[/bold] ---\n", style="dim")
-                last_id = 0
-                last_task = ""
-                _TASK_COLORS.clear()
-                if not watch_all and plan_name is None:
-                    active_plan_name, last_id = _default_watch_state(project_root, False, None)
+def _refresh_watch_plan_filter(
+    project_root: str,
+    state: _WatchState,
+    watch_all: bool,
+    plan_name: str | None,
+) -> None:
+    if state.active_plan_name is None and not watch_all and plan_name is None:
+        state.active_plan_name = _infer_plan_name_from_active_tasks(project_root)
 
-            events = read_events(project_root, after_id=last_id, plan_name=active_plan_name)
-            for ev in events:
-                last_id = max(last_id, ev.get("id", 0))
-                ts_raw = ev.get("ts", "")
-                ts = ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw
-                typed_event = deserialize_event(ev)
-                line = _format_event(typed_event, ts, agents=agents)
-                if line is None:
-                    continue
 
-                # Blank line between tasks
-                task = getattr(typed_event, "task_slug", "")
-                if isinstance(typed_event, EvtTaskDispatched) and last_task:
-                    console.print("")
-                if task:
-                    last_task = task
+def _reset_watch_state_if_needed(
+    project_root: str,
+    state: _WatchState,
+    watch_all: bool,
+    plan_name: str | None,
+) -> None:
+    current_max = latest_event_id(project_root)
+    if current_max >= state.last_id:
+        return
 
-                console.print(line)
+    console.print("\n  --- [bold]new run[/bold] ---\n", style="dim")
+    state.last_id = 0
+    state.last_task = ""
+    _TASK_COLORS.clear()
+    if not watch_all and plan_name is None:
+        state.active_plan_name, state.last_id = _default_watch_state(project_root, False, None)
 
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        console.print("\n[dim]stopped watch[/dim]")
+
+def _print_new_watch_events(
+    project_root: str,
+    state: _WatchState,
+    agents: dict[str, str],
+) -> None:
+    events = read_events(project_root, after_id=state.last_id, plan_name=state.active_plan_name)
+    for event in events:
+        state.last_id = max(state.last_id, event.get("id", 0))
+        typed_event = deserialize_event(event)
+        line = _format_event(typed_event, _watch_event_time(event), agents=agents)
+        if line is not None:
+            _print_watch_event_line(typed_event, line, state)
+
+
+def _watch_event_time(event: dict[str, object]) -> str:
+    ts_raw = str(event.get("ts", ""))
+    return ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw
+
+
+def _print_watch_event_line(
+    event: DgovEvent,
+    line: RenderableType,
+    state: _WatchState,
+) -> None:
+    task = getattr(event, "task_slug", "")
+    if isinstance(event, EvtTaskDispatched) and state.last_task:
+        console.print("")
+    if task:
+        state.last_task = task
+    console.print(line)

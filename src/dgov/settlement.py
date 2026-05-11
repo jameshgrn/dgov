@@ -27,6 +27,7 @@ from typing import cast
 
 from dgov.config import ProjectConfig, load_project_config
 from dgov.persistence import read_events
+from dgov.typecheck_diagnostics import parse_diagnostic_identities
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,17 @@ class ReviewResult:
             raise ValueError("ReviewResult: passed=True but error is set")
         if not self.passed and not self.error:
             raise ValueError("ReviewResult: passed=False but no error message")
+
+
+@dataclass(frozen=True)
+class _AcceptanceGateContext:
+    worktree_path: Path
+    changed_files: Sequence[str]
+    project_root: str
+    config: ProjectConfig
+    base_commit: str | None = None
+    task_test_cmd: str | None = None
+    type_baseline_path: Path | None = None
 
 
 def _walk_shallow(node: ast.AST) -> list[ast.AST]:
@@ -125,28 +137,42 @@ class SmartFixer:
         except SyntaxError:
             return content
 
-        # Collect (line_number, end_col, exc_name) for each bare raise in an except-as block.
-        # Process bottom-up (reversed) so earlier insertions don't shift later line offsets.
-        # Only scan direct body statements — skip nested functions, classes, and inner
-        # try/except blocks to avoid associating raises with the wrong exception name.
-        fixes: list[tuple[int, int, str]] = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ExceptHandler) or not node.name:
-                continue
-            exc_name = node.name
-            for child in _walk_shallow(node):
-                if (
-                    isinstance(child, ast.Raise)
-                    and child.exc
-                    and not child.cause
-                    and child.end_col_offset is not None
-                    and child.end_lineno is not None
-                ):
-                    fixes.append((child.end_lineno, child.end_col_offset, exc_name))
-
+        fixes = self._b904_fixes(tree)
         if not fixes:
             return content
 
+        return self._apply_b904_fixes(content, fixes)
+
+    @staticmethod
+    def _b904_fixes(tree: ast.AST) -> list[tuple[int, int, str]]:
+        fixes: list[tuple[int, int, str]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ExceptHandler) and node.name:
+                fixes.extend(SmartFixer._b904_handler_fixes(node, node.name))
+        return fixes
+
+    @staticmethod
+    def _b904_handler_fixes(
+        handler: ast.ExceptHandler,
+        exc_name: str,
+    ) -> list[tuple[int, int, str]]:
+        fixes: list[tuple[int, int, str]] = []
+        for child in _walk_shallow(handler):
+            fix = SmartFixer._b904_raise_fix(child, exc_name)
+            if fix is not None:
+                fixes.append(fix)
+        return fixes
+
+    @staticmethod
+    def _b904_raise_fix(node: ast.AST, exc_name: str) -> tuple[int, int, str] | None:
+        if not isinstance(node, ast.Raise):
+            return None
+        if not node.exc or node.cause or node.end_col_offset is None or node.end_lineno is None:
+            return None
+        return node.end_lineno, node.end_col_offset, exc_name
+
+    @staticmethod
+    def _apply_b904_fixes(content: str, fixes: list[tuple[int, int, str]]) -> str:
         lines = content.splitlines(keepends=True)
         for lineno, end_col, exc_name in sorted(fixes, reverse=True):
             idx = lineno - 1  # 1-indexed → 0-indexed
@@ -273,6 +299,33 @@ def _get_all_changes(worktree_path: Path) -> frozenset[str] | ReviewResult:
     return frozenset(files)
 
 
+def _get_changes_or_failure(
+    worktree_path: Path,
+) -> tuple[frozenset[str] | None, ReviewResult | None]:
+    """Get actual files or a failure result from git status.
+
+    Returns (actual_files, failure_result) tuple. Exactly one of the two is None.
+    """
+    files_result = _get_all_changes(worktree_path)
+    if isinstance(files_result, ReviewResult):
+        return None, files_result
+    return files_result, None
+
+
+def _success_review_result(actual_files: frozenset[str]) -> ReviewResult:
+    """Build a successful review result with the given actual files."""
+    return ReviewResult(
+        passed=True,
+        verdict="ok",
+        actual_files=actual_files,
+    )
+
+
+def _exception_review_result(exc: Exception) -> ReviewResult:
+    """Build a review result for an exception during review."""
+    return ReviewResult(passed=False, verdict="exception", error=f"Review failed: {exc}")
+
+
 def _check_size(actual_files: frozenset[str], max_diff_lines: int) -> ReviewResult | None:
     """Check file count against size limit."""
     if len(actual_files) > max_diff_lines:
@@ -336,22 +389,79 @@ def _split_ignore_entries(
     named_dirs: set[str] = set()
     globs: list[str] = []
     for entry in scope_ignore_files:
-        if any(ch in entry for ch in "*?["):
-            globs.append(entry)
-        elif entry.endswith("/"):
-            stripped = entry.rstrip("/")
-            if "/" in stripped:
-                prefix_dirs.append(stripped + "/")
-            else:
-                named_dirs.add(stripped)
-        elif "." not in entry.rsplit("/", 1)[-1]:
-            if "/" in entry:
-                prefix_dirs.append(entry.rstrip("/") + "/")
-            else:
-                named_dirs.add(entry.rstrip("/"))
-        else:
-            exact.add(entry)
+        _add_ignore_entry(entry, exact, prefix_dirs, named_dirs, globs)
     return frozenset(exact), tuple(prefix_dirs), frozenset(named_dirs), tuple(globs)
+
+
+def _add_ignore_entry(
+    entry: str,
+    exact: set[str],
+    prefix_dirs: list[str],
+    named_dirs: set[str],
+    globs: list[str],
+) -> None:
+    if any(ch in entry for ch in "*?["):
+        globs.append(entry)
+    elif entry.endswith("/") or "." not in entry.rsplit("/", 1)[-1]:
+        _add_directory_ignore(entry, prefix_dirs, named_dirs)
+    else:
+        exact.add(entry)
+
+
+def _add_directory_ignore(entry: str, prefix_dirs: list[str], named_dirs: set[str]) -> None:
+    stripped = entry.rstrip("/")
+    if "/" in stripped:
+        prefix_dirs.append(stripped + "/")
+    else:
+        named_dirs.add(stripped)
+
+
+def _compute_unclaimed_files(
+    actual_files: frozenset[str],
+    claimed: frozenset[str],
+    scope_ignore_files: Sequence[str],
+) -> frozenset[str]:
+    """Return actual files minus claimed files, filtering out ignored paths."""
+    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = _split_ignore_entries(
+        scope_ignore_files
+    )
+    return frozenset(
+        f
+        for f in actual_files - claimed
+        if not _is_scope_ignored(
+            f, ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs
+        )
+    )
+
+
+def _hard_scope_violation(
+    actual_files: frozenset[str],
+    truly_unclaimed: frozenset[str],
+) -> ReviewResult:
+    """Build a hard scope violation result for files outside all claims."""
+    return ReviewResult(
+        passed=False,
+        verdict="scope_violation",
+        actual_files=actual_files,
+        error=f"Touched unclaimed files: {sorted(truly_unclaimed)}",
+    )
+
+
+def _read_scope_violation(
+    actual_files: frozenset[str],
+    unclaimed: frozenset[str],
+) -> ReviewResult:
+    """Build a soft read-scope violation result for editing read-only files."""
+    return ReviewResult(
+        passed=False,
+        verdict="read_scope_violation",
+        actual_files=actual_files,
+        error=(
+            f"Edited read-only files: {sorted(unclaimed)}. "
+            "Revert changes to these files and call done — "
+            "files.read grants read access only, not write."
+        ),
+    )
 
 
 def _check_scope(
@@ -375,16 +485,7 @@ def _check_scope(
         return None
 
     claimed = frozenset(claimed_files)
-    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = _split_ignore_entries(
-        scope_ignore_files
-    )
-    unclaimed = frozenset(
-        f
-        for f in actual_files - claimed
-        if not _is_scope_ignored(
-            f, ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs
-        )
-    )
+    unclaimed = _compute_unclaimed_files(actual_files, claimed, scope_ignore_files)
     if not unclaimed:
         return None
 
@@ -393,22 +494,8 @@ def _check_scope(
     read_set = frozenset(read_files)
     truly_unclaimed = unclaimed - read_set
     if truly_unclaimed:
-        return ReviewResult(
-            passed=False,
-            verdict="scope_violation",
-            actual_files=actual_files,
-            error=f"Touched unclaimed files: {sorted(truly_unclaimed)}",
-        )
-    return ReviewResult(
-        passed=False,
-        verdict="read_scope_violation",
-        actual_files=actual_files,
-        error=(
-            f"Edited read-only files: {sorted(unclaimed)}. "
-            "Revert changes to these files and call done — "
-            "files.read grants read access only, not write."
-        ),
-    )
+        return _hard_scope_violation(actual_files, truly_unclaimed)
+    return _read_scope_violation(actual_files, unclaimed)
 
 
 def _worker_log_activity(event: Mapping[str, object]) -> list[object]:
@@ -437,6 +524,40 @@ def _transient_write_path(item: object) -> str | None:
     return None
 
 
+def _collect_transient_write_paths(session_root: str, task_slug: str) -> set[str]:
+    """Collect all transient write paths from worker log activity for a task.
+
+    Reads all events for this task across all panes in the current run.
+    """
+    transient_paths: set[str] = set()
+    events = read_events(session_root, task_slug=task_slug)
+    for event in events:
+        for item in _worker_log_activity(event):
+            path = _transient_write_path(item)
+            if path is not None:
+                transient_paths.add(path)
+    return transient_paths
+
+
+def _filter_unclaimed_non_ignored(
+    paths: set[str],
+    claimed: frozenset[str],
+    ignored_exact: frozenset[str],
+    ignored_prefix_dirs: tuple[str, ...],
+    ignored_named_dirs: frozenset[str],
+    ignored_globs: tuple[str, ...],
+) -> list[str]:
+    """Filter paths to those that are unclaimed and not scope-ignored."""
+    return sorted(
+        p
+        for p in paths
+        if p not in claimed
+        and not _is_scope_ignored(
+            p, ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs
+        )
+    )
+
+
 def _check_transient_scope(
     session_root: str | None,
     task_slug: str | None,
@@ -461,26 +582,17 @@ def _check_transient_scope(
     ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = _split_ignore_entries(
         scope_ignore_files
     )
-    transient_paths: set[str] = set()
-    # Read all events for this task across all panes in the current run.
-    # This ensures transient scope enforcement fails closed across retries:
-    # an unclaimed write from any attempt in the active run causes rejection.
-    events = read_events(session_root, task_slug=task_slug)
 
-    for event in events:
-        for item in _worker_log_activity(event):
-            path = _transient_write_path(item)
-            if path is not None:
-                transient_paths.add(path)
-
-    unclaimed = sorted(
-        p
-        for p in transient_paths
-        if p not in claimed
-        and not _is_scope_ignored(
-            p, ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs
-        )
+    transient_paths = _collect_transient_write_paths(session_root, task_slug)
+    unclaimed = _filter_unclaimed_non_ignored(
+        transient_paths,
+        claimed,
+        ignored_exact,
+        ignored_prefix_dirs,
+        ignored_named_dirs,
+        ignored_globs,
     )
+
     if not unclaimed:
         return None
 
@@ -490,6 +602,114 @@ def _check_transient_scope(
         actual_files=actual_files,
         error=(f"Transiently touched unclaimed files via worker tools: {unclaimed}"),
     )
+
+
+def _run_review_hook(
+    hook: str,
+    file_args: str,
+    worktree_path: Path,
+) -> subprocess.CompletedProcess[str]:
+    cmd = hook.replace("{file}", file_args).replace("{files}", file_args)
+    return subprocess.run(
+        cmd,
+        shell=True,
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def _review_hook_failure(
+    worktree_path: Path,
+    project_root: str | None,
+    actual_files: frozenset[str],
+) -> ReviewResult | None:
+    if not project_root:
+        return None
+
+    config = load_project_config(project_root)
+    if not config.review_hooks:
+        return None
+
+    file_args = " ".join(shlex.quote(f) for f in actual_files)
+    for hook in config.review_hooks:
+        res = _run_review_hook(hook, file_args, worktree_path)
+        if res.returncode != 0:
+            return ReviewResult(
+                passed=False,
+                verdict="hook_fail",
+                actual_files=actual_files,
+                error=f"Review hook failed: {hook}\n{res.stdout}{res.stderr}",
+            )
+    return None
+
+
+def _review_policy_failure(
+    worktree_path: Path,
+    actual_files: frozenset[str],
+    claimed_files: Sequence[str] | None,
+    max_diff_lines: int,
+    project_root: str | None,
+    task_slug: str | None,
+    pane_slug: str | None,
+    scope_ignore_files: Sequence[str],
+    read_files: Sequence[str],
+) -> ReviewResult | None:
+    for result in (
+        _check_size(actual_files, max_diff_lines),
+        _check_reserved_paths(actual_files),
+        _check_scope(actual_files, claimed_files, scope_ignore_files, read_files),
+        _check_transient_scope(
+            project_root,
+            task_slug,
+            pane_slug,
+            claimed_files,
+            actual_files,
+            scope_ignore_files,
+        ),
+        _review_hook_failure(worktree_path, project_root, actual_files),
+    ):
+        if result is not None:
+            return result
+    return None
+
+
+def _perform_review(
+    worktree_path: Path,
+    claimed_files: Sequence[str] | None,
+    max_diff_lines: int,
+    project_root: str | None,
+    task_slug: str | None,
+    pane_slug: str | None,
+    scope_ignore_files: Sequence[str],
+    read_files: Sequence[str],
+) -> ReviewResult:
+    """Perform review checks without exception handling.
+
+    Separated from review_sandbox to keep the public wrapper focused on
+    exception handling while keeping the review logic testable in isolation.
+    """
+    actual_files, failure = _get_changes_or_failure(worktree_path)
+    if failure is not None:
+        return failure
+    assert actual_files is not None
+
+    failure = _review_policy_failure(
+        worktree_path,
+        actual_files,
+        claimed_files,
+        max_diff_lines,
+        project_root,
+        task_slug,
+        pane_slug,
+        scope_ignore_files,
+        read_files,
+    )
+    if failure is not None:
+        return failure
+
+    return _success_review_result(actual_files)
 
 
 def review_sandbox(
@@ -517,71 +737,18 @@ def review_sandbox(
     Uses git status --porcelain to see ALL changes including new files.
     """
     try:
-        # 1. Get all changed files (tracked + untracked)
-        files_result = _get_all_changes(worktree_path)
-        if isinstance(files_result, ReviewResult):
-            return files_result
-        actual_files = files_result
-
-        # 2. Check size
-        result = _check_size(actual_files, max_diff_lines)
-        if result is not None:
-            return result
-
-        # 3. Reserved-path enforcement
-        result = _check_reserved_paths(actual_files)
-        if result is not None:
-            return result
-
-        # 4. Scope enforcement
-        result = _check_scope(actual_files, claimed_files, scope_ignore_files, read_files)
-        if result is not None:
-            return result
-
-        # 5. Transient scope enforcement from worker tool activity
-        result = _check_transient_scope(
+        return _perform_review(
+            worktree_path,
+            claimed_files,
+            max_diff_lines,
             project_root,
             task_slug,
             pane_slug,
-            claimed_files,
-            actual_files,
             scope_ignore_files,
+            read_files,
         )
-        if result is not None:
-            return result
-
-        # 6. Review hooks
-        if project_root:
-            config = load_project_config(project_root)
-            if config.review_hooks:
-                file_args = " ".join(shlex.quote(f) for f in actual_files)
-                for hook in config.review_hooks:
-                    cmd = hook.replace("{file}", file_args).replace("{files}", file_args)
-                    res = subprocess.run(
-                        cmd,
-                        shell=True,
-                        cwd=worktree_path,
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                    )
-                    if res.returncode != 0:
-                        return ReviewResult(
-                            passed=False,
-                            verdict="hook_fail",
-                            actual_files=actual_files,
-                            error=f"Review hook failed: {hook}\n{res.stdout}{res.stderr}",
-                        )
-
-        # All checks passed
-        return ReviewResult(
-            passed=True,
-            verdict="ok",
-            actual_files=actual_files,
-        )
-
     except Exception as exc:
-        return ReviewResult(passed=False, verdict="exception", error=f"Review failed: {exc}")
+        return _exception_review_result(exc)
 
 
 def _file_in_base(worktree_path: Path, rel_path: str) -> bool:
@@ -644,6 +811,40 @@ def _is_import_block_line(line: str, in_paren: bool) -> tuple[bool, bool]:
     return False, False
 
 
+def _consume_import_block(lines: list[str], start: int, in_paren: bool) -> tuple[int, bool]:
+    i = start
+    while i < len(lines):
+        is_import, in_paren = _is_import_block_line(lines[i], in_paren)
+        if is_import:
+            i += 1
+            continue
+        return i, in_paren
+    return i, in_paren
+
+
+def _trim_import_block_end(lines: list[str], start: int, end: int) -> int:
+    while end > start and lines[end - 1].strip() in ("", "#"):
+        end -= 1
+    return end
+
+
+def _import_blocks(lines: list[str]) -> list[tuple[int, int]]:
+    blocks: list[tuple[int, int]] = []
+    i = 0
+    in_paren = False
+    while i < len(lines):
+        is_import, in_paren = _is_import_block_line(lines[i], in_paren)
+        if not is_import:
+            i += 1
+            continue
+        start = i
+        i, in_paren = _consume_import_block(lines, i, in_paren)
+        end = _trim_import_block_end(lines, start, i)
+        if end > start:
+            blocks.append((start, end))
+    return blocks
+
+
 def _expand_to_import_blocks(lines: list[str], changed: set[int]) -> set[int]:
     """Expand changed lines to cover entire import blocks when any import was touched.
 
@@ -657,34 +858,40 @@ def _expand_to_import_blocks(lines: list[str], changed: set[int]) -> set[int]:
     if not changed:
         return changed
 
-    # Find contiguous import blocks
-    blocks: list[tuple[int, int]] = []
-    i = 0
-    in_paren = False
-    while i < len(lines):
-        is_import, in_paren = _is_import_block_line(lines[i], in_paren)
-        if is_import:
-            start = i
-            while i < len(lines):
-                is_import, in_paren = _is_import_block_line(lines[i], in_paren)
-                if is_import:
-                    i += 1
-                else:
-                    break
-            # Trim trailing blank/comment-only lines from block boundary
-            end = i
-            while end > start and lines[end - 1].strip() in ("", "#"):
-                end -= 1
-            if end > start:
-                blocks.append((start, end))
-        else:
-            i += 1
-
     expanded = set(changed)
-    for start, end in blocks:
+    for start, end in _import_blocks(lines):
         if any(ln in changed for ln in range(start, end)):
             expanded.update(range(start, end))
     return expanded
+
+
+def _changed_range_touched(start: int, end: int, changed_lines: set[int]) -> bool:
+    return any(ln in changed_lines for ln in range(start, end))
+
+
+def _insert_adjacent_to_changed(index: int, changed_lines: set[int]) -> bool:
+    return index in changed_lines or (index > 0 and index - 1 in changed_lines)
+
+
+def _scoped_opcode_lines(
+    tag: str,
+    i1: int,
+    i2: int,
+    j1: int,
+    j2: int,
+    worker_lines: list[str],
+    fixed_lines: list[str],
+    changed_lines: set[int],
+) -> list[str]:
+    if tag == "equal":
+        return worker_lines[i1:i2]
+    if tag == "insert":
+        return fixed_lines[j1:j2] if _insert_adjacent_to_changed(i1, changed_lines) else []
+    if tag == "delete":
+        return [] if _changed_range_touched(i1, i2, changed_lines) else worker_lines[i1:i2]
+    if _changed_range_touched(i1, i2, changed_lines):
+        return fixed_lines[j1:j2]
+    return worker_lines[i1:i2]
 
 
 def _scope_to_changed(
@@ -707,24 +914,18 @@ def _scope_to_changed(
     sm = difflib.SequenceMatcher(None, worker_lines, fixed_lines)
     result: list[str] = []
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        if tag == "equal":
-            result.extend(worker_lines[i1:i2])
-        elif tag == "insert":
-            # i1 == i2 for inserts — check adjacency
-            adjacent = i1 in changed_lines or (i1 > 0 and i1 - 1 in changed_lines)
-            if adjacent:
-                result.extend(fixed_lines[j1:j2])
-        elif tag == "delete":
-            if any(ln in changed_lines for ln in range(i1, i2)):
-                pass  # accept deletion
-            else:
-                result.extend(worker_lines[i1:i2])
-        else:
-            # replace
-            if any(ln in changed_lines for ln in range(i1, i2)):
-                result.extend(fixed_lines[j1:j2])
-            else:
-                result.extend(worker_lines[i1:i2])
+        result.extend(
+            _scoped_opcode_lines(
+                tag,
+                i1,
+                i2,
+                j1,
+                j2,
+                worker_lines,
+                fixed_lines,
+                changed_lines,
+            )
+        )
     return result
 
 
@@ -867,18 +1068,35 @@ def _existing_files(worktree_path: Path, paths: Sequence[str]) -> list[str]:
     return [f for f in paths if f and (worktree_path / f).exists()]
 
 
+def _source_module_name(path: str) -> str:
+    mod = path
+    for prefix in ("src/", "lib/"):
+        if mod.startswith(prefix):
+            mod = mod[len(prefix) :]
+    return mod.replace("/", ".").removesuffix(".py").removesuffix(".__init__")
+
+
+def _source_modules(source_files: Sequence[str]) -> set[str]:
+    return {_source_module_name(file) for file in source_files}
+
+
+def _test_imports_any_module(content: str, modules: set[str]) -> bool:
+    return any(f"from {mod}" in content or f"import {mod}" in content for mod in modules)
+
+
+def _related_test_file(test_file: Path, modules: set[str], worktree_path: Path) -> str | None:
+    try:
+        content = test_file.read_text()
+    except (UnicodeDecodeError, OSError):
+        return None
+    if _test_imports_any_module(content, modules):
+        return str(test_file.relative_to(worktree_path))
+    return None
+
+
 def _find_related_tests(source_files: list[str], test_dir: str, worktree_path: Path) -> list[str]:
     """Find test files that import from changed source modules."""
-    # Build module names from changed source files
-    modules: set[str] = set()
-    for f in source_files:
-        # src/dgov/cli/__init__.py -> dgov.cli, dgov/cli/__init__.py -> dgov.cli
-        mod = f
-        for prefix in ("src/", "lib/"):
-            if mod.startswith(prefix):
-                mod = mod[len(prefix) :]
-        mod = mod.replace("/", ".").removesuffix(".py").removesuffix(".__init__")
-        modules.add(mod)
+    modules = _source_modules(source_files)
     if not modules:
         return []
 
@@ -888,14 +1106,9 @@ def _find_related_tests(source_files: list[str], test_dir: str, worktree_path: P
 
     related: list[str] = []
     for test_file in sorted(test_root.rglob("test_*.py")):
-        try:
-            content = test_file.read_text()
-            for mod in modules:
-                if f"from {mod}" in content or f"import {mod}" in content:
-                    related.append(str(test_file.relative_to(worktree_path)))
-                    break
-        except (UnicodeDecodeError, OSError):
-            continue
+        rel_path = _related_test_file(test_file, modules, worktree_path)
+        if rel_path is not None:
+            related.append(rel_path)
     return related
 
 
@@ -1032,6 +1245,98 @@ def _build_coverage_cmd(
     return f"{cmd} {target_args}"
 
 
+def _coverage_baseline_data(worktree_path: Path, project_root: str) -> object | None:
+    baseline_path = _copy_coverage_baseline_into_worktree(worktree_path, project_root)
+    if baseline_path is None or not baseline_path.exists():
+        return None
+
+    import json
+
+    return json.loads(baseline_path.read_text())
+
+
+def _new_coverage_output_path(worktree_path: Path) -> Path:
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(
+        prefix="dgov-coverage-", suffix=".json", dir=worktree_path, delete=False
+    ) as tmp:
+        return Path(tmp.name)
+
+
+def _run_coverage_measurement(
+    coverage_cmd: str,
+    worktree_path: Path,
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        coverage_cmd,
+        shell=True,
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def _measure_current_coverage(
+    worktree_path: Path,
+    changed_files: Sequence[str],
+    config: ProjectConfig,
+) -> object | None:
+    output_path = _new_coverage_output_path(worktree_path)
+    try:
+        coverage_cmd = _build_coverage_cmd(
+            config,
+            changed_files,
+            worktree_path,
+            output_path,
+        )
+        if not coverage_cmd:
+            return None
+
+        res = _run_coverage_measurement(coverage_cmd, worktree_path, config.settlement_timeout)
+        if res.returncode != 0:
+            output = ((res.stdout or "") + (res.stderr or ""))[-500:]
+            logger.warning("Coverage gate measurement failed: %s", output)
+            return None
+
+        import json
+
+        return json.loads(output_path.read_text())
+    finally:
+        if output_path.exists():
+            output_path.unlink()
+
+
+def _coverage_regression(
+    changed_files: Sequence[str],
+    baseline_data: object,
+    current_data: object,
+    worktree_path: Path,
+    threshold: float,
+) -> GateResult | None:
+    baseline = _coverage_percentages(baseline_data, worktree_path)
+    current = _coverage_percentages(current_data, worktree_path)
+
+    for file in changed_files:
+        rel = _normalize_coverage_path(file, worktree_path)
+        if not rel.endswith(".py") or rel not in baseline:
+            continue
+        old = baseline[rel]
+        new = current.get(rel, 0.0)
+        if old - new > threshold:
+            return GateResult(
+                passed=False,
+                error=(
+                    f"Coverage regression: {rel} dropped from "
+                    f"{_format_percent(old)} to {_format_percent(new)}"
+                ),
+            )
+    return None
+
+
 def _run_coverage_gate(
     worktree_path: Path,
     changed_files: Sequence[str],
@@ -1046,116 +1351,62 @@ def _run_coverage_gate(
         return None
 
     try:
-        baseline_path = _copy_coverage_baseline_into_worktree(worktree_path, project_root)
-        if baseline_path is None or not baseline_path.exists():
+        baseline_data = _coverage_baseline_data(worktree_path, project_root)
+        if baseline_data is None:
             return None
-
-        import json
-        import tempfile
-
-        baseline_data = json.loads(baseline_path.read_text())
-        with tempfile.NamedTemporaryFile(
-            prefix="dgov-coverage-", suffix=".json", dir=worktree_path, delete=False
-        ) as tmp:
-            output_path = Path(tmp.name)
-
-        try:
-            coverage_cmd = _build_coverage_cmd(
-                config,
-                changed_files,
-                worktree_path,
-                output_path,
-            )
-            if not coverage_cmd:
-                return None
-
-            res = subprocess.run(
-                coverage_cmd,
-                shell=True,
-                cwd=worktree_path,
-                capture_output=True,
-                text=True,
-                timeout=config.settlement_timeout,
-                check=False,
-            )
-            if res.returncode != 0:
-                output = ((res.stdout or "") + (res.stderr or ""))[-500:]
-                logger.warning("Coverage gate measurement failed: %s", output)
-                return None
-
-            current_data = json.loads(output_path.read_text())
-        finally:
-            if output_path.exists():
-                output_path.unlink()
-
-        baseline = _coverage_percentages(baseline_data, worktree_path)
-        current = _coverage_percentages(current_data, worktree_path)
-        threshold = config.coverage_threshold
-
-        for file in changed_files:
-            rel = _normalize_coverage_path(file, worktree_path)
-            if not rel.endswith(".py") or rel not in baseline:
-                continue
-            old = baseline[rel]
-            new = current.get(rel, 0.0)
-            if old - new > threshold:
-                return GateResult(
-                    passed=False,
-                    error=(
-                        f"Coverage regression: {rel} dropped from "
-                        f"{_format_percent(old)} to {_format_percent(new)}"
-                    ),
-                )
+        current_data = _measure_current_coverage(worktree_path, changed_files, config)
+        if current_data is None:
+            return None
+        return _coverage_regression(
+            changed_files,
+            baseline_data,
+            current_data,
+            worktree_path,
+            config.coverage_threshold,
+        )
     except Exception as exc:
         logger.warning("Coverage gate skipped after measurement error: %s", exc)
     return None
 
 
-_DIAG_COUNT_RE = re.compile(r"Found (\d+) diagnostics?")
+def _run_type_check_cmd(
+    type_check_cmd: str,
+    cwd: Path,
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        type_check_cmd,
+        shell=True,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
 
 
-def _count_diagnostics(output: str) -> int:
-    """Parse 'Found N diagnostics' from type checker output."""
-    m = _DIAG_COUNT_RE.search(output)
-    return int(m.group(1)) if m else 0
+def _type_check_output(result: subprocess.CompletedProcess[str]) -> str:
+    return (result.stdout or "") + (result.stderr or "")
 
 
-# Regex to parse ty/basedpyright output format:
-#   error[error-code]: message
-#      --> file/path.py:line:col
-_DIAG_ERROR_CODE_RE = re.compile(r"^error\[([^\]]+)\]:", re.MULTILINE)
-_DIAG_FILE_PATH_RE = re.compile(r"^\s+-->\s+([^:]+):\d+:\d+", re.MULTILINE)
-
-
-def _parse_diagnostic_identities(
-    output: str, project_root: Path | None = None
-) -> set[tuple[str, str]]:
-    """Extract (relative_file, error_code) tuples from type checker output.
-
-    Ignores line numbers (which shift when code is edited) to enable
-    identity-based comparison between baseline and worktree.
-
-    The ty/basedpyright output format is:
-        error[error-code]: message
-           --> file/path.py:line:col
-    """
-    identities: set[tuple[str, str]] = set()
-
-    # Find all error codes and file paths
-    error_codes = _DIAG_ERROR_CODE_RE.findall(output)
-    file_paths = _DIAG_FILE_PATH_RE.findall(output)
-
-    # Pair them up - they appear in order in the output
-    for i, code in enumerate(error_codes):
-        if i < len(file_paths):
-            file_path = file_paths[i]
-            # Make path relative to project root if provided
-            if project_root is not None:
-                with contextlib.suppress(ValueError):
-                    file_path = str(Path(file_path).relative_to(project_root))
-            identities.add((file_path, code))
-
-    return identities
+def _type_check_failure(
+    worktree_res: subprocess.CompletedProcess[str],
+    worktree_output: str,
+    new_ids: set[tuple[str, str]],
+    worktree_ids: set[tuple[str, str]],
+) -> GateResult | None:
+    if worktree_res.returncode != 0 and new_ids:
+        output = worktree_output[-500:]
+        return GateResult(
+            passed=False,
+            error=f"Type check failure ({len(new_ids)} new diagnostic(s), "
+            f"{len(worktree_ids)} total):\n{output}",
+        )
+    if worktree_res.returncode != 0 and not new_ids:
+        logger.warning(
+            "Type check: %d diagnostic(s) (all pre-existing) — not blocking",
+            len(worktree_ids),
+        )
+    return None
 
 
 def _type_check_gate(
@@ -1176,45 +1427,18 @@ def _type_check_gate(
     # pass a detached baseline worktree so diagnostics are compared against the
     # merge base instead of the already-mutated feature branch.
     baseline_cwd = baseline_path or Path(project_root)
-    baseline_res = subprocess.run(
-        type_check_cmd,
-        shell=True,
-        cwd=baseline_cwd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    baseline_output = (baseline_res.stdout or "") + (baseline_res.stderr or "")
-    baseline_ids = _parse_diagnostic_identities(baseline_output, baseline_cwd)
+    baseline_res = _run_type_check_cmd(type_check_cmd, baseline_cwd, timeout)
+    baseline_output = _type_check_output(baseline_res)
+    baseline_ids = parse_diagnostic_identities(baseline_output, baseline_cwd)
 
     # Worktree: run against worker's changes
-    worktree_res = subprocess.run(
-        type_check_cmd,
-        shell=True,
-        cwd=worktree_path,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    worktree_output = (worktree_res.stdout or "") + (worktree_res.stderr or "")
-    worktree_ids = _parse_diagnostic_identities(worktree_output, worktree_path)
+    worktree_res = _run_type_check_cmd(type_check_cmd, worktree_path, timeout)
+    worktree_output = _type_check_output(worktree_res)
+    worktree_ids = parse_diagnostic_identities(worktree_output, worktree_path)
 
     # Compare identity sets: new diagnostics are those in worktree but not baseline
     new_ids = worktree_ids - baseline_ids
-
-    if worktree_res.returncode != 0 and new_ids:
-        output = worktree_output[-500:]
-        return GateResult(
-            passed=False,
-            error=f"Type check failure ({len(new_ids)} new diagnostic(s), "
-            f"{len(worktree_ids)} total):\n{output}",
-        )
-    if worktree_res.returncode != 0 and not new_ids:
-        logger.warning(
-            "Type check: %d diagnostic(s) (all pre-existing) — not blocking",
-            len(worktree_ids),
-        )
-    return None
+    return _type_check_failure(worktree_res, worktree_output, new_ids, worktree_ids)
 
 
 _SENTRUX_WARN_ONLY = re.compile(
@@ -1244,38 +1468,32 @@ def _sentrux_is_warn_only(output: str) -> bool:
     )
 
 
-def _run_sentrux_gate(worktree_path: Path, project_root: str, timeout: int) -> GateResult:
-    """Run sentrux policy gate — reject on hard degradation, warn on complexity only."""
+def _sentrux_baseline_is_empty(baseline: Path) -> bool:
     import json
 
-    baseline = Path(project_root) / ".sentrux" / "baseline.json"
-    if not baseline.exists():
-        return GateResult(passed=True)
-
-    if shutil.which("sentrux") is None:
-        return GateResult(
-            passed=False,
-            error="Sentrux not found in PATH. Fix: install sentrux before running dgov.",
-        )
-
-    # Skip gate when baseline was captured from an empty project (no import edges).
-    # Comparing against an empty baseline always shows "degradation" for any real code.
     try:
         bdata = json.loads(baseline.read_text())
-        if bdata.get("total_import_edges") == 0:
-            return GateResult(passed=True)
     except Exception:
-        pass
+        return False
+    return bdata.get("total_import_edges") == 0
 
+
+def _copy_sentrux_baseline(baseline: Path, worktree_path: Path) -> None:
     sx_dst = worktree_path / ".sentrux"
     baseline_dir = baseline.parent.resolve()
-    if baseline_dir != sx_dst.resolve():
-        if sx_dst.exists():
-            shutil.rmtree(sx_dst)
-        shutil.copytree(baseline.parent, sx_dst)
+    if baseline_dir == sx_dst.resolve():
+        return
+    if sx_dst.exists():
+        shutil.rmtree(sx_dst)
+    shutil.copytree(baseline.parent, sx_dst)
 
+
+def _execute_sentrux_gate(
+    worktree_path: Path,
+    timeout: int,
+) -> subprocess.CompletedProcess[str] | GateResult:
     try:
-        res_sx = subprocess.run(
+        return subprocess.run(
             ["sentrux", "gate", "."],
             cwd=worktree_path,
             capture_output=True,
@@ -1289,17 +1507,39 @@ def _run_sentrux_gate(worktree_path: Path, project_root: str, timeout: int) -> G
             error=f"Sentrux gate timed out after {timeout}s.",
         )
 
+
+def _sentrux_gate_result(res_sx: subprocess.CompletedProcess[str]) -> GateResult:
     sx_output = (res_sx.stdout or "") + (res_sx.stderr or "")
+    if res_sx.returncode == 0:
+        return GateResult(passed=True)
+    if _sentrux_is_warn_only(sx_output):
+        logger.warning("Sentrux: complexity increased (warn-only, not blocking):\n%s", sx_output)
+        return GateResult(passed=True)
+    return GateResult(passed=False, error=f"Sentrux architectural degradation:\n{sx_output}")
 
-    if res_sx.returncode != 0:
-        if _sentrux_is_warn_only(sx_output):
-            logger.warning(
-                "Sentrux: complexity increased (warn-only, not blocking):\n%s", sx_output
-            )
-            return GateResult(passed=True)
-        return GateResult(passed=False, error=f"Sentrux architectural degradation:\n{sx_output}")
 
-    return GateResult(passed=True)
+def _run_sentrux_gate(worktree_path: Path, project_root: str, timeout: int) -> GateResult:
+    """Run sentrux policy gate — reject on hard degradation, warn on complexity only."""
+    baseline = Path(project_root) / ".sentrux" / "baseline.json"
+    if not baseline.exists():
+        return GateResult(passed=True)
+
+    if shutil.which("sentrux") is None:
+        return GateResult(
+            passed=False,
+            error="Sentrux not found in PATH. Fix: install sentrux before running dgov.",
+        )
+
+    # Skip gate when baseline was captured from an empty project (no import edges).
+    # Comparing against an empty baseline always shows "degradation" for any real code.
+    if _sentrux_baseline_is_empty(baseline):
+        return GateResult(passed=True)
+
+    _copy_sentrux_baseline(baseline, worktree_path)
+    res_sx = _execute_sentrux_gate(worktree_path, timeout)
+    if isinstance(res_sx, GateResult):
+        return res_sx
+    return _sentrux_gate_result(res_sx)
 
 
 def _run_setup_cmd(setup_cmd: str, worktree_path: Path, timeout: int = 300) -> GateResult | None:
@@ -1323,6 +1563,117 @@ def _run_setup_cmd(setup_cmd: str, worktree_path: Path, timeout: int = 300) -> G
     return None
 
 
+def _changed_lines_for_file(worktree_path: Path, base_commit: str, rel_path: str) -> set[int]:
+    diff_res = subprocess.run(
+        ["git", "diff", "--unified=0", base_commit, "HEAD", "--", rel_path],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+    )
+
+    lines: set[int] = set()
+    for line in diff_res.stdout.splitlines():
+        if not line.startswith("@@"):
+            continue
+        match = re.search(r"\+(\d+)(?:,(\d+))?", line)
+        if match:
+            start = int(match.group(1))
+            count = int(match.group(2)) if match.group(2) is not None else 1
+            lines.update(range(start, start + count))
+    return lines
+
+
+def _changed_lines_by_file(
+    worktree_path: Path,
+    existing_files: Sequence[str],
+    base_commit: str,
+) -> dict[str, set[int]]:
+    changed_by_file: dict[str, set[int]] = {}
+    for file in existing_files:
+        lines = _changed_lines_for_file(worktree_path, base_commit, file)
+        if lines:
+            changed_by_file[file] = lines
+    return changed_by_file
+
+
+def _ruff_json_lint_result(
+    worktree_path: Path,
+    existing_files: Sequence[str],
+    config: ProjectConfig,
+) -> subprocess.CompletedProcess[str]:
+    file_args = " ".join(shlex.quote(f) for f in existing_files)
+    lint_json_cmd = config.lint_cmd.replace("{file}", file_args)
+    lint_json_cmd = lint_json_cmd + " --output-format=json"
+    return subprocess.run(
+        lint_json_cmd,
+        shell=True,
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+        timeout=config.settlement_timeout,
+    )
+
+
+def _ruff_diagnostics(
+    result: subprocess.CompletedProcess[str],
+    lint_cmd: str,
+) -> list[Mapping[str, object]] | GateResult:
+    import json as json_mod
+
+    try:
+        diagnostics = json_mod.loads(result.stdout)
+    except (json_mod.JSONDecodeError, ValueError):
+        return GateResult(passed=False, error=_lint_failure_error(result, lint_cmd))
+    if not isinstance(diagnostics, list):
+        return []
+    return [cast(Mapping[str, object], diag) for diag in diagnostics if isinstance(diag, Mapping)]
+
+
+def _diagnostic_rel_name(filename: object, worktree_path: Path) -> str:
+    if not isinstance(filename, str):
+        return ""
+    try:
+        return str(Path(filename).relative_to(worktree_path))
+    except ValueError:
+        return filename
+
+
+def _diagnostic_row(diag: Mapping[str, object]) -> int:
+    location = diag.get("location")
+    if not isinstance(location, Mapping):
+        return 0
+    row = cast(Mapping[str, object], location).get("row", 0)
+    return row if isinstance(row, int) else 0
+
+
+def _scoped_lint_issue(
+    diag: Mapping[str, object],
+    changed_by_file: Mapping[str, set[int]],
+    worktree_path: Path,
+) -> str | None:
+    rel_name = _diagnostic_rel_name(diag.get("filename", ""), worktree_path)
+    row = _diagnostic_row(diag)
+    if rel_name not in changed_by_file or row not in changed_by_file[rel_name]:
+        return None
+
+    code = diag.get("code", "?")
+    msg = diag.get("message", "")
+    return f"{rel_name}:{row} {code} {msg}"
+
+
+def _scoped_lint_issues(
+    diagnostics: Sequence[Mapping[str, object]],
+    changed_by_file: Mapping[str, set[int]],
+    worktree_path: Path,
+) -> list[str]:
+    issues: list[str] = []
+    for diag in diagnostics:
+        issue = _scoped_lint_issue(diag, changed_by_file, worktree_path)
+        if issue is not None:
+            issues.append(issue)
+    return issues
+
+
 def _scoped_lint_check(
     worktree_path: Path,
     existing_files: list[str],
@@ -1338,71 +1689,19 @@ def _scoped_lint_check(
     Only works with Ruff (requires ``--output-format=json``). The caller
     must check ``"ruff" in config.lint_cmd`` before calling this function.
     """
-    import json as json_mod
-
-    # Build changed-line sets per file
-    changed_by_file: dict[str, set[int]] = {}
-    for f in existing_files:
-        diff_res = subprocess.run(
-            ["git", "diff", "--unified=0", base_commit, "HEAD", "--", f],
-            cwd=worktree_path,
-            capture_output=True,
-            text=True,
-        )
-        lines: set[int] = set()
-        for line in diff_res.stdout.splitlines():
-            if not line.startswith("@@"):
-                continue
-            match = re.search(r"\+(\d+)(?:,(\d+))?", line)
-            if match:
-                start = int(match.group(1))
-                count = int(match.group(2)) if match.group(2) is not None else 1
-                lines.update(range(start, start + count))
-        if lines:
-            changed_by_file[f] = lines
-
+    changed_by_file = _changed_lines_by_file(worktree_path, existing_files, base_commit)
     if not changed_by_file:
         return None
 
-    # Run ruff with JSON output on all existing files at once
-    file_args = " ".join(shlex.quote(f) for f in existing_files)
-    lint_json_cmd = config.lint_cmd.replace("{file}", file_args)
-    # Inject --output-format=json before the file args
-    lint_json_cmd = lint_json_cmd + " --output-format=json"
-
-    res = subprocess.run(
-        lint_json_cmd,
-        shell=True,
-        cwd=worktree_path,
-        capture_output=True,
-        text=True,
-        timeout=config.settlement_timeout,
-    )
-
+    res = _ruff_json_lint_result(worktree_path, existing_files, config)
     if res.returncode == 0:
         return None  # no lint issues at all
 
-    # Parse JSON diagnostics and filter to changed lines
-    try:
-        diagnostics = json_mod.loads(res.stdout)
-    except (json_mod.JSONDecodeError, ValueError):
-        # Can't parse JSON — fall back to full lint (fail-closed)
-        return GateResult(passed=False, error=_lint_failure_error(res, config.lint_cmd))
+    diagnostics = _ruff_diagnostics(res, config.lint_cmd)
+    if isinstance(diagnostics, GateResult):
+        return diagnostics
 
-    scoped_issues: list[str] = []
-    for diag in diagnostics:
-        filename = diag.get("filename", "")
-        # ruff outputs absolute paths; convert to relative
-        try:
-            rel_name = str(Path(filename).relative_to(worktree_path))
-        except ValueError:
-            rel_name = filename
-        row = diag.get("location", {}).get("row", 0)
-        if rel_name in changed_by_file and row in changed_by_file[rel_name]:
-            code = diag.get("code", "?")
-            msg = diag.get("message", "")
-            scoped_issues.append(f"{rel_name}:{row} {code} {msg}")
-
+    scoped_issues = _scoped_lint_issues(diagnostics, changed_by_file, worktree_path)
     if scoped_issues:
         detail = "\n".join(scoped_issues)
         return GateResult(passed=False, error=f"Lint failure (worker-changed lines):\n{detail}")
@@ -1445,6 +1744,187 @@ def _build_test_commands(
     return commands
 
 
+def _run_lint_gate(
+    config: ProjectConfig,
+    files: list[str],
+    worktree_path: Path,
+) -> GateResult | None:
+    res_lint = _run_cmd(
+        config.lint_cmd,
+        files,
+        worktree_path,
+        timeout=config.settlement_timeout,
+    )
+    if res_lint.returncode == 0:
+        return None
+    return GateResult(
+        passed=False,
+        error=_lint_failure_error(res_lint, config.lint_cmd),
+    )
+
+
+def _run_format_gate(
+    config: ProjectConfig,
+    files: list[str],
+    worktree_path: Path,
+) -> GateResult | None:
+    res_fmt = _run_cmd(
+        config.format_check_cmd,
+        files,
+        worktree_path,
+        timeout=config.settlement_timeout,
+    )
+    if res_fmt.returncode == 0:
+        return None
+    return GateResult(
+        passed=False,
+        error=_format_failure_error(res_fmt, config.format_check_cmd),
+    )
+
+
+def _run_full_file_quality_gates(
+    context: _AcceptanceGateContext,
+    files: list[str],
+) -> GateResult | None:
+    lint_failure = _run_lint_gate(context.config, files, context.worktree_path)
+    if lint_failure is not None:
+        return lint_failure
+    return _run_format_gate(context.config, files, context.worktree_path)
+
+
+def _split_files_by_base_existence(
+    worktree_path: Path,
+    files: list[str],
+    base_commit: str,
+) -> tuple[list[str], list[str]]:
+    new_files = [f for f in files if not _file_existed_at(worktree_path, f, base_commit)]
+    preexisting = [f for f in files if f not in new_files]
+    return new_files, preexisting
+
+
+def _run_preexisting_file_lint_gate(
+    context: _AcceptanceGateContext,
+    files: list[str],
+    base_commit: str,
+) -> GateResult | None:
+    if not files:
+        return None
+    if "ruff" in context.config.lint_cmd:
+        return _scoped_lint_check(context.worktree_path, files, base_commit, context.config)
+    return _run_lint_gate(context.config, files, context.worktree_path)
+
+
+def _run_post_commit_file_quality_gates(
+    context: _AcceptanceGateContext,
+    files: list[str],
+    base_commit: str,
+) -> GateResult | None:
+    new_files, preexisting = _split_files_by_base_existence(
+        context.worktree_path,
+        files,
+        base_commit,
+    )
+
+    if new_files:
+        new_file_failure = _run_full_file_quality_gates(context, new_files)
+        if new_file_failure is not None:
+            return new_file_failure
+
+    return _run_preexisting_file_lint_gate(context, preexisting, base_commit)
+
+
+def _run_changed_file_quality_gates(
+    context: _AcceptanceGateContext,
+) -> GateResult | None:
+    existing_changed_files = _existing_files(context.worktree_path, context.changed_files)
+    if not existing_changed_files:
+        return None
+    if context.base_commit:
+        return _run_post_commit_file_quality_gates(
+            context,
+            existing_changed_files,
+            context.base_commit,
+        )
+    return _run_full_file_quality_gates(context, existing_changed_files)
+
+
+def _run_type_check_acceptance_gate(context: _AcceptanceGateContext) -> GateResult | None:
+    if not context.config.type_check_cmd:
+        return None
+    return _type_check_gate(
+        context.config.type_check_cmd,
+        context.worktree_path,
+        context.project_root,
+        timeout=context.config.settlement_timeout,
+        baseline_path=context.type_baseline_path,
+    )
+
+
+def _run_test_acceptance_gates(context: _AcceptanceGateContext) -> GateResult | None:
+    for test_cmd in _build_test_commands(
+        context.config,
+        context.changed_files,
+        context.worktree_path,
+        context.task_test_cmd,
+    ):
+        test_failure = _run_test_gate(
+            test_cmd,
+            context.worktree_path,
+            timeout=context.config.settlement_timeout,
+        )
+        if test_failure is not None:
+            return test_failure
+    return None
+
+
+def _run_coverage_acceptance_gate(context: _AcceptanceGateContext) -> GateResult | None:
+    return _run_coverage_gate(
+        context.worktree_path,
+        context.changed_files,
+        context.project_root,
+        context.config,
+    )
+
+
+def _run_sentrux_acceptance_gate(context: _AcceptanceGateContext) -> GateResult | None:
+    sx_result = _run_sentrux_gate(
+        context.worktree_path,
+        context.project_root,
+        context.config.settlement_timeout,
+    )
+    if sx_result.passed:
+        return None
+    return sx_result
+
+
+def _run_acceptance_gate_sequence(context: _AcceptanceGateContext) -> GateResult | None:
+    setup_failure = _run_setup_cmd(context.config.setup_cmd or "", context.worktree_path)
+    if setup_failure is not None:
+        return setup_failure
+
+    quality_failure = _run_changed_file_quality_gates(context)
+    if quality_failure is not None:
+        return quality_failure
+
+    type_failure = _run_type_check_acceptance_gate(context)
+    if type_failure is not None:
+        return type_failure
+
+    test_failure = _run_test_acceptance_gates(context)
+    if test_failure is not None:
+        return test_failure
+
+    coverage_failure = _run_coverage_acceptance_gate(context)
+    if coverage_failure is not None:
+        return coverage_failure
+
+    sentrux_failure = _run_sentrux_acceptance_gate(context)
+    if sentrux_failure is not None:
+        return sentrux_failure
+
+    return None
+
+
 def _run_acceptance_gates(
     worktree_path: Path,
     changed_files: Sequence[str],
@@ -1463,134 +1943,22 @@ def _run_acceptance_gates(
     if not changed_files:
         return GateResult(passed=True)
 
-    # 0. Run setup command (e.g. npm ci for JS/TS worktrees)
-    setup_failure = _run_setup_cmd(config.setup_cmd or "", worktree_path)
-    if setup_failure is not None:
-        return setup_failure
-
-    existing_changed_files = _existing_files(worktree_path, changed_files)
-
+    context = _AcceptanceGateContext(
+        worktree_path=worktree_path,
+        changed_files=changed_files,
+        project_root=project_root,
+        config=config,
+        base_commit=base_commit,
+        task_test_cmd=task_test_cmd,
+        type_baseline_path=type_baseline_path,
+    )
     try:
-        if existing_changed_files:
-            if base_commit:
-                # Post-commit: scope lint to worker-changed lines only.
-                # Format check is skipped for existing files — scoped autofix
-                # already formatted the worker's regions, and pre-existing
-                # format issues are not the worker's responsibility.
-                new_in_commit = [
-                    f
-                    for f in existing_changed_files
-                    if not _file_existed_at(worktree_path, f, base_commit)
-                ]
-                preexisting = [f for f in existing_changed_files if f not in new_in_commit]
-
-                # New files: full lint + format check
-                if new_in_commit:
-                    res_lint = _run_cmd(
-                        config.lint_cmd,
-                        new_in_commit,
-                        worktree_path,
-                        timeout=config.settlement_timeout,
-                    )
-                    if res_lint.returncode != 0:
-                        return GateResult(
-                            passed=False,
-                            error=_lint_failure_error(res_lint, config.lint_cmd),
-                        )
-                    res_fmt = _run_cmd(
-                        config.format_check_cmd,
-                        new_in_commit,
-                        worktree_path,
-                        timeout=config.settlement_timeout,
-                    )
-                    if res_fmt.returncode != 0:
-                        return GateResult(
-                            passed=False,
-                            error=_format_failure_error(res_fmt, config.format_check_cmd),
-                        )
-
-                # Existing files: scoped lint when Ruff available, else full lint
-                if preexisting:
-                    if "ruff" in config.lint_cmd:
-                        lint_result = _scoped_lint_check(
-                            worktree_path, preexisting, base_commit, config
-                        )
-                        if lint_result is not None:
-                            return lint_result
-                    else:
-                        # Non-Ruff linters: can't scope, run full lint
-                        res_lint = _run_cmd(
-                            config.lint_cmd,
-                            preexisting,
-                            worktree_path,
-                            timeout=config.settlement_timeout,
-                        )
-                        if res_lint.returncode != 0:
-                            return GateResult(
-                                passed=False,
-                                error=_lint_failure_error(res_lint, config.lint_cmd),
-                            )
-            else:
-                # Pre-commit / preflight: full checks (current behavior)
-                res_lint = _run_cmd(
-                    config.lint_cmd,
-                    existing_changed_files,
-                    worktree_path,
-                    timeout=config.settlement_timeout,
-                )
-                if res_lint.returncode != 0:
-                    return GateResult(
-                        passed=False,
-                        error=_lint_failure_error(res_lint, config.lint_cmd),
-                    )
-
-                res_fmt = _run_cmd(
-                    config.format_check_cmd,
-                    existing_changed_files,
-                    worktree_path,
-                    timeout=config.settlement_timeout,
-                )
-                if res_fmt.returncode != 0:
-                    return GateResult(
-                        passed=False,
-                        error=_format_failure_error(res_fmt, config.format_check_cmd),
-                    )
-
-        if config.type_check_cmd:
-            ty_failure = _type_check_gate(
-                config.type_check_cmd,
-                worktree_path,
-                project_root,
-                timeout=config.settlement_timeout,
-                baseline_path=type_baseline_path,
-            )
-            if ty_failure is not None:
-                return ty_failure
-
-        for test_cmd in _build_test_commands(config, changed_files, worktree_path, task_test_cmd):
-            test_failure = _run_test_gate(
-                test_cmd, worktree_path, timeout=config.settlement_timeout
-            )
-            if test_failure is not None:
-                return test_failure
-
-        coverage_failure = _run_coverage_gate(
-            worktree_path,
-            changed_files,
-            project_root,
-            config,
-        )
-        if coverage_failure is not None:
-            return coverage_failure
-
-        sx_result = _run_sentrux_gate(worktree_path, project_root, config.settlement_timeout)
-        if not sx_result.passed:
-            return sx_result
-
-        return GateResult(passed=True)
-
+        failure = _run_acceptance_gate_sequence(context)
     except Exception as exc:
         return GateResult(passed=False, error=f"Unexpected validation error: {exc}")
+    if failure is not None:
+        return failure
+    return GateResult(passed=True)
 
 
 def preflight_sandbox(

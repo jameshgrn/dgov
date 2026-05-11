@@ -1,12 +1,15 @@
-"""Retry helpers for OpenAI-compatible LLM calls."""
+"""OpenAI-compatible provider wrapper with rate-limit backoff."""
 
 from __future__ import annotations
 
 import json
 import random
 import time
-from collections.abc import Callable, Mapping
-from typing import Any
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
+from typing import Any, cast
+
+from openai import OpenAI
 
 RATE_LIMIT_BACKOFF_S = (5.0, 30.0, 90.0)
 _JITTER_FRACTION = 0.2
@@ -142,37 +145,48 @@ def _estimate_request_tokens(kwargs: dict[str, Any]) -> tuple[int, int]:
         Tuple of (estimated_prompt_tokens, estimated_generated_tokens).
         estimated_generated_tokens will be 0 if max_tokens is not specified.
     """
-    estimated_prompt = 0
+    return (_estimate_prompt_tokens(kwargs), _estimate_generated_tokens(kwargs))
 
-    # Estimate from messages
-    messages = kwargs.get("messages", [])
-    if messages:
-        for msg in messages:
-            if isinstance(msg, dict):
-                content = msg.get("content", "")
-                if content:
-                    estimated_prompt += _estimate_tokens_from_length(str(content))
-                # Function/tool calls in message history
-                tool_calls = msg.get("tool_calls", [])
-                if tool_calls:
-                    estimated_prompt += _estimate_tokens_from_length(json.dumps(tool_calls))
 
-    # Estimate from tools schema
+def _estimate_prompt_tokens(kwargs: dict[str, Any]) -> int:
+    estimated_prompt = _estimate_message_tokens(kwargs.get("messages", []))
     tools = kwargs.get("tools", [])
     if tools:
-        tools_json = json.dumps(tools)
-        estimated_prompt += _estimate_tokens_from_length(tools_json)
+        estimated_prompt += _estimate_tokens_from_length(json.dumps(tools))
+    return estimated_prompt
 
-    # Estimate requested generated tokens
-    estimated_generated = 0
+
+def _estimate_message_tokens(messages: object) -> int:
+    estimated_prompt = 0
+    if not isinstance(messages, list):
+        return estimated_prompt
+    for message in messages:
+        estimated_prompt += _estimate_message_token_count(message)
+    return estimated_prompt
+
+
+def _estimate_message_token_count(message: object) -> int:
+    if not isinstance(message, dict):
+        return 0
+    message = cast("dict[str, Any]", message)
+    estimated = 0
+    content = message.get("content", "")
+    if content:
+        estimated += _estimate_tokens_from_length(str(content))
+    tool_calls = message.get("tool_calls", [])
+    if tool_calls:
+        estimated += _estimate_tokens_from_length(json.dumps(tool_calls))
+    return estimated
+
+
+def _estimate_generated_tokens(kwargs: dict[str, Any]) -> int:
     max_tokens = kwargs.get("max_tokens")
-    if max_tokens is not None:
-        try:
-            estimated_generated = int(max_tokens)
-        except (ValueError, TypeError):
-            estimated_generated = 0
-
-    return (estimated_prompt, estimated_generated)
+    if max_tokens is None:
+        return 0
+    try:
+        return int(max_tokens)
+    except (ValueError, TypeError):
+        return 0
 
 
 def _check_fireworks_limits(
@@ -216,6 +230,29 @@ def _jittered_delay(
     return max(0.0, base_delay_s + jitter_fn(-jitter_span, jitter_span))
 
 
+def _fireworks_limit_retry_decision(
+    headers: Mapping[str, Any],
+    kwargs: dict[str, Any],
+) -> tuple[bool, float | None] | None:
+    prompt_limit, generated_limit = _extract_fireworks_limits(headers)
+    if prompt_limit is None and generated_limit is None:
+        return None
+
+    estimated_prompt, estimated_generated = _estimate_request_tokens(kwargs)
+    if prompt_limit is not None and estimated_prompt > prompt_limit:
+        return (False, None)
+    if generated_limit is not None and estimated_generated > generated_limit:
+        return (False, None)
+    return None
+
+
+def _retry_after_decision(headers: Mapping[str, Any]) -> tuple[bool, float | None] | None:
+    retry_after = _extract_retry_after(headers)
+    if retry_after is not None and retry_after > 0:
+        return (True, retry_after)
+    return None
+
+
 def _classify_rate_limit_error(
     exc: Exception,
     kwargs: dict[str, Any],
@@ -232,22 +269,14 @@ def _classify_rate_limit_error(
 
     # Check Fireworks-specific limits first - fail fast if exceeded
     headers = _get_headers_from_exc(exc)
-    prompt_limit, generated_limit = _extract_fireworks_limits(headers)
-
-    if prompt_limit is not None or generated_limit is not None:
-        # Fireworks headers present - validate limits
-        estimated_prompt, estimated_generated = _estimate_request_tokens(kwargs)
-
-        if prompt_limit is not None and estimated_prompt > prompt_limit:
-            return (False, None)  # Don't retry, will raise FireworksRateLimitError
-
-        if generated_limit is not None and estimated_generated > generated_limit:
-            return (False, None)  # Don't retry, will raise FireworksRateLimitError
+    decision = _fireworks_limit_retry_decision(headers, kwargs)
+    if decision is not None:
+        return decision
 
     # Check for Retry-After header (preferred over static backoff)
-    retry_after = _extract_retry_after(headers)
-    if retry_after is not None and retry_after > 0:
-        return (True, retry_after)
+    decision = _retry_after_decision(headers)
+    if decision is not None:
+        return decision
 
     # Generic rate limit - use default backoff
     return (True, None)
@@ -263,38 +292,60 @@ def call_with_rate_limit_backoff[T](
 ) -> T:
     """Call ``fn`` with slow retries for provider 429/rate-limit failures."""
     backoff_iter = iter(backoff_s)
-    delay_s: float | None = None
 
     while True:
         try:
             return fn()
         except Exception as exc:
-            should_retry, custom_delay = _classify_rate_limit_error(
-                exc, _kwargs_for_classification or {}
+            delay_s = _retry_delay_for_rate_limit(
+                exc,
+                kwargs_for_classification=_kwargs_for_classification,
+                backoff_iter=backoff_iter,
             )
-
-            if not should_retry:
-                # Check if it's a Fireworks limit exceeded that we should raise specially
-                if _kwargs_for_classification is not None:
-                    _check_fireworks_limits(exc, _kwargs_for_classification)
-                raise
-
-            # Determine delay for this attempt
-            if custom_delay is not None:
-                delay_s = custom_delay
-            else:
-                try:
-                    delay_s = next(backoff_iter)
-                except StopIteration:
-                    # Exhausted backoff slots, re-raise the original exception
-                    raise exc from None
-
             sleep_fn(_jittered_delay(delay_s, jitter_fn))
 
 
-def create_chat_completion_with_backoff(client: Any, **kwargs: Any) -> Any:
-    """Call ``client.chat.completions.create`` with dgov's rate-limit backoff."""
-    return call_with_rate_limit_backoff(
-        lambda: client.chat.completions.create(**kwargs),
-        _kwargs_for_classification=kwargs,
-    )
+def _retry_delay_for_rate_limit(
+    exc: Exception,
+    *,
+    kwargs_for_classification: dict[str, Any] | None,
+    backoff_iter: Iterator[float],
+) -> float:
+    should_retry, custom_delay = _classify_rate_limit_error(exc, kwargs_for_classification or {})
+    if not should_retry:
+        _raise_unretryable_provider_error(exc, kwargs_for_classification)
+    if custom_delay is not None:
+        return custom_delay
+    return _next_backoff_delay(backoff_iter, exc)
+
+
+def _raise_unretryable_provider_error(
+    exc: Exception,
+    kwargs_for_classification: dict[str, Any] | None,
+) -> None:
+    if kwargs_for_classification is not None:
+        _check_fireworks_limits(exc, kwargs_for_classification)
+    raise exc
+
+
+def _next_backoff_delay(backoff_iter: Iterator[float], exc: Exception) -> float:
+    try:
+        return next(backoff_iter)
+    except StopIteration:
+        raise exc from None
+
+
+@dataclass(frozen=True)
+class OpenAICompatibleProvider:
+    client: Any
+
+    def create_chat_completion(self, **kwargs: Any) -> Any:
+        return call_with_rate_limit_backoff(
+            lambda: self.client.chat.completions.create(**kwargs),
+            _kwargs_for_classification=kwargs,
+        )
+
+
+def create_provider(*, base_url: str, api_key: str) -> OpenAICompatibleProvider:
+    client = OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
+    return OpenAICompatibleProvider(client)

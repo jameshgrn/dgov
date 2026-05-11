@@ -46,22 +46,19 @@ def _git_commit_env(cwd: str | Path | None = None) -> dict[str, str]:
     return env
 
 
-def create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") -> Worktree:
-    """Create an isolated worktree for an Atomic Attempt.
-
-    Worktrees are created as siblings of the project root (not inside it)
-    to avoid git nesting issues where the worktree resolves to the parent
-    repo's tree root instead of its own.
-    """
+def _resolve_worktree_context(project_root: str, slug: str) -> tuple[Path, Path, str]:
+    """Compute worktree directory path, worktree path, and branch name."""
     root = Path(project_root)
     worktrees_dir = root.parent / f".dgov-worktrees-{root.name}"
-    worktrees_dir.mkdir(parents=True, exist_ok=True)
-
     wt_path = worktrees_dir / slug
     branch_name = f"dgov/{slug}"
-    git_env = _git_env(project_root)
+    return worktrees_dir, wt_path, branch_name
 
-    # Idempotent cleanup of existing worktree/branch (prune first for interrupted cleanups)
+
+def _clean_existing_worktree(
+    project_root: str, wt_path: Path, branch_name: str, git_env: dict[str, str]
+) -> None:
+    """Idempotent cleanup of existing worktree and branch (tolerates non-existence)."""
     if wt_path.exists():
         subprocess.run(
             ["git", "worktree", "remove", "-f", str(wt_path)],
@@ -84,7 +81,15 @@ def create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") -> Wor
         capture_output=True,
     )
 
-    # Pillar #3: Add worktree with a dedicated branch
+
+def _add_worktree(
+    project_root: str,
+    wt_path: Path,
+    branch_name: str,
+    base_ref: str,
+    git_env: dict[str, str],
+) -> None:
+    """Add worktree with a dedicated branch (raises on failure)."""
     subprocess.run(
         ["git", "worktree", "add", "-b", branch_name, str(wt_path), base_ref],
         cwd=project_root,
@@ -92,10 +97,10 @@ def create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") -> Wor
         capture_output=True,
         env=git_env,
     )
-    if _should_link_shared_venv(root):
-        _link_shared_venv(root, wt_path)
 
-    # Capture Snapshot SHA
+
+def _capture_snapshot_sha(wt_path: Path, git_env: dict[str, str]) -> str:
+    """Read HEAD commit SHA from the worktree (raises on failure)."""
     res = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=wt_path,
@@ -104,8 +109,28 @@ def create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") -> Wor
         capture_output=True,
         text=True,
     )
-    commit = res.stdout.strip()
+    return res.stdout.strip()
 
+
+def create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") -> Worktree:
+    """Create an isolated worktree for an Atomic Attempt.
+
+    Worktrees are created as siblings of the project root (not inside it)
+    to avoid git nesting issues where the worktree resolves to the parent
+    repo's tree root instead of its own.
+    """
+    worktrees_dir, wt_path, branch_name = _resolve_worktree_context(project_root, slug)
+    worktrees_dir.mkdir(parents=True, exist_ok=True)
+
+    git_env = _git_env(project_root)
+    _clean_existing_worktree(project_root, wt_path, branch_name, git_env)
+    _add_worktree(project_root, wt_path, branch_name, base_ref, git_env)
+
+    root = Path(project_root)
+    if _should_link_shared_venv(root):
+        _link_shared_venv(root, wt_path)
+
+    commit = _capture_snapshot_sha(wt_path, git_env)
     logger.debug("Created isolated worktree at %s", wt_path)
     return Worktree(path=wt_path, branch=branch_name, commit=commit)
 
@@ -230,49 +255,79 @@ def _run_prepare_cmd(
     )
 
 
+def _try_fast_forward_merge(
+    project_root: str,
+    branch: str,
+    git_env: dict[str, str],
+) -> bool:
+    """Attempt fast-forward merge. Returns True if successful."""
+    try:
+        subprocess.run(
+            ["git", "merge", "--ff-only", branch],
+            cwd=project_root,
+            env=git_env,
+            check=True,
+            capture_output=True,
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def _list_commits_to_cherry_pick(
+    project_root: str,
+    base_commit: str,
+    branch: str,
+    git_env: dict[str, str],
+) -> list[str]:
+    """List commits on branch since base_commit, in chronological order."""
+    res = subprocess.run(
+        ["git", "rev-list", "--reverse", f"{base_commit}..{branch}"],
+        cwd=project_root,
+        env=git_env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return [c for c in res.stdout.strip().split("\n") if c]
+
+
+def _cherry_pick_commits_with_abort(
+    project_root: str,
+    commits: list[str],
+    git_commit_env: dict[str, str],
+) -> None:
+    """Cherry-pick commits with dgov committer identity; abort on failure."""
+    for commit in commits:
+        try:
+            subprocess.run(
+                ["git", "cherry-pick", commit],
+                cwd=project_root,
+                env=git_commit_env,
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError:
+            # Abort cherry-pick to leave repo in clean state, then re-raise
+            subprocess.run(
+                ["git", "cherry-pick", "--abort"],
+                cwd=project_root,
+                env=git_commit_env,
+                capture_output=True,
+            )
+            raise
+
+
 def merge_worktree(project_root: str, wt: Worktree) -> str:
     """Commit-or-Kill: Merge the worktree branch into base."""
     git_env = _git_env(project_root)
     git_commit_env = _git_commit_env(project_root)
 
     # Try fast-forward first (hot-path)
-    try:
-        subprocess.run(
-            ["git", "merge", "--ff-only", wt.branch],
-            cwd=project_root,
-            env=git_env,
-            check=True,
-            capture_output=True,
-        )
-    except subprocess.CalledProcessError:
+    if not _try_fast_forward_merge(project_root, wt.branch, git_env):
         # Fallback: cherry-pick if main moved (Lacustrine safety)
-        res = subprocess.run(
-            ["git", "rev-list", "--reverse", f"{wt.commit}..{wt.branch}"],
-            cwd=project_root,
-            env=git_env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        commits = [c for c in res.stdout.strip().split("\n") if c]
-        for c in commits:
-            try:
-                subprocess.run(
-                    ["git", "cherry-pick", c],
-                    cwd=project_root,
-                    env=git_commit_env,
-                    check=True,
-                    capture_output=True,
-                )
-            except subprocess.CalledProcessError:
-                # Abort cherry-pick to leave repo in clean state, then re-raise
-                subprocess.run(
-                    ["git", "cherry-pick", "--abort"],
-                    cwd=project_root,
-                    env=git_commit_env,
-                    capture_output=True,
-                )
-                raise
+        commits = _list_commits_to_cherry_pick(project_root, wt.commit, wt.branch, git_env)
+        _cherry_pick_commits_with_abort(project_root, commits, git_commit_env)
 
     res = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -446,6 +501,100 @@ def _cleanup_candidate_worktree(project_root: str, candidate_wt: Worktree | None
         remove_worktree(project_root, candidate_wt)
 
 
+def _create_candidate_worktree(
+    project_root: str,
+    candidate_slug: str,
+    target_head_sha: str,
+) -> Worktree:
+    """Create a fresh worktree at target HEAD for integration testing."""
+    return create_worktree(
+        project_root,
+        candidate_slug,
+        base_ref=target_head_sha,
+    )
+
+
+def _build_no_commits_failure(target_head_sha: str) -> IntegrationCandidateResult:
+    """Return failure result when task worktree has no commits to replay."""
+    return _integration_candidate_failure(
+        "No commits to replay from task worktree",
+        target_head_sha=target_head_sha,
+    )
+
+
+def _build_replay_failure_result(
+    *,
+    candidate_slug: str,
+    task_wt: Worktree,
+    target_head_sha: str,
+    replay_failure: _ReplayFailure,
+) -> IntegrationCandidateResult:
+    """Return failure result with full replay error context."""
+    error_msg = _format_replay_failure(
+        candidate_slug=candidate_slug,
+        task_wt=task_wt,
+        target_head_sha=target_head_sha,
+        failure=replay_failure,
+    )
+    return _integration_candidate_failure(
+        error=error_msg,
+        target_head_sha=target_head_sha,
+        failed_commit_sha=replay_failure.failed_commit_sha,
+        conflict_files=replay_failure.conflict_files,
+        conflict_marker_counts=replay_failure.conflict_marker_counts,
+    )
+
+
+def _build_success_result(
+    candidate_wt: Worktree,
+    target_head_sha: str,
+) -> IntegrationCandidateResult:
+    """Return success result with candidate path and commit SHA."""
+    return IntegrationCandidateResult(
+        passed=True,
+        candidate_path=candidate_wt.path,
+        candidate_sha=_git_rev_parse(candidate_wt.path),
+        target_head_sha=target_head_sha,
+    )
+
+
+def _replay_commits_onto_candidate(
+    candidate_wt: Worktree,
+    commits: list[str],
+) -> _ReplayFailure | None:
+    """Replay all commits onto the candidate worktree; return failure if any fail."""
+    for commit_sha in commits:
+        failure = _replay_commit(candidate_wt, commit_sha)
+        if failure is not None:
+            return failure
+    return None
+
+
+def _evaluate_integration_candidate(
+    project_root: str,
+    task_wt: Worktree,
+    candidate_slug: str,
+    candidate_wt: Worktree,
+    target_head_sha: str,
+) -> IntegrationCandidateResult:
+    commits = _task_commits_to_replay(project_root, task_wt)
+    if not commits:
+        _cleanup_candidate_worktree(project_root, candidate_wt)
+        return _build_no_commits_failure(target_head_sha)
+
+    replay_failure = _replay_commits_onto_candidate(candidate_wt, commits)
+    if replay_failure is not None:
+        _cleanup_candidate_worktree(project_root, candidate_wt)
+        return _build_replay_failure_result(
+            candidate_slug=candidate_slug,
+            task_wt=task_wt,
+            target_head_sha=target_head_sha,
+            replay_failure=replay_failure,
+        )
+
+    return _build_success_result(candidate_wt, target_head_sha)
+
+
 def create_integration_candidate(
     project_root: str,
     task_wt: Worktree,
@@ -457,41 +606,18 @@ def create_integration_candidate(
 
     try:
         target_head_sha = _git_rev_parse(project_root)
-        candidate_wt = create_worktree(
+        candidate_wt = _create_candidate_worktree(
             project_root,
             candidate_slug,
-            base_ref=target_head_sha,
+            target_head_sha,
         )
-        commits = _task_commits_to_replay(project_root, task_wt)
-        if not commits:
-            _cleanup_candidate_worktree(project_root, candidate_wt)
-            return _integration_candidate_failure(
-                "No commits to replay from task worktree",
-                target_head_sha=target_head_sha,
-            )
 
-        for commit_sha in commits:
-            replay_failure = _replay_commit(candidate_wt, commit_sha)
-            if replay_failure is not None:
-                _cleanup_candidate_worktree(project_root, candidate_wt)
-                return _integration_candidate_failure(
-                    error=_format_replay_failure(
-                        candidate_slug=candidate_slug,
-                        task_wt=task_wt,
-                        target_head_sha=target_head_sha,
-                        failure=replay_failure,
-                    ),
-                    target_head_sha=target_head_sha,
-                    failed_commit_sha=replay_failure.failed_commit_sha,
-                    conflict_files=replay_failure.conflict_files,
-                    conflict_marker_counts=replay_failure.conflict_marker_counts,
-                )
-
-        return IntegrationCandidateResult(
-            passed=True,
-            candidate_path=candidate_wt.path,
-            candidate_sha=_git_rev_parse(candidate_wt.path),
-            target_head_sha=target_head_sha,
+        return _evaluate_integration_candidate(
+            project_root,
+            task_wt,
+            candidate_slug,
+            candidate_wt,
+            target_head_sha,
         )
 
     except subprocess.CalledProcessError as exc:

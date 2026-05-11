@@ -15,56 +15,56 @@ import json
 import os
 import shutil
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-
-from openai import OpenAI
 
 # Ensure src/ is in path for dgov imports when run as a standalone script
 _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root / "src") not in sys.path:
     sys.path.append(str(_project_root / "src"))
 
-from dgov.llm_backoff import create_chat_completion_with_backoff  # noqa: E402
-from dgov.worker import (  # noqa: E402
-    WorkerEvent,
-    _execute_tool_call,
-    _iteration_budget,
-    _repo_map_snapshot,
-    _resolve_config,
-)
 from dgov.workers.atomic import AtomicTools, get_allowed_tool_names, get_tool_spec  # noqa: E402
+from dgov.workers.provider import create_provider  # noqa: E402
+from dgov.workers.runtime import (  # noqa: E402
+    WorkerEvent,
+    execute_tool_call,
+    iteration_budget,
+    repo_map_snapshot,
+    resolve_config,
+)
 
 
-def _build_system_prompt(worktree: Path, config: Any, interactive: bool = False) -> str:
-    """Construct the planner's system prompt."""
+def _rules_context(worktree: Path) -> str:
     rules_path = worktree / ".dgov" / "rules" / "learned.json"
-    rules_context = ""
-    if rules_path.exists():
-        rules_context = f"\nLEARNED RULES:\n{rules_path.read_text()}"
+    if not rules_path.exists():
+        return ""
+    return f"\nLEARNED RULES:\n{rules_path.read_text()}"
 
-    repo_map = _repo_map_snapshot(worktree, config, max_lines=config.worker_tree_max_lines)
 
-    project_section = (
+def _project_section(config: Any) -> str:
+    section = (
         f"\n\nPROJECT:\n"
         f"- Language: {config.language}\n"
         f"- Source: {config.src_dir}\n"
         f"- Tests: {config.test_dir}\n"
     )
     if config.test_markers:
-        project_section += f"- Test markers: {', '.join(config.test_markers)}\n"
+        section += f"- Test markers: {', '.join(config.test_markers)}\n"
     if config.conventions:
-        project_section += "\nCONVENTIONS:\n"
+        section += "\nCONVENTIONS:\n"
         for key, val in config.conventions.items():
-            project_section += f"- {key}: {val}\n"
+            section += f"- {key}: {val}\n"
     if config.tool_policy.to_prompt_lines():
-        project_section += "\nTOOL POLICY:\n"
+        section += "\nTOOL POLICY:\n"
         for line in config.tool_policy.to_prompt_lines():
-            project_section += f"- {line}\n"
+            section += f"- {line}\n"
+    return section
 
-    interactive_section = ""
+
+def _planner_mode_section(interactive: bool) -> str:
     if interactive:
-        interactive_section = """
+        return """
 INTERACTIVE MODE:
 - You have access to the `ask_user` tool. Use it to resolve ambiguity.
 - Ask ONE question at a time. Include your recommended answer with each question.
@@ -74,35 +74,16 @@ INTERACTIVE MODE:
   files are in scope.
 - Do not ask questions you can answer by reading the code. Explore first, ask second.
 """
-    else:
-        interactive_section = """
+    return """
 AUTONOMOUS MODE:
 - You cannot ask questions. Make your best judgment based on the codebase.
 - When uncertain, prefer the simpler, more conservative approach.
 - Note any assumptions in the plan summary.
 """
 
-    sections = [
-        f"""[DGOV_PLANNER_PROMPT_V1.0.0]
 
-Greetings, Planner.
-
-You are operating inside a dedicated Sandbox (project root: {worktree}).
-Your mission is to explore this codebase, understand the problem, and produce
-a structured implementation plan that downstream workers can execute surgically.
-
-THE DGOV WAY:
-- You are the Architect. Workers are the Implementers. Settlement is the Auditor.
-- Your plan is the contract. Workers will follow it literally — they cannot see
-  what you see, only what you write in each task prompt.
-- Every task you define must be self-contained: its prompt, file claims, and commit
-  message must be sufficient for a worker that has never seen this conversation.
-""",
-        rules_context,
-        project_section,
-        interactive_section,
-        f"\nREPO MAP:\n{repo_map}",
-        f"""
+def _planner_contract_section() -> str:
+    return f"""
 ENVIRONMENT:
 - Python: {sys.executable}
 - Available: rg, sg (ast-grep), jq, tree, git, python, pytest, ruff (all pre-installed)
@@ -132,7 +113,11 @@ CONFIG OVERRIDES:
   your emit_plan call. Supported keys: src_dir, test_dir, lint_cmd, format_cmd,
   lint_fix_cmd, test_cmd, language.
 - Only include overrides you have evidence for. Do not guess.
+"""
 
+
+def _planner_workflow_section(config: Any) -> str:
+    return f"""
 WORKFLOW:
 1. ORIENT: Start with the repo map. Use tree, list_dir, and read_file to understand
    the project structure, build system, and conventions. Read config files
@@ -169,7 +154,35 @@ DO NOT:
   need changes.
 - Ignore test files. If a code change needs test updates, include them.
 - Return without calling emit_plan. Your only valid exit is a complete plan.
+"""
+
+
+def _build_system_prompt(worktree: Path, config: Any, interactive: bool = False) -> str:
+    """Construct the planner's system prompt."""
+    repo_map = repo_map_snapshot(worktree, config, max_lines=config.worker_tree_max_lines)
+
+    sections = [
+        f"""[DGOV_PLANNER_PROMPT_V1.0.0]
+
+Greetings, Planner.
+
+You are operating inside a dedicated Sandbox (project root: {worktree}).
+Your mission is to explore this codebase, understand the problem, and produce
+a structured implementation plan that downstream workers can execute surgically.
+
+THE DGOV WAY:
+- You are the Architect. Workers are the Implementers. Settlement is the Auditor.
+- Your plan is the contract. Workers will follow it literally — they cannot see
+  what you see, only what you write in each task prompt.
+- Every task you define must be self-contained: its prompt, file claims, and commit
+  message must be sufficient for a worker that has never seen this conversation.
 """,
+        _rules_context(worktree),
+        _project_section(config),
+        _planner_mode_section(interactive),
+        f"\nREPO MAP:\n{repo_map}",
+        _planner_contract_section(),
+        _planner_workflow_section(config),
         "Strictly use tools. Call 'emit_plan' when your plan is ready.",
     ]
     return "".join(sections)
@@ -188,6 +201,188 @@ def _ask_user_via_stdin(question: str) -> str:
         return line
 
 
+def _planner_config_and_provider(worktree: Path, project_config_json: str) -> tuple[Any, Any]:
+    config = resolve_config(worktree, project_config_json)
+    api_key = os.environ.get(config.llm_api_key_env)
+    if not api_key:
+        WorkerEvent("error", f"{config.llm_api_key_env} missing").emit()
+        sys.exit(1)
+    provider = create_provider(base_url=config.llm_base_url, api_key=api_key)
+    return config, provider
+
+
+def _initial_planner_messages(
+    goal: str,
+    worktree: Path,
+    config: Any,
+    interactive: bool,
+) -> list[Any]:
+    return [
+        {"role": "system", "content": _build_system_prompt(worktree, config, interactive)},
+        {"role": "user", "content": goal},
+    ]
+
+
+def _create_planner_completion(
+    provider: Any,
+    *,
+    model: str,
+    messages: list[Any],
+    interactive: bool,
+) -> Any:
+    return provider.create_chat_completion(
+        model=model,
+        messages=messages,
+        tools=get_tool_spec("planner", interactive=interactive),
+        tool_choice="auto",
+    )
+
+
+def _append_planner_response(messages: list[Any], resp: Any) -> Any:
+    msg = resp.choices[0].message
+    messages.append(msg.model_dump(exclude_none=True))
+    if msg.content:
+        WorkerEvent("thought", msg.content).emit()
+    return msg
+
+
+def _handle_missing_plan_tool(
+    resp: Any,
+    messages: list[Any],
+    nudged: bool,
+    cleanup: Callable[[], None],
+) -> bool:
+    if resp.choices[0].finish_reason != "stop":
+        return nudged
+    if not nudged:
+        messages.append({
+            "role": "user",
+            "content": (
+                "You responded with text but did not call any tool. "
+                "You MUST call the `emit_plan` tool to finish. If the task "
+                "is unclear, call `emit_plan` with a best-effort plan and "
+                "note the ambiguity in the summary. Do NOT respond with text only."
+            ),
+        })
+        return True
+    WorkerEvent("error", "Agent stopped without calling 'emit_plan'").emit()
+    cleanup()
+    sys.exit(1)
+
+
+def _append_tool_message(messages: list[Any], call: Any, result: str) -> None:
+    messages.append({
+        "role": "tool",
+        "tool_call_id": call.id,
+        "name": call.function.name,
+        "content": result,
+    })
+
+
+def _execute_planner_tools(
+    msg: Any,
+    actuators: AtomicTools,
+    *,
+    allowed_tools: frozenset[str],
+    ask_fn: Callable[[str], str] | None,
+    iteration: int,
+    messages: list[Any],
+) -> bool:
+    for tool_index, call in enumerate(msg.tool_calls, start=1):
+        result, is_done = execute_tool_call(
+            call,
+            actuators,
+            allowed_tools=allowed_tools,
+            ask_user_fn=ask_fn,
+            role="planner",
+            turn_index=iteration + 1,
+            tool_index=tool_index,
+        )
+        if is_done:
+            return True
+        _append_tool_message(messages, call, result)
+    return False
+
+
+def _exit_planner(cleanup: Callable[[], None], code: int) -> None:
+    cleanup()
+    sys.exit(code)
+
+
+def _build_planner_runtime(
+    goal: str,
+    worktree: Path,
+    project_config_json: str,
+    interactive: bool,
+) -> tuple[
+    Any,  # config
+    Any,  # provider
+    AtomicTools,
+    Callable[[], None],  # cleanup
+    Callable[[str], str] | None,  # ask_fn
+    list[Any],  # messages
+    bool,  # nudged
+    frozenset[str],  # allowed_tools
+    int,  # budget
+]:
+    """Build the initial runtime state for the planner loop."""
+    config, provider = _planner_config_and_provider(worktree, project_config_json)
+    actuators = AtomicTools(worktree, config)
+
+    def _cleanup() -> None:
+        shutil.rmtree(actuators._sandbox_home, ignore_errors=True)
+
+    ask_fn = _ask_user_via_stdin if interactive else None
+    messages = _initial_planner_messages(goal, worktree, config, interactive)
+    nudged = False
+    allowed_tools = get_allowed_tool_names("planner", interactive=interactive)
+    budget = iteration_budget(config)
+
+    return config, provider, actuators, _cleanup, ask_fn, messages, nudged, allowed_tools, budget
+
+
+def _run_planner_iteration(
+    provider: Any,
+    model: str,
+    messages: list[Any],
+    interactive: bool,
+    actuators: AtomicTools,
+    allowed_tools: frozenset[str],
+    ask_fn: Callable[[str], str] | None,
+    iteration: int,
+    nudged: bool,
+    cleanup: Callable[[], None],
+) -> tuple[bool, bool]:
+    """Execute one planner iteration. Returns (done, nudged)."""
+    try:
+        resp = _create_planner_completion(
+            provider,
+            model=model,
+            messages=messages,
+            interactive=interactive,
+        )
+    except Exception as exc:
+        WorkerEvent("error", f"API Failure: {exc!s}").emit()
+        cleanup()
+        sys.exit(1)
+
+    msg = _append_planner_response(messages, resp)
+
+    if not msg.tool_calls:
+        nudged = _handle_missing_plan_tool(resp, messages, nudged, cleanup)
+        return False, nudged
+
+    done = _execute_planner_tools(
+        msg,
+        actuators,
+        allowed_tools=allowed_tools,
+        ask_fn=ask_fn,
+        iteration=iteration,
+        messages=messages,
+    )
+    return done, nudged
+
+
 def run_planner(
     goal: str,
     worktree: Path,
@@ -196,90 +391,28 @@ def run_planner(
     interactive: bool = False,
 ) -> None:
     """Run the planner agent loop."""
-    config = _resolve_config(worktree, project_config_json)
-    api_key = os.environ.get(config.llm_api_key_env)
-    if not api_key:
-        WorkerEvent("error", f"{config.llm_api_key_env} missing").emit()
-        sys.exit(1)
-
-    client = OpenAI(base_url=config.llm_base_url, api_key=api_key, max_retries=0)
-    actuators = AtomicTools(worktree, config)
-
-    def _cleanup() -> None:
-        shutil.rmtree(actuators._sandbox_home, ignore_errors=True)
-
-    ask_fn = _ask_user_via_stdin if interactive else None
-
-    messages: list[Any] = [
-        {"role": "system", "content": _build_system_prompt(worktree, config, interactive)},
-        {"role": "user", "content": goal},
-    ]
-    nudged = False
-    allowed_tools = get_allowed_tool_names("planner", interactive=interactive)
-    budget = _iteration_budget(config)
+    _config, provider, actuators, cleanup, ask_fn, messages, nudged, allowed_tools, budget = (
+        _build_planner_runtime(goal, worktree, project_config_json, interactive)
+    )
 
     for iteration in range(budget):
-        try:
-            resp = create_chat_completion_with_backoff(
-                client,
-                model=model,
-                messages=messages,
-                tools=get_tool_spec("planner", interactive=interactive),
-                tool_choice="auto",
-            )
-        except Exception as exc:
-            WorkerEvent("error", f"API Failure: {exc!s}").emit()
-            _cleanup()
-            sys.exit(1)
-
-        msg = resp.choices[0].message
-        messages.append(msg.model_dump(exclude_none=True))
-
-        if msg.content:
-            WorkerEvent("thought", msg.content).emit()
-
-        if not msg.tool_calls:
-            if resp.choices[0].finish_reason == "stop":
-                if not nudged:
-                    nudged = True
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "You responded with text but did not call any tool. "
-                            "You MUST call the `emit_plan` tool to finish. If the task "
-                            "is unclear, call `emit_plan` with a best-effort plan and "
-                            "note the ambiguity in the summary. Do NOT respond with text only."
-                        ),
-                    })
-                    continue
-                WorkerEvent("error", "Agent stopped without calling 'emit_plan'").emit()
-                _cleanup()
-                sys.exit(1)
-            continue
-
-        for tool_index, call in enumerate(msg.tool_calls, start=1):
-            result, is_done = _execute_tool_call(
-                call,
-                actuators,
-                allowed_tools=allowed_tools,
-                ask_user_fn=ask_fn,
-                role="planner",
-                turn_index=iteration + 1,
-                tool_index=tool_index,
-            )
-            if is_done:
-                _cleanup()
-                sys.exit(0)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": call.id,
-                "name": call.function.name,
-                "content": result,
-            })
+        done, nudged = _run_planner_iteration(
+            provider,
+            model,
+            messages,
+            interactive,
+            actuators,
+            allowed_tools,
+            ask_fn,
+            iteration,
+            nudged,
+            cleanup,
+        )
+        if done:
+            _exit_planner(cleanup, 0)
 
     WorkerEvent("error", f"Exceeded max iterations ({budget})").emit()
-    _cleanup()
-    sys.exit(1)
+    _exit_planner(cleanup, 1)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -56,6 +57,59 @@ def _echo_plan_summary(plan: PlanSpec, errors: list, warnings: list) -> None:
         click.echo("\nValidation passed.")
 
 
+def _resolve_compiled_plan_path(plan_input: Path) -> tuple[Path, Path | None]:
+    """Resolve plan input to (plan_file, plan_dir) or raise ClickException."""
+    try:
+        plan_file, plan_dir = resolve_plan_input(plan_input)
+    except click.ClickException as exc:
+        click.echo(f"Error: {exc.message}", err=True)
+        raise click.exceptions.Exit(code=1) from None
+
+    if plan_dir is not None and not plan_file.exists():
+        click.echo(
+            f"Error: no _compiled.toml in {plan_dir}. Run 'dgov compile {plan_dir}' first.",
+            err=True,
+        )
+        raise click.exceptions.Exit(code=1) from None
+
+    return plan_file, plan_dir
+
+
+def _parse_plan_safe(plan_file: Path) -> PlanSpec:
+    """Parse plan file or exit with error."""
+    try:
+        return parse_plan_file(str(plan_file))
+    except (ValueError, FileNotFoundError) as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise click.exceptions.Exit(code=1) from None
+
+
+def _collect_validation_issues(plan: PlanSpec, plan_file: Path) -> tuple[list, list]:
+    """Validate plan and return (errors, warnings)."""
+    project_root_path = resolve_project_root(Path(plan_file))
+    project_config = load_project_config(project_root_path)
+    issues = validate_plan(plan, departments=project_config.departments)
+    errors = [i for i in issues if i.severity == "error"]
+    warnings = [i for i in issues if i.severity == "warning"]
+    return errors, warnings
+
+
+def _render_validate_json(plan: PlanSpec, errors: list, warnings: list) -> None:
+    """Render validation result as JSON."""
+    click.echo(
+        json.dumps(
+            {
+                "valid": len(errors) == 0,
+                "name": plan.name,
+                "tasks": len(plan.units),
+                "errors": [{"message": i.message, "unit": i.unit} for i in errors],
+                "warnings": [{"message": i.message, "unit": i.unit} for i in warnings],
+            },
+            indent=2,
+        )
+    )
+
+
 @cli.command(name="validate")
 @click.argument("plan_input", type=click.Path(path_type=Path, exists=True))
 def validate_cmd(plan_input: Path) -> None:
@@ -70,44 +124,12 @@ def validate_cmd(plan_input: Path) -> None:
     Example: dgov validate .dgov/plans/my-plan/
     Example: dgov validate .dgov/plans/my-plan/_compiled.toml
     """
-    try:
-        plan_file, plan_dir = resolve_plan_input(plan_input)
-    except click.ClickException as exc:
-        click.echo(f"Error: {exc.message}", err=True)
-        raise click.exceptions.Exit(code=1) from None
-
-    if plan_dir is not None and not plan_file.exists():
-        click.echo(
-            f"Error: no _compiled.toml in {plan_dir}. Run 'dgov compile {plan_dir}' first.",
-            err=True,
-        )
-        raise click.exceptions.Exit(code=1) from None
-
-    try:
-        plan = parse_plan_file(str(plan_file))
-    except (ValueError, FileNotFoundError) as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise click.exceptions.Exit(code=1) from None
-
-    project_root_path = resolve_project_root(Path(plan_file))
-    project_config = load_project_config(project_root_path)
-    issues = validate_plan(plan, departments=project_config.departments)
-    errors = [i for i in issues if i.severity == "error"]
-    warnings = [i for i in issues if i.severity == "warning"]
+    plan_file, _plan_dir = _resolve_compiled_plan_path(plan_input)
+    plan = _parse_plan_safe(plan_file)
+    errors, warnings = _collect_validation_issues(plan, plan_file)
 
     if want_json():
-        click.echo(
-            json.dumps(
-                {
-                    "valid": len(errors) == 0,
-                    "name": plan.name,
-                    "tasks": len(plan.units),
-                    "errors": [{"message": i.message, "unit": i.unit} for i in errors],
-                    "warnings": [{"message": i.message, "unit": i.unit} for i in warnings],
-                },
-                indent=2,
-            )
-        )
+        _render_validate_json(plan, errors, warnings)
     else:
         _echo_plan_summary(plan, errors, warnings)
         if not errors:
@@ -155,6 +177,66 @@ files.read = ["tests/test_module.py"]
 '''
 
 
+def _parse_sections(sections: str) -> list[str]:
+    """Parse comma-separated sections string into a list of section names."""
+    section_list = [s.strip() for s in sections.split(",") if s.strip()]
+    if not section_list:
+        section_list = ["tasks"]
+    return section_list
+
+
+def _write_plan_scaffold(plan_root: Path, name: str, section_list: list[str], force: bool) -> None:
+    """Create the plan directory structure and write scaffold files."""
+    plan_root.mkdir(parents=True, exist_ok=force)
+    for section in section_list:
+        (plan_root / section).mkdir(exist_ok=True)
+        (plan_root / section / "_example.toml").write_text(_EXAMPLE_UNIT_TOML)
+
+    sections_toml = ", ".join(f'"{s}"' for s in section_list)
+    root_toml = f'''[plan]
+name = "{name}"
+summary = ""  # One sentence describing what this plan accomplishes
+sections = [{sections_toml}]
+'''
+    (plan_root / "_root.toml").write_text(root_toml)
+
+
+def _build_created_paths(plan_root: Path, section_list: list[str]) -> list[str]:
+    """Build the list of created paths for output."""
+    created = [str(plan_root), str(plan_root / "_root.toml")]
+    for section in section_list:
+        created.append(str(plan_root / section))
+        created.append(str(plan_root / section / "_example.toml"))
+    return created
+
+
+def _render_init_output(
+    name: str, plan_root: Path, section_list: list[str], created: list[str]
+) -> None:
+    """Render the init-plan command output (JSON or text)."""
+    if want_json():
+        click.echo(
+            json.dumps(
+                {
+                    "status": "initialized",
+                    "name": name,
+                    "root": str(plan_root),
+                    "sections": section_list,
+                    "created": created,
+                },
+                indent=2,
+            )
+        )
+    else:
+        click.echo(f"Initialized plan '{name}':")
+        for path in created:
+            click.echo(f"  {path}")
+        click.echo(
+            "Next: copy or rename each _example.toml to a non-underscore filename before "
+            "running compile."
+        )
+
+
 @cli.command(name="init-plan")
 @click.argument("name")
 @click.option(
@@ -180,49 +262,10 @@ def init_plan_cmd(name: str, sections: str, force: bool) -> None:
         click.echo(f"Error: plan '{name}' already exists. Use --force to overwrite.", err=True)
         raise click.exceptions.Exit(code=1)
 
-    section_list = [s.strip() for s in sections.split(",") if s.strip()]
-    if not section_list:
-        section_list = ["tasks"]
-
-    plan_root.mkdir(parents=True, exist_ok=force)
-    for section in section_list:
-        (plan_root / section).mkdir(exist_ok=True)
-        (plan_root / section / "_example.toml").write_text(_EXAMPLE_UNIT_TOML)
-
-    sections_toml = ", ".join(f'"{s}"' for s in section_list)
-    root_toml = f'''[plan]
-name = "{name}"
-summary = ""  # One sentence describing what this plan accomplishes
-sections = [{sections_toml}]
-'''
-    (plan_root / "_root.toml").write_text(root_toml)
-
-    created = [str(plan_root), str(plan_root / "_root.toml")]
-    for section in section_list:
-        created.append(str(plan_root / section))
-        created.append(str(plan_root / section / "_example.toml"))
-
-    if want_json():
-        click.echo(
-            json.dumps(
-                {
-                    "status": "initialized",
-                    "name": name,
-                    "root": str(plan_root),
-                    "sections": section_list,
-                    "created": created,
-                },
-                indent=2,
-            )
-        )
-    else:
-        click.echo(f"Initialized plan '{name}':")
-        for path in created:
-            click.echo(f"  {path}")
-        click.echo(
-            "Next: copy or rename each _example.toml to a non-underscore filename before "
-            "running compile."
-        )
+    section_list = _parse_sections(sections)
+    _write_plan_scaffold(plan_root, name, section_list, force)
+    created = _build_created_paths(plan_root, section_list)
+    _render_init_output(name, plan_root, section_list, created)
 
 
 @cli.group(name="plan")
@@ -367,6 +410,75 @@ def _render_plan_status_json(
     )
 
 
+def _echo_optional_styled(line: str, color: str | None) -> None:
+    click.echo(click.style(line, fg=color) if color else line)
+
+
+def _echo_run_status(run_status: str | None) -> None:
+    if run_status is None:
+        return
+    _echo_optional_styled(f"  run status: {run_status}", _run_status_color(run_status))
+
+
+def _echo_sentrux_advisory(sentrux_advisory: str | None) -> None:
+    if sentrux_advisory is not None:
+        click.echo(click.style(f"  advisory: {sentrux_advisory}", fg="yellow"))
+
+
+def _echo_branch_status(
+    branch_verification_status: str | None,
+    branch_verification_error: str | None,
+) -> None:
+    if branch_verification_status is None:
+        return
+    color = "red" if branch_verification_status == "failed" else None
+    line = f"  branch status: {branch_verification_status}"
+    if branch_verification_error:
+        line += f" — {branch_verification_error}"
+    _echo_optional_styled(line, color)
+
+
+def _echo_remediation(remediation_needed: bool, next_action: str | None) -> None:
+    if not remediation_needed or next_action is None:
+        return
+    click.echo(
+        click.style(
+            "  deployed but unresolved — author a remediation follow-up",
+            fg="yellow",
+        )
+    )
+    click.echo(click.style(f"  next: {next_action}", fg="yellow"))
+
+
+def _echo_stale_warning(stale: bool, plan_root: Path | None) -> None:
+    if not stale or plan_root is None:
+        return
+    click.echo(
+        click.style(
+            f"  stale — rerun 'dgov compile {plan_root}'",
+            fg="yellow",
+        )
+    )
+
+
+def _unit_status_line(unit_status: dict[str, str]) -> str:
+    if unit_status["status"] == "deployed":
+        line = f"  {click.style('✓', fg='green')} {unit_status['unit']}"
+        return f"{line}  (deployed {unit_status['ts']}, sha {unit_status['sha'][:7]})"
+    line = f"  ○ {unit_status['unit']}"
+    if unit_status.get("blocked_by"):
+        return f"{line}  (pending, blocked by: {unit_status['blocked_by']})"
+    return f"{line}  (pending)"
+
+
+def _echo_verbose_unit_statuses(unit_statuses: list[dict[str, str]], verbose: bool) -> None:
+    if not verbose:
+        return
+    click.echo("")
+    for unit_status in unit_statuses:
+        click.echo(_unit_status_line(unit_status))
+
+
 def _render_plan_status_text(
     plan_name: str,
     unit_statuses: list[dict[str, str]],
@@ -386,46 +498,12 @@ def _render_plan_status_text(
     total = len(unit_statuses)
     # One-line summary by default. Deep-dive via `dgov plan review`.
     click.echo(f"Plan: {plan_name}  ({deployed_count}/{total} deployed, {pending_count} pending)")
-    if run_status is not None:
-        color = _run_status_color(run_status)
-        line = f"  run status: {run_status}"
-        click.echo(click.style(line, fg=color) if color else line)
-    if sentrux_advisory is not None:
-        click.echo(click.style(f"  advisory: {sentrux_advisory}", fg="yellow"))
-    if branch_verification_status is not None:
-        color = "red" if branch_verification_status == "failed" else None
-        line = f"  branch status: {branch_verification_status}"
-        if branch_verification_error:
-            line += f" — {branch_verification_error}"
-        click.echo(click.style(line, fg=color) if color else line)
-    if remediation_needed and next_action is not None:
-        click.echo(
-            click.style(
-                "  deployed but unresolved — author a remediation follow-up",
-                fg="yellow",
-            )
-        )
-        click.echo(click.style(f"  next: {next_action}", fg="yellow"))
-    if stale and plan_root is not None:
-        click.echo(
-            click.style(
-                f"  stale — rerun 'dgov compile {plan_root}'",
-                fg="yellow",
-            )
-        )
-    if verbose:
-        click.echo("")
-        for u in unit_statuses:
-            if u["status"] == "deployed":
-                line = f"  {click.style('✓', fg='green')} {u['unit']}"
-                line += f"  (deployed {u['ts']}, sha {u['sha'][:7]})"
-            else:
-                line = f"  ○ {u['unit']}"
-                if u.get("blocked_by"):
-                    line += f"  (pending, blocked by: {u['blocked_by']})"
-                else:
-                    line += "  (pending)"
-            click.echo(line)
+    _echo_run_status(run_status)
+    _echo_sentrux_advisory(sentrux_advisory)
+    _echo_branch_status(branch_verification_status, branch_verification_error)
+    _echo_remediation(remediation_needed, next_action)
+    _echo_stale_warning(stale, plan_root)
+    _echo_verbose_unit_statuses(unit_statuses, verbose)
 
 
 def _needs_remediation(
@@ -445,11 +523,11 @@ def _status_target(plan_root: Path | None, compiled_path: Path) -> str:
     return str(plan_root if plan_root is not None else compiled_path)
 
 
-def _cmd_plan_status(
-    compiled_path: Path, plan_root: Path | None, *, verbose: bool = False
-) -> None:
-    """Pillar #4: Determinism — staleness detection prevents dispatching stale plans."""
+def _load_status_inputs(compiled_path: Path, plan_root: Path | None):
+    """Load and parse status inputs from compiled plan and project."""
     import tomllib
+
+    from dgov.plan_review import load_run_envelope
 
     _check_compiled_exists(compiled_path, plan_root)
 
@@ -466,19 +544,54 @@ def _cmd_plan_status(
     unit_statuses = _build_unit_statuses(tasks_raw, deployed_units)
     deployed_count = sum(1 for u in unit_statuses if u["status"] == "deployed")
     pending_count = len(unit_statuses) - deployed_count
-    from dgov.plan_review import load_run_envelope
 
     run_envelope = load_run_envelope(str(project_root_path), compiled_path)
+
+    return (
+        plan_name,
+        unit_statuses,
+        deployed_count,
+        pending_count,
+        stale,
+        run_envelope,
+        project_root_path,
+    )
+
+
+def _compute_remediation_fields(
+    run_status: str | None,
+    unit_count: int,
+    deployed_count: int,
+    pending_count: int,
+    plan_root: Path | None,
+    compiled_path: Path,
+) -> tuple[bool, str | None]:
+    """Compute remediation_needed and next_action from status inputs."""
     remediation_needed = _needs_remediation(
-        run_status=run_envelope.run_status,
-        unit_count=len(unit_statuses),
+        run_status=run_status,
+        unit_count=unit_count,
         deployed_count=deployed_count,
         pending_count=pending_count,
     )
     next_action = None
     if remediation_needed:
         next_action = f"dgov plan remediate {_status_target(plan_root, compiled_path)}"
+    return remediation_needed, next_action
 
+
+def _render_status_from_inputs(
+    plan_name: str,
+    unit_statuses: list[dict[str, str]],
+    deployed_count: int,
+    pending_count: int,
+    stale: bool,
+    plan_root: Path | None,
+    verbose: bool,
+    run_envelope: Any,
+    remediation_needed: bool,
+    next_action: str | None,
+) -> None:
+    """Render plan status (JSON or text) from loaded inputs and computed remediation fields."""
     if want_json():
         _render_plan_status_json(
             plan_name,
@@ -510,6 +623,43 @@ def _cmd_plan_status(
             remediation_needed,
             next_action,
         )
+
+
+def _cmd_plan_status(
+    compiled_path: Path, plan_root: Path | None, *, verbose: bool = False
+) -> None:
+    """Pillar #4: Determinism — staleness detection prevents dispatching stale plans."""
+    (
+        plan_name,
+        unit_statuses,
+        deployed_count,
+        pending_count,
+        stale,
+        run_envelope,
+        _project_root_path,
+    ) = _load_status_inputs(compiled_path, plan_root)
+
+    remediation_needed, next_action = _compute_remediation_fields(
+        run_envelope.run_status,
+        len(unit_statuses),
+        deployed_count,
+        pending_count,
+        plan_root,
+        compiled_path,
+    )
+
+    _render_status_from_inputs(
+        plan_name,
+        unit_statuses,
+        deployed_count,
+        pending_count,
+        stale,
+        plan_root,
+        verbose,
+        run_envelope,
+        remediation_needed,
+        next_action,
+    )
 
 
 def _resolve_archived_plan_path(plan_input: Path) -> Path:
@@ -634,11 +784,10 @@ def _render_remediation_example(review, source_target: str) -> str:
     )
 
 
-@plan_cmd.command(name="remediate")
-@click.argument("plan_input", type=click.Path(path_type=Path))
-@click.option("--name", help="Override the generated remediation plan name")
-def plan_remediate_cmd(plan_input: Path, name: str | None) -> None:
-    """Scaffold a follow-up plan for a fully deployed but degraded source plan."""
+def _load_remediation_inputs(
+    plan_input: Path,
+) -> tuple[Path, Path, Path | None, Path, dict[str, Any]]:
+    """Load and validate remediation inputs, returning paths and raw compiled data."""
     plan_input = _resolve_archived_plan_path(plan_input)
     if not plan_input.exists():
         click.echo(f"Error: plan path not found: {plan_input}", err=True)
@@ -652,18 +801,21 @@ def plan_remediate_cmd(plan_input: Path, name: str | None) -> None:
     _check_compiled_exists(compiled_path, plan_root)
     import tomllib
 
-    from dgov.plan_review import load_run_envelope
-
     raw = tomllib.loads(compiled_path.read_text())
-    tasks_raw = raw.get("tasks", {})
     project_root = resolve_project_root(compiled_path)
-    deployed_units = _load_deployed_units(project_root, raw.get("plan", {}).get("name", "unknown"))
-    deployed_count = sum(1 for uid in tasks_raw if uid in deployed_units)
-    pending_count = len(tasks_raw) - deployed_count
-    run_envelope = load_run_envelope(str(project_root), compiled_path)
+    return plan_input, compiled_path, plan_root, project_root, raw
+
+
+def _check_remediation_eligibility(
+    run_envelope,
+    unit_count: int,
+    deployed_count: int,
+    pending_count: int,
+) -> None:
+    """Verify the plan is eligible for remediation scaffolding."""
     if not _needs_remediation(
         run_status=run_envelope.run_status,
-        unit_count=len(tasks_raw),
+        unit_count=unit_count,
         deployed_count=deployed_count,
         pending_count=pending_count,
     ):
@@ -674,12 +826,14 @@ def plan_remediate_cmd(plan_input: Path, name: str | None) -> None:
         )
         raise click.exceptions.Exit(code=1) from None
 
-    base_name = name or f"{_slugify_name(run_envelope.plan_name)}-remediation"
-    plan_name, plan_dir = _allocate_plan_dir(
-        project_root, base_name, explicit_name=name is not None
-    )
-    source_target = _status_target(plan_root, compiled_path)
 
+def _write_remediation_scaffold(
+    plan_dir: Path, plan_name: str, run_envelope, source_target: str
+) -> Path:
+    """Write the remediation plan scaffold files.
+
+    Returns the fix directory path.
+    """
     plan_dir.mkdir(parents=True)
     fix_dir = plan_dir / "fix"
     fix_dir.mkdir()
@@ -693,6 +847,31 @@ def plan_remediate_cmd(plan_input: Path, name: str | None) -> None:
     (fix_dir / "_example.toml").write_text(
         _render_remediation_example(run_envelope, source_target)
     )
+    return fix_dir
+
+
+@plan_cmd.command(name="remediate")
+@click.argument("plan_input", type=click.Path(path_type=Path))
+@click.option("--name", help="Override the generated remediation plan name")
+def plan_remediate_cmd(plan_input: Path, name: str | None) -> None:
+    """Scaffold a follow-up plan for a fully deployed but degraded source plan."""
+    from dgov.plan_review import load_run_envelope
+
+    _, compiled_path, plan_root, project_root, raw = _load_remediation_inputs(plan_input)
+    tasks_raw = raw.get("tasks", {})
+    deployed_units = _load_deployed_units(project_root, raw.get("plan", {}).get("name", "unknown"))
+    deployed_count = sum(1 for uid in tasks_raw if uid in deployed_units)
+    pending_count = len(tasks_raw) - deployed_count
+    run_envelope = load_run_envelope(str(project_root), compiled_path)
+    _check_remediation_eligibility(run_envelope, len(tasks_raw), deployed_count, pending_count)
+
+    base_name = name or f"{_slugify_name(run_envelope.plan_name)}-remediation"
+    plan_name, plan_dir = _allocate_plan_dir(
+        project_root, base_name, explicit_name=name is not None
+    )
+    source_target = _status_target(plan_root, compiled_path)
+
+    fix_dir = _write_remediation_scaffold(plan_dir, plan_name, run_envelope, source_target)
 
     click.echo(f"Created remediation plan '{plan_name}' at {plan_dir}")
     click.echo(f"Next: replace {fix_dir / '_example.toml'} with concrete tasks, then compile.")
@@ -752,6 +931,42 @@ def plan_review_cmd(
     )
 
 
+def _handle_not_compiled(compiled_path: Path, plan_root: Path | None) -> None:
+    """Handle the not-compiled error path. Raises click.Exit on failure."""
+    target = plan_root if plan_root is not None else compiled_path
+    msg = f"Not compiled; run 'dgov compile {target}'"
+    if want_json():
+        click.echo(json.dumps({"status": "not_compiled", "message": msg}, indent=2))
+    else:
+        click.echo(msg)
+    raise click.exceptions.Exit(code=1) from None
+
+
+def _load_review_with_config(
+    compiled_path: Path,
+    plan_root: Path | None,
+    *,
+    only: str | None,
+    include_full_diff: bool,
+):
+    """Load project config and build the PlanReview."""
+    from dgov.config import load_project_config
+    from dgov.plan_review import load_review
+
+    project_root_path = resolve_project_root()
+    project_config = load_project_config(project_root_path)
+
+    review = load_review(
+        project_root=str(project_root_path),
+        compiled_path=compiled_path,
+        plan_dir=plan_root,
+        only=only,
+        include_full_diff=include_full_diff,
+        iteration_budget=project_config.worker_iteration_budget,
+    )
+    return review
+
+
 def _cmd_plan_review(
     compiled_path: Path,
     plan_root: Path | None,
@@ -761,29 +976,15 @@ def _cmd_plan_review(
     events_unit: str | None,
 ) -> None:
     """Build and render a PlanReview."""
-    from dgov.config import load_project_config
-    from dgov.plan_review import load_review
-
     if not compiled_path.exists():
-        target = plan_root if plan_root is not None else compiled_path
-        msg = f"Not compiled; run 'dgov compile {target}'"
-        if want_json():
-            click.echo(json.dumps({"status": "not_compiled", "message": msg}, indent=2))
-        else:
-            click.echo(msg)
-        raise click.exceptions.Exit(code=1) from None
+        _handle_not_compiled(compiled_path, plan_root)
 
-    project_root_path = resolve_project_root()
-    project_config = load_project_config(project_root_path)
     include_full_diff = diff_unit is not None
-
-    review = load_review(
-        project_root=str(project_root_path),
-        compiled_path=compiled_path,
-        plan_dir=plan_root,
+    review = _load_review_with_config(
+        compiled_path,
+        plan_root,
         only=only,
         include_full_diff=include_full_diff,
-        iteration_budget=project_config.worker_iteration_budget,
     )
 
     if only is not None and not review.units:
@@ -851,18 +1052,26 @@ def _render_run_advisory(review) -> None:
         click.echo(click.style(f"  advisory: {sentrux_advisory}", fg="yellow"))
 
 
-def _render_review_human(review, *, diff_unit: str | None, events_unit: str | None) -> None:
-    """Render a PlanReview for a human. Not pure — writes to stdout via click.echo."""
+def _render_review_header(review) -> None:
     click.echo(f"Plan: {review.plan_name}")
     if review.source_dir is not None:
         click.echo(f"  source: {review.source_dir}")
-    if review.last_run_ts:
-        dur_part = ""
-        if review.last_run_duration_s:
-            dur_part = f" ({_fmt_duration(review.last_run_duration_s)})"
-        click.echo(f"  last run: {review.last_run_ts}{dur_part}")
+    last_run_line = _review_last_run_line(review)
+    if last_run_line is not None:
+        click.echo(last_run_line)
     _render_run_advisory(review)
 
+
+def _review_last_run_line(review) -> str | None:
+    if not review.last_run_ts:
+        return None
+    dur_part = ""
+    if review.last_run_duration_s:
+        dur_part = f" ({_fmt_duration(review.last_run_duration_s)})"
+    return f"  last run: {review.last_run_ts}{dur_part}"
+
+
+def _render_review_unit_summary(review) -> None:
     total = len(review.units)
     click.echo("")
     click.echo(
@@ -873,23 +1082,39 @@ def _render_review_human(review, *, diff_unit: str | None, events_unit: str | No
     )
     click.echo("")
 
+
+def _render_review_unit_details(
+    review,
+    *,
+    diff_unit: str | None,
+    events_unit: str | None,
+) -> None:
     for unit in review.units:
         _render_unit(unit)
-        if diff_unit is not None and unit.unit == diff_unit:
+        if unit.unit == diff_unit:
             _render_unit_diff(unit)
-        if events_unit is not None and unit.unit == events_unit:
+        if unit.unit == events_unit:
             _render_unit_events(unit)
 
-    if diff_unit is not None and not any(u.unit == diff_unit for u in review.units):
-        click.echo(
-            click.style(f"  (no unit matches --diff {diff_unit})", fg="yellow"),
-            err=True,
-        )
-    if events_unit is not None and not any(u.unit == events_unit for u in review.units):
-        click.echo(
-            click.style(f"  (no unit matches --events {events_unit})", fg="yellow"),
-            err=True,
-        )
+
+def _warn_missing_review_unit(option_name: str, unit_id: str | None, units) -> None:
+    if unit_id is None:
+        return
+    if any(unit.unit == unit_id for unit in units):
+        return
+    click.echo(
+        click.style(f"  (no unit matches --{option_name} {unit_id})", fg="yellow"),
+        err=True,
+    )
+
+
+def _render_review_human(review, *, diff_unit: str | None, events_unit: str | None) -> None:
+    """Render a PlanReview for a human. Not pure — writes to stdout via click.echo."""
+    _render_review_header(review)
+    _render_review_unit_summary(review)
+    _render_review_unit_details(review, diff_unit=diff_unit, events_unit=events_unit)
+    _warn_missing_review_unit("diff", diff_unit, review.units)
+    _warn_missing_review_unit("events", events_unit, review.units)
 
 
 def _render_unit_fields(fields: list[tuple[str, str | None]]) -> None:
@@ -918,6 +1143,47 @@ def _format_tool_calls(unit) -> str | None:
     return f"{count} tool call{'s' if count != 1 else ''}"
 
 
+def _format_commit_display(unit) -> str | None:
+    """Format the commit display for a deployed unit."""
+    if unit.commit_sha and unit.commit_message:
+        return f"{unit.commit_sha[:8]} — {unit.commit_message}"
+    if unit.commit_sha:
+        return unit.commit_sha[:8]
+    return None
+
+
+def _format_settlement_display(unit) -> str | None:
+    """Format the settlement status display for a deployed unit."""
+    if unit.settlement == "n/a":
+        return None
+    return {"ok": "ok (first try)", "ok_retried": "ok (after retry)"}.get(
+        unit.settlement, unit.settlement
+    )
+
+
+def _format_token_display(unit) -> str | None:
+    """Format the token usage display for a deployed unit."""
+    if unit.prompt_tokens is None or unit.completion_tokens is None:
+        return None
+    return f"{unit.prompt_tokens:,} prompt + {unit.completion_tokens:,} completion"
+
+
+def _format_self_review_display(unit) -> tuple[str, str | None] | None:
+    """Format self-review outcome. Returns (label, color) or None."""
+    if unit.self_review_outcome is None:
+        return None
+    _sr_labels = {
+        "passed": ("self-review passed", "green"),
+        "rejected": ("self-review rejected → fix applied", "yellow"),
+        "auto_passed": ("self-review rejected → auto-passed after fix", "yellow"),
+        "error": ("self-review error → auto-passed", "red"),
+    }
+    return _sr_labels.get(
+        unit.self_review_outcome,
+        (f"self-review: {unit.self_review_outcome}", None),
+    )
+
+
 def _render_deployed_unit(unit) -> None:
     """Render a deployed UnitReview block."""
     marker = click.style("✓", fg="green")
@@ -925,31 +1191,14 @@ def _render_deployed_unit(unit) -> None:
     click.echo(header)
     fields: list[tuple[str, str | None]] = [
         ("task", unit.summary),
-        (
-            "commit",
-            f"{unit.commit_sha[:8]} — {unit.commit_message}"
-            if unit.commit_sha and unit.commit_message
-            else (unit.commit_sha[:8] if unit.commit_sha else None),
-        ),
+        ("commit", _format_commit_display(unit)),
         ("agent", unit.agent),
         ("diff", unit.diff_stat.summary() if unit.diff_stat is not None else None),
         ("duration", _fmt_duration(unit.duration_s) if unit.duration_s is not None else None),
         ("tool calls", _format_tool_calls(unit)),
-        (
-            "settlement",
-            {"ok": "ok (first try)", "ok_retried": "ok (after retry)"}.get(
-                unit.settlement, unit.settlement
-            )
-            if unit.settlement != "n/a"
-            else None,
-        ),
+        ("settlement", _format_settlement_display(unit)),
         ("phases", _format_phase_timings(unit)),
-        (
-            "tokens",
-            f"{unit.prompt_tokens:,} prompt + {unit.completion_tokens:,} completion"
-            if unit.prompt_tokens is not None and unit.completion_tokens is not None
-            else None,
-        ),
+        ("tokens", _format_token_display(unit)),
     ]
     _render_unit_fields(fields)
     if unit.landed_files:
@@ -960,17 +1209,9 @@ def _render_deployed_unit(unit) -> None:
         )
     if unit.fork_depth > 0:
         click.echo(f"    fork         {unit.fork_depth} clean-context relaunch(es)")
-    if unit.self_review_outcome is not None:
-        _sr_labels = {
-            "passed": ("self-review passed", "green"),
-            "rejected": ("self-review rejected → fix applied", "yellow"),
-            "auto_passed": ("self-review rejected → auto-passed after fix", "yellow"),
-            "error": ("self-review error → auto-passed", "red"),
-        }
-        label, color = _sr_labels.get(
-            unit.self_review_outcome,
-            (f"self-review: {unit.self_review_outcome}", None),
-        )
+    sr_display = _format_self_review_display(unit)
+    if sr_display is not None:
+        label, color = sr_display
         click.echo(click.style(f"    self-review  {label}", fg=color))
     _render_integration_telemetry(unit)
     if unit.done_summary:
@@ -1137,80 +1378,88 @@ def _render_unit_events(unit) -> None:
     click.echo("")
 
 
+def _phase_timing_dict(timing) -> dict:
+    return {
+        "phase": timing.phase,
+        "duration_s": timing.duration_s,
+        "status": timing.status,
+        "error": timing.error,
+    }
+
+
+def _diff_stat_dict(diff_stat) -> dict | None:
+    if diff_stat is None:
+        return None
+    return {
+        "files_changed": diff_stat.files_changed,
+        "insertions": diff_stat.insertions,
+        "deletions": diff_stat.deletions,
+    }
+
+
+def _review_unit_dict(unit) -> dict:
+    return {
+        "unit": unit.unit,
+        "summary": unit.summary,
+        "status": unit.status,
+        "phase": unit.phase,
+        "phase_timings": [_phase_timing_dict(timing) for timing in unit.phase_timings],
+        "agent": unit.agent,
+        "commit_sha": unit.commit_sha,
+        "commit_message": unit.commit_message,
+        "commit_ts": unit.commit_ts,
+        "diff_stat": _diff_stat_dict(unit.diff_stat),
+        "landed_files": list(unit.landed_files),
+        "full_diff": unit.full_diff,
+        "duration_s": unit.duration_s,
+        "iterations": unit.iterations,
+        "tool_calls": unit.tool_calls,
+        "prompt_tokens": unit.prompt_tokens,
+        "completion_tokens": unit.completion_tokens,
+        "self_corrections": unit.self_corrections,
+        "fork_depth": unit.fork_depth,
+        "self_review_outcome": unit.self_review_outcome,
+        "attempts": unit.attempts,
+        "settlement": unit.settlement,
+        "done_summary": unit.done_summary,
+        "worker_note_mismatches": list(unit.worker_note_mismatches),
+        "thoughts": list(unit.thoughts),
+        "activity": [dict(call) for call in unit.activity],
+        "reject_verdict": unit.reject_verdict,
+        "error": unit.error,
+        "last_thought": unit.last_thought,
+        "hint": unit.hint,
+        "integration_risk_level": unit.integration_risk_level,
+        "integration_risk_detected": unit.integration_risk_detected,
+        "integration_candidate_passed": unit.integration_candidate_passed,
+        "integration_failure_class": unit.integration_failure_class,
+    }
+
+
+def _review_json_payload(review) -> dict:
+    return {
+        "plan": review.plan_name,
+        "source_dir": str(review.source_dir) if review.source_dir else None,
+        "last_run_ts": review.last_run_ts,
+        "last_run_duration_s": review.last_run_duration_s,
+        "run_status": review.run_status,
+        "sentrux_degradation": review.sentrux_degradation,
+        "sentrux_quality_before": review.sentrux_quality_before,
+        "sentrux_quality_after": review.sentrux_quality_after,
+        "sentrux_error": review.sentrux_error,
+        "sentrux_offender_summary": review.sentrux_offender_summary,
+        "deployed": review.deployed_count,
+        "active": review.active_count,
+        "failed": review.failed_count,
+        "pending": review.pending_count,
+        "units": [_review_unit_dict(unit) for unit in review.units],
+    }
+
+
 def _review_to_json(review) -> str:
     """Serialize a PlanReview to indented JSON."""
-
-    def _unit_dict(u) -> dict:
-        return {
-            "unit": u.unit,
-            "summary": u.summary,
-            "status": u.status,
-            "phase": u.phase,
-            "phase_timings": [
-                {
-                    "phase": timing.phase,
-                    "duration_s": timing.duration_s,
-                    "status": timing.status,
-                    "error": timing.error,
-                }
-                for timing in u.phase_timings
-            ],
-            "agent": u.agent,
-            "commit_sha": u.commit_sha,
-            "commit_message": u.commit_message,
-            "commit_ts": u.commit_ts,
-            "diff_stat": {
-                "files_changed": u.diff_stat.files_changed,
-                "insertions": u.diff_stat.insertions,
-                "deletions": u.diff_stat.deletions,
-            }
-            if u.diff_stat is not None
-            else None,
-            "landed_files": list(u.landed_files),
-            "full_diff": u.full_diff,
-            "duration_s": u.duration_s,
-            "iterations": u.iterations,
-            "tool_calls": u.tool_calls,
-            "prompt_tokens": u.prompt_tokens,
-            "completion_tokens": u.completion_tokens,
-            "self_corrections": u.self_corrections,
-            "fork_depth": u.fork_depth,
-            "self_review_outcome": u.self_review_outcome,
-            "attempts": u.attempts,
-            "settlement": u.settlement,
-            "done_summary": u.done_summary,
-            "worker_note_mismatches": list(u.worker_note_mismatches),
-            "thoughts": list(u.thoughts),
-            "activity": [dict(call) for call in u.activity],
-            "reject_verdict": u.reject_verdict,
-            "error": u.error,
-            "last_thought": u.last_thought,
-            "hint": u.hint,
-            # Integration risk telemetry
-            "integration_risk_level": u.integration_risk_level,
-            "integration_risk_detected": u.integration_risk_detected,
-            "integration_candidate_passed": u.integration_candidate_passed,
-            "integration_failure_class": u.integration_failure_class,
-        }
-
     return json.dumps(
-        {
-            "plan": review.plan_name,
-            "source_dir": str(review.source_dir) if review.source_dir else None,
-            "last_run_ts": review.last_run_ts,
-            "last_run_duration_s": review.last_run_duration_s,
-            "run_status": review.run_status,
-            "sentrux_degradation": review.sentrux_degradation,
-            "sentrux_quality_before": review.sentrux_quality_before,
-            "sentrux_quality_after": review.sentrux_quality_after,
-            "sentrux_error": review.sentrux_error,
-            "sentrux_offender_summary": review.sentrux_offender_summary,
-            "deployed": review.deployed_count,
-            "active": review.active_count,
-            "failed": review.failed_count,
-            "pending": review.pending_count,
-            "units": [_unit_dict(u) for u in review.units],
-        },
+        _review_json_payload(review),
         indent=2,
         default=str,
     )

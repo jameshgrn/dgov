@@ -18,6 +18,7 @@ from dgov.cli import cli
 from dgov.cli.init import (
     _detect_project,
     _detect_scope_ignore_files,
+    _python_project_uses_pytest,
     _render_governor_md,
     _render_project_toml,
 )
@@ -131,6 +132,28 @@ def _patched_run_envelope(monkeypatch, **overrides):
 
     envelope = overrides.get("envelope", RunEnvelope(plan_name="p", last_run_ts=None))
     monkeypatch.setattr("dgov.plan_review.load_run_envelope", lambda *_args, **_kwargs: envelope)
+
+
+def _emit_active_and_settling_sequence(project_root: Path, plan_name: str) -> None:
+    root = str(project_root)
+    emit_event(root, "run_start", "run-plan", plan_name=plan_name)
+    task_events = (
+        ("dag_task_dispatched", "pane-active", "active-task", {}),
+        ("dag_task_dispatched", "pane-settling", "settling-task", {}),
+        ("task_done", "pane-settling", "settling-task", {}),
+        ("review_pass", "pane-settling", "settling-task", {}),
+        ("settlement_phase_started", "pane-settling", "settling-task", {"phase": "integration"}),
+    )
+    for event, pane, task_slug, extra in task_events:
+        emit_event(root, event, pane, plan_name=plan_name, task_slug=task_slug, **extra)
+
+
+def _assert_settling_task_has_phase(data: dict, expected_phase: str) -> None:
+    """Assert that the settling task in JSON status has the expected phase."""
+    task_list = data.get("task_list", [])
+    settling_tasks = [t for t in task_list if t.get("slug") == "settling-task"]
+    assert len(settling_tasks) == 1
+    assert settling_tasks[0].get("phase") == expected_phase
 
 
 # -- Bare invocation / status --
@@ -418,43 +441,7 @@ def test_status_json_includes_phase_and_state_counts(
 ) -> None:
     """JSON status output should include phase and state_counts."""
     monkeypatch.chdir(tmp_path)
-    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
-    emit_event(
-        str(tmp_path),
-        "dag_task_dispatched",
-        "pane-active",
-        plan_name="plan-a",
-        task_slug="active-task",
-    )
-    emit_event(
-        str(tmp_path),
-        "dag_task_dispatched",
-        "pane-settling",
-        plan_name="plan-a",
-        task_slug="settling-task",
-    )
-    emit_event(
-        str(tmp_path),
-        "task_done",
-        "pane-settling",
-        plan_name="plan-a",
-        task_slug="settling-task",
-    )
-    emit_event(
-        str(tmp_path),
-        "review_pass",
-        "pane-settling",
-        plan_name="plan-a",
-        task_slug="settling-task",
-    )
-    emit_event(
-        str(tmp_path),
-        "settlement_phase_started",
-        "pane-settling",
-        plan_name="plan-a",
-        task_slug="settling-task",
-        phase="integration",
-    )
+    _emit_active_and_settling_sequence(tmp_path, plan_name="plan-a")
 
     result = runner.invoke(cli, ["--json", "status"])
 
@@ -463,11 +450,7 @@ def test_status_json_includes_phase_and_state_counts(
     assert "state_counts" in data
     assert "settling" in data.get("state_counts", {})
     assert data["settling"] == 1
-    # Check task_list includes phase
-    task_list = data.get("task_list", [])
-    settling_tasks = [t for t in task_list if t.get("slug") == "settling-task"]
-    assert len(settling_tasks) == 1
-    assert settling_tasks[0].get("phase") == "integration"
+    _assert_settling_task_has_phase(data, expected_phase="integration")
 
 
 # -- validate --
@@ -625,7 +608,7 @@ def test_sentrux_check_passes_requested_path_without_chdir(
 ) -> None:
     calls: list[tuple[list[str], str | None]] = []
 
-    monkeypatch.setattr("dgov.cli.sentrux._sentrux_available", lambda: True)
+    monkeypatch.setattr("dgov.cli.sentrux.sentrux_available", lambda: True)
 
     def _mock_run(
         args: list[str],
@@ -638,7 +621,7 @@ def test_sentrux_check_passes_requested_path_without_chdir(
             ["sentrux", *args], 0, stdout="Quality: 42\n", stderr=""
         )
 
-    monkeypatch.setattr("dgov.cli.sentrux._run_sentrux", _mock_run)
+    monkeypatch.setattr("dgov.cli.sentrux.run_sentrux", _mock_run)
 
     result = runner.invoke(cli, ["sentrux", "check", "src"])
 
@@ -649,7 +632,7 @@ def test_sentrux_check_passes_requested_path_without_chdir(
 def test_sentrux_gate_fail_on_degradation_uses_command_output(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("dgov.cli.sentrux._sentrux_available", lambda: True)
+    monkeypatch.setattr("dgov.cli.sentrux.sentrux_available", lambda: True)
 
     def _mock_run(
         args: list[str],
@@ -664,7 +647,7 @@ def test_sentrux_gate_fail_on_degradation_uses_command_output(
             stderr="",
         )
 
-    monkeypatch.setattr("dgov.cli.sentrux._run_sentrux", _mock_run)
+    monkeypatch.setattr("dgov.cli.sentrux.run_sentrux", _mock_run)
 
     result = runner.invoke(cli, ["sentrux", "gate", "--fail-on-degradation"])
 
@@ -675,7 +658,7 @@ def test_sentrux_gate_fail_on_degradation_uses_command_output(
 def test_sentrux_gate_prints_structural_offender_report_on_degradation(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("dgov.cli.sentrux._sentrux_available", lambda: True)
+    monkeypatch.setattr("dgov.cli.sentrux.sentrux_available", lambda: True)
 
     def _mock_run(
         args: list[str],
@@ -690,7 +673,7 @@ def test_sentrux_gate_prints_structural_offender_report_on_degradation(
             stderr="",
         )
 
-    monkeypatch.setattr("dgov.cli.sentrux._run_sentrux", _mock_run)
+    monkeypatch.setattr("dgov.cli.sentrux.run_sentrux", _mock_run)
     monkeypatch.setattr(
         "dgov.cli.sentrux._structural_offender_report",
         lambda target: "Likely structural offenders:\n- Complex functions:",
@@ -705,7 +688,7 @@ def test_sentrux_gate_prints_structural_offender_report_on_degradation(
 def test_sentrux_gate_treats_degraded_output_as_degradation(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("dgov.cli.sentrux._sentrux_available", lambda: True)
+    monkeypatch.setattr("dgov.cli.sentrux.sentrux_available", lambda: True)
 
     def _mock_run(
         args: list[str],
@@ -720,7 +703,7 @@ def test_sentrux_gate_treats_degraded_output_as_degradation(
             stderr="",
         )
 
-    monkeypatch.setattr("dgov.cli.sentrux._run_sentrux", _mock_run)
+    monkeypatch.setattr("dgov.cli.sentrux.run_sentrux", _mock_run)
     monkeypatch.setattr("dgov.cli.sentrux._structural_offender_report", lambda target: None)
 
     result = runner.invoke(cli, ["sentrux", "gate", "--fail-on-degradation"])
@@ -945,6 +928,48 @@ def test_render_project_toml() -> None:
     assert "built-in" in content
     assert "bootstrap_timeout = 300" in content
     assert "[conventions]" in content
+
+
+def test_python_project_uses_pytest_from_dependency_group(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[dependency-groups]
+dev = ["pytest[asyncio]>=8; python_version >= '3.11'", "ruff"]
+""",
+        encoding="utf-8",
+    )
+
+    assert _python_project_uses_pytest(tmp_path) is True
+
+
+def test_python_project_uses_pytest_from_optional_dependency(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-cov"]
+""",
+        encoding="utf-8",
+    )
+
+    assert _python_project_uses_pytest(tmp_path) is True
+
+
+def test_python_project_uses_pytest_from_requirements_file(tmp_path: Path) -> None:
+    (tmp_path / "requirements-dev.txt").write_text(
+        """
+# test runner
+pytest >= 8
+""",
+        encoding="utf-8",
+    )
+
+    assert _python_project_uses_pytest(tmp_path) is True
+
+
+def test_python_project_uses_pytest_ignores_invalid_pyproject(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("not valid toml {{{{", encoding="utf-8")
+
+    assert _python_project_uses_pytest(tmp_path) is False
 
 
 def test_detect_scope_ignore_files_adds_uv_lock_for_python(tmp_path: Path) -> None:
@@ -1474,27 +1499,9 @@ def test_format_event_settlement_retry() -> None:
     assert "ruff check failed" in out
 
 
-def test_run_only_unknown_slug_exits(runner: CliRunner, tmp_path: Path) -> None:
-    """Running with --only nonexistent exits with code 1 and error message."""
-    with runner.isolated_filesystem(temp_dir=tmp_path):
-        tasks_toml = """
-[tasks.a]
-summary = "do a"
-prompt = "do a"
-commit_message = "a"
-files = ["a.py"]
-"""
-        compiled_path = compile_plan_tree(Path.cwd(), "unknown-slug-test", tasks_toml)
-        result = runner.invoke(cli, ["run", str(compiled_path.parent), "--only", "nonexistent"])
-        assert result.exit_code == 1
-        assert "not found" in result.output.lower() or "nonexistent" in result.output
-
-
-def test_run_only_filters_plan(runner: CliRunner, tmp_path: Path) -> None:
-    """Run with --only b on a->b->c plan: b is accepted, not 'not found'."""
-
-    with runner.isolated_filesystem(temp_dir=tmp_path):
-        tasks_toml = """
+def _run_only_plan_toml() -> str:
+    """Return TOML for an a->b->c plan used in run --only tests."""
+    return """
 [tasks.a]
 summary = "task a"
 prompt = "do a"
@@ -1515,39 +1522,68 @@ commit_message = "c"
 depends_on = ["b"]
 files = ["c.py"]
 """
-        # IDs are qualified by section/file
+
+
+class _RunOnlyFakeRunner:
+    """Fake EventDagRunner for run --only tests."""
+
+    def __init__(self, dag, **kwargs) -> None:
+        self.dag = dag
+        self._durations = {slug: 0.1 for slug in dag.tasks}
+
+    @property
+    def task_errors(self):
+        return {}
+
+    @property
+    def task_durations(self):
+        return self._durations
+
+    async def run(self) -> dict[str, str]:
+        return {slug: "merged" for slug in self.dag.tasks}
+
+
+def _patch_run_only_deps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch dependencies for run --only tests (git, sentrux, runner, logging)."""
+    monkeypatch.setattr("dgov.cli.run._ensure_git_ready", lambda *args, **kwargs: None)
+    monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda *_: 100)
+    monkeypatch.setattr(
+        "dgov.cli.run._sentrux_compare",
+        lambda *_args, **_kwargs: {
+            "degradation": False,
+            "quality_before": 100,
+            "quality_after": 100,
+        },
+    )
+    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _RunOnlyFakeRunner)
+    monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
+
+
+def test_run_only_unknown_slug_exits(runner: CliRunner, tmp_path: Path) -> None:
+    """Running with --only nonexistent exits with code 1 and error message."""
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        tasks_toml = """
+[tasks.a]
+summary = "do a"
+prompt = "do a"
+commit_message = "a"
+files = ["a.py"]
+"""
+        compiled_path = compile_plan_tree(Path.cwd(), "unknown-slug-test", tasks_toml)
+        result = runner.invoke(cli, ["run", str(compiled_path.parent), "--only", "nonexistent"])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower() or "nonexistent" in result.output
+
+
+def test_run_only_filters_plan(runner: CliRunner, tmp_path: Path) -> None:
+    """Run with --only b on a->b->c plan: b is accepted, not 'not found'."""
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        tasks_toml = _run_only_plan_toml()
         compiled_path = compile_plan_tree(Path.cwd(), "filter-test", tasks_toml)
         plan_dir = compiled_path.parent
 
-        class _Runner:
-            def __init__(self, dag, **kwargs) -> None:
-                self.dag = dag
-                self._durations = {slug: 0.1 for slug in dag.tasks}
-
-            @property
-            def task_errors(self):
-                return {}
-
-            @property
-            def task_durations(self):
-                return self._durations
-
-            async def run(self) -> dict[str, str]:
-                return {slug: "merged" for slug in self.dag.tasks}
-
         monkeypatch = pytest.MonkeyPatch()
-        monkeypatch.setattr("dgov.cli.run._ensure_git_ready", lambda *args, **kwargs: None)
-        monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda *_: 100)
-        monkeypatch.setattr(
-            "dgov.cli.run._sentrux_compare",
-            lambda *_args, **_kwargs: {
-                "degradation": False,
-                "quality_before": 100,
-                "quality_after": 100,
-            },
-        )
-        monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
-        monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
+        _patch_run_only_deps(monkeypatch)
 
         try:
             # dgov run --only tasks/main.b should accept the slug
@@ -1579,6 +1615,57 @@ def test_run_rejects_uncompiled_plan(runner: CliRunner, tmp_path: Path) -> None:
 # -- prune --
 
 
+def _record_prune_scenario_tasks(project_root: str) -> None:
+    """Record the four standard prune scenario tasks: abandoned, closed, pending, merged."""
+    tasks = [
+        WorkerTask(
+            slug="abandoned-task",
+            prompt="test",
+            agent="test",
+            project_root=project_root,
+            worktree_path=project_root,
+            branch_name="test",
+            state=TaskState.ABANDONED,
+        ),
+        WorkerTask(
+            slug="closed-task",
+            prompt="test",
+            agent="test",
+            project_root=project_root,
+            worktree_path=project_root,
+            branch_name="test",
+            state=TaskState.CLOSED,
+        ),
+        WorkerTask(
+            slug="pending-task",
+            prompt="test",
+            agent="test",
+            project_root=project_root,
+            worktree_path=project_root,
+            branch_name="test",
+            state=TaskState.PENDING,
+        ),
+        WorkerTask(
+            slug="merged-task",
+            prompt="test",
+            agent="test",
+            project_root=project_root,
+            worktree_path=project_root,
+            branch_name="test",
+            state=TaskState.MERGED,
+        ),
+    ]
+    for task in tasks:
+        record_runtime_artifact(project_root, task)
+
+
+def _assert_remaining_slugs(project_root: str, expected_slugs: set[str]) -> None:
+    """Assert that the remaining runtime artifacts match the expected slugs."""
+    remaining = list_runtime_artifacts(project_root)
+    remaining_slugs = {t["slug"] for t in remaining}
+    assert remaining_slugs == expected_slugs
+
+
 def test_prune_nothing_to_prune(runner: CliRunner, tmp_path: Path) -> None:
     """Prune on empty or non-historical tasks should report nothing to prune."""
     with runner.isolated_filesystem(temp_dir=tmp_path):
@@ -1590,61 +1677,18 @@ def test_prune_nothing_to_prune(runner: CliRunner, tmp_path: Path) -> None:
 def test_prune_removes_historical_tasks(runner: CliRunner, tmp_path: Path) -> None:
     """Prune should remove abandoned and closed tasks, keeping pending/merged."""
     with runner.isolated_filesystem(temp_dir=tmp_path) as td:
-        # Create tasks in various states
-        tasks = [
-            WorkerTask(
-                slug="abandoned-task",
-                prompt="test",
-                agent="test",
-                project_root=td,
-                worktree_path=td,
-                branch_name="test",
-                state=TaskState.ABANDONED,
-            ),
-            WorkerTask(
-                slug="closed-task",
-                prompt="test",
-                agent="test",
-                project_root=td,
-                worktree_path=td,
-                branch_name="test",
-                state=TaskState.CLOSED,
-            ),
-            WorkerTask(
-                slug="pending-task",
-                prompt="test",
-                agent="test",
-                project_root=td,
-                worktree_path=td,
-                branch_name="test",
-                state=TaskState.PENDING,
-            ),
-            WorkerTask(
-                slug="merged-task",
-                prompt="test",
-                agent="test",
-                project_root=td,
-                worktree_path=td,
-                branch_name="test",
-                state=TaskState.MERGED,
-            ),
-        ]
-        for task in tasks:
-            record_runtime_artifact(td, task)
+        _record_prune_scenario_tasks(td)
 
         result = runner.invoke(cli, ["prune"])
         assert result.exit_code == 0
         assert "Pruned 2 historical task(s)" in result.output
 
-        remaining = list_runtime_artifacts(td)
-        remaining_slugs = {t["slug"] for t in remaining}
-        assert remaining_slugs == {"pending-task", "merged-task"}
+        _assert_remaining_slugs(td, {"pending-task", "merged-task"})
 
 
 def test_prune_idempotent(runner: CliRunner, tmp_path: Path) -> None:
     """Running prune twice should be idempotent — second run finds nothing."""
     with runner.isolated_filesystem(temp_dir=tmp_path) as td:
-        # Create an abandoned task
         task = WorkerTask(
             slug="abandoned-task",
             prompt="test",
@@ -1656,12 +1700,10 @@ def test_prune_idempotent(runner: CliRunner, tmp_path: Path) -> None:
         )
         record_runtime_artifact(td, task)
 
-        # First prune removes the task
         result1 = runner.invoke(cli, ["prune"])
         assert result1.exit_code == 0
         assert "Pruned 1 historical task(s)" in result1.output
 
-        # Second prune finds nothing
         result2 = runner.invoke(cli, ["prune"])
         assert result2.exit_code == 0
         assert "Nothing to prune" in result2.output

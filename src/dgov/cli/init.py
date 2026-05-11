@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import cast
 
 import click
 
@@ -121,6 +123,56 @@ _SCOPE_IGNORE_CANDIDATES: tuple[str, ...] = (
     # Elixir
     "mix.lock",
 )
+_PYTHON_REQUIREMENT_FILES: tuple[str, ...] = (
+    "requirements.txt",
+    "requirements-dev.txt",
+    "dev-requirements.txt",
+)
+_JS_TOOLING_KEYS: tuple[str, ...] = (
+    "test_cmd",
+    "lint_cmd",
+    "format_cmd",
+    "lint_fix_cmd",
+    "format_check_cmd",
+    "type_check_cmd",
+)
+_ESLINT_CONFIG_FILES: tuple[str, ...] = (
+    "eslint.config.js",
+    "eslint.config.mjs",
+    "eslint.config.cjs",
+    "eslint.config.ts",
+    ".eslintrc.js",
+    ".eslintrc.cjs",
+    ".eslintrc.yaml",
+    ".eslintrc.yml",
+    ".eslintrc.json",
+    ".eslintrc",
+)
+_BIOME_CONFIG_FILES: tuple[str, ...] = ("biome.json", "biome.jsonc")
+_PRETTIER_CONFIG_FILES: tuple[str, ...] = (
+    ".prettierrc",
+    ".prettierrc.json",
+    ".prettierrc.yaml",
+    ".prettierrc.yml",
+    ".prettierrc.js",
+    ".prettierrc.cjs",
+    ".prettierrc.mjs",
+    "prettier.config.js",
+    "prettier.config.cjs",
+    "prettier.config.mjs",
+)
+_VITEST_CONFIG_FILES: tuple[str, ...] = (
+    "vitest.config.js",
+    "vitest.config.mjs",
+    "vitest.config.ts",
+    "vitest.config.mts",
+)
+_JEST_CONFIG_FILES: tuple[str, ...] = (
+    "jest.config.js",
+    "jest.config.ts",
+    "jest.config.mjs",
+    "jest.config.cjs",
+)
 
 
 def _detect_scope_ignore_files(root: Path, language: str) -> list[str]:
@@ -141,128 +193,104 @@ def _dependency_name(dependency: str) -> str:
 
 def _python_project_uses_pytest(root: Path) -> bool:
     """Detect pytest in common Python dependency manifests."""
+    return _pyproject_uses_dependency(root, "pytest") or _requirements_use_dependency(
+        root, "pytest"
+    )
+
+
+def _pyproject_uses_dependency(root: Path, dependency_name: str) -> bool:
+    data = _read_pyproject(root)
+    return _dependency_groups_include(
+        _pyproject_dependency_candidates(data),
+        dependency_name,
+    )
+
+
+def _read_pyproject(root: Path) -> dict[str, object]:
     pyproject = root / "pyproject.toml"
-    if pyproject.is_file():
-        try:
-            data = tomllib.loads(pyproject.read_text())
-        except (tomllib.TOMLDecodeError, OSError):
-            data = {}
-
-        candidates: list[object] = []
-        project = data.get("project")
-        if isinstance(project, dict):
-            candidates.append(project.get("dependencies", ()))
-            optional = project.get("optional-dependencies", {})
-            if isinstance(optional, dict):
-                candidates.extend(optional.values())
-        dependency_groups = data.get("dependency-groups", {})
-        if isinstance(dependency_groups, dict):
-            candidates.extend(dependency_groups.values())
-
-        for group in candidates:
-            if not isinstance(group, list):
-                continue
-            for dep in group:
-                if isinstance(dep, str) and _dependency_name(dep) == "pytest":
-                    return True
-
-    for name in ("requirements.txt", "requirements-dev.txt", "dev-requirements.txt"):
-        req = root / name
-        if not req.is_file():
-            continue
-        try:
-            for line in req.read_text().splitlines():
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
-                    continue
-                if _dependency_name(stripped) == "pytest":
-                    return True
-        except OSError:
-            continue
-    return False
+    if not pyproject.is_file():
+        return {}
+    try:
+        return tomllib.loads(pyproject.read_text())
+    except (tomllib.TOMLDecodeError, OSError):
+        return {}
 
 
-def _detect_js_tooling(root: Path) -> dict[str, str]:
-    """Detect JavaScript/TypeScript tooling from config files.
+def _pyproject_dependency_candidates(data: dict[str, object]) -> list[object]:
+    candidates: list[object] = []
+    project = data.get("project")
+    if isinstance(project, dict):
+        project_data = cast("dict[str, object]", project)
+        candidates.append(project_data.get("dependencies", ()))
+        candidates.extend(_mapping_values(project_data.get("optional-dependencies")))
+    candidates.extend(_mapping_values(data.get("dependency-groups")))
+    return candidates
 
-    Returns a dict with keys: test_cmd, lint_cmd, format_cmd, lint_fix_cmd,
-    format_check_cmd, type_check_cmd. Empty string means not detected.
-    """
-    result: dict[str, str] = {
-        "test_cmd": "",
-        "lint_cmd": "",
-        "format_cmd": "",
-        "lint_fix_cmd": "",
-        "format_check_cmd": "",
-        "type_check_cmd": "",
-    }
 
-    # Check for eslint config files
-    eslint_configs = [
-        "eslint.config.js",
-        "eslint.config.mjs",
-        "eslint.config.cjs",
-        "eslint.config.ts",
-        ".eslintrc.js",
-        ".eslintrc.cjs",
-        ".eslintrc.yaml",
-        ".eslintrc.yml",
-        ".eslintrc.json",
-        ".eslintrc",
-    ]
-    has_eslint = any((root / cfg).is_file() for cfg in eslint_configs)
+def _mapping_values(value: object) -> list[object]:
+    return list(value.values()) if isinstance(value, dict) else []
 
-    # Check for biome config
-    has_biome = any((root / cfg).is_file() for cfg in ["biome.json", "biome.jsonc"])
 
-    # Check for prettier config
-    prettier_configs = [
-        ".prettierrc",
-        ".prettierrc.json",
-        ".prettierrc.yaml",
-        ".prettierrc.yml",
-        ".prettierrc.js",
-        ".prettierrc.cjs",
-        ".prettierrc.mjs",
-        "prettier.config.js",
-        "prettier.config.cjs",
-        "prettier.config.mjs",
-    ]
-    has_prettier = any((root / cfg).is_file() for cfg in prettier_configs)
+def _dependency_groups_include(groups: list[object], dependency_name: str) -> bool:
+    return any(_dependency_group_includes(group, dependency_name) for group in groups)
 
-    # Check for test runners
-    has_vitest = any(
-        (root / cfg).is_file()
-        for cfg in [
-            "vitest.config.js",
-            "vitest.config.mjs",
-            "vitest.config.ts",
-            "vitest.config.mts",
-        ]
-    )
-    has_jest = any(
-        (root / cfg).is_file()
-        for cfg in ["jest.config.js", "jest.config.ts", "jest.config.mjs", "jest.config.cjs"]
+
+def _dependency_group_includes(group: object, dependency_name: str) -> bool:
+    return isinstance(group, list) and any(
+        isinstance(dependency, str) and _dependency_name(dependency) == dependency_name
+        for dependency in group
     )
 
-    # Check package.json for test script
-    has_npm_test = False
+
+def _requirements_use_dependency(root: Path, dependency_name: str) -> bool:
+    return any(
+        _requirements_file_uses_dependency(root / filename, dependency_name)
+        for filename in _PYTHON_REQUIREMENT_FILES
+    )
+
+
+def _requirements_file_uses_dependency(path: Path, dependency_name: str) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return False
+    return any(_requirements_line_uses_dependency(line, dependency_name) for line in lines)
+
+
+def _requirements_line_uses_dependency(line: str, dependency_name: str) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return False
+    return _dependency_name(stripped) == dependency_name
+
+
+def _empty_js_tooling() -> dict[str, str]:
+    return dict.fromkeys(_JS_TOOLING_KEYS, "")
+
+
+def _has_config_file(root: Path, filenames: tuple[str, ...]) -> bool:
+    return any((root / filename).is_file() for filename in filenames)
+
+
+def _read_package_json(root: Path) -> dict[str, object]:
     package_json = root / "package.json"
-    if package_json.is_file():
-        try:
-            import json
+    if not package_json.is_file():
+        return {}
+    try:
+        payload = json.loads(package_json.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return cast("dict[str, object]", payload) if isinstance(payload, dict) else {}
 
-            with package_json.open(encoding="utf-8") as f:
-                pkg = json.load(f)
-            scripts = pkg.get("scripts", {})
-            has_npm_test = "test" in scripts
-        except Exception:
-            pass
 
-    # Check for tsconfig.json
-    has_tsconfig = (root / "tsconfig.json").is_file()
+def _package_script_exists(root: Path, script_name: str) -> bool:
+    scripts = _read_package_json(root).get("scripts", {})
+    return isinstance(scripts, dict) and script_name in scripts
 
-    # Set lint commands
+
+def _set_js_lint_commands(result: dict[str, str], *, has_eslint: bool, has_biome: bool) -> None:
     if has_eslint:
         result["lint_cmd"] = "npx eslint {file}"
         result["lint_fix_cmd"] = "npx eslint --fix {file}"
@@ -270,7 +298,13 @@ def _detect_js_tooling(root: Path) -> dict[str, str]:
         result["lint_cmd"] = "npx biome check {file}"
         result["lint_fix_cmd"] = "npx biome check --write {file}"
 
-    # Set format commands
+
+def _set_js_format_commands(
+    result: dict[str, str],
+    *,
+    has_prettier: bool,
+    has_biome: bool,
+) -> None:
     if has_prettier:
         result["format_cmd"] = "npx prettier --write {file}"
         result["format_check_cmd"] = "npx prettier --check {file}"
@@ -278,7 +312,14 @@ def _detect_js_tooling(root: Path) -> dict[str, str]:
         result["format_cmd"] = "npx biome format --write {file}"
         result["format_check_cmd"] = "npx biome format {file}"
 
-    # Set test command
+
+def _set_js_test_command(
+    result: dict[str, str],
+    *,
+    has_vitest: bool,
+    has_jest: bool,
+    has_npm_test: bool,
+) -> None:
     if has_vitest:
         result["test_cmd"] = "npx vitest run {test_dir}"
     elif has_jest:
@@ -286,60 +327,97 @@ def _detect_js_tooling(root: Path) -> dict[str, str]:
     elif has_npm_test:
         result["test_cmd"] = "npm test"
 
-    # Set type check command
-    if has_tsconfig:
+
+def _set_js_type_check_command(result: dict[str, str], root: Path) -> None:
+    if (root / "tsconfig.json").is_file():
         result["type_check_cmd"] = "npx tsc --noEmit"
 
+
+def _detect_js_tooling(root: Path) -> dict[str, str]:
+    """Detect JavaScript/TypeScript tooling from config files."""
+    result = _empty_js_tooling()
+    has_biome = _has_config_file(root, _BIOME_CONFIG_FILES)
+    _set_js_lint_commands(
+        result,
+        has_eslint=_has_config_file(root, _ESLINT_CONFIG_FILES),
+        has_biome=has_biome,
+    )
+    _set_js_format_commands(
+        result,
+        has_prettier=_has_config_file(root, _PRETTIER_CONFIG_FILES),
+        has_biome=has_biome,
+    )
+    _set_js_test_command(
+        result,
+        has_vitest=_has_config_file(root, _VITEST_CONFIG_FILES),
+        has_jest=_has_config_file(root, _JEST_CONFIG_FILES),
+        has_npm_test=_package_script_exists(root, "test"),
+    )
+    _set_js_type_check_command(result, root)
     return result
 
 
-def _detect_project(root: Path) -> tuple[str, str, str, list[str]]:
-    """Auto-detect language, src dir, test dir, and extensions."""
-    language = "python"
-    src_dir = "src/"
-    test_dir = "tests/"
-    extensions = [".py"]
-
-    # Language detection by file prevalence
+def _detect_language_counts(root: Path) -> dict[str, int]:
+    """Count source files by language in the project root."""
     py_files = _source_files(root, ".py")
     js_files = _source_files(root, ".js") + _source_files(root, ".ts")
     rs_files = _source_files(root, ".rs")
     go_files = _source_files(root, ".go")
 
-    counts = {
+    return {
         "python": len(py_files),
         "javascript": len(js_files),
         "rust": len(rs_files),
         "go": len(go_files),
     }
+
+
+def _detect_language(counts: dict[str, int]) -> str:
+    """Determine primary language from file counts, defaulting to python."""
     language = max(counts, key=lambda k: counts.get(k, 0))
     if counts[language] == 0:
         language = "python"
+    return language
 
-    # Source dir detection
+
+def _detect_src_dir(root: Path) -> str:
+    """Detect the source directory path."""
     if (root / "src").is_dir():
-        src_dir = "src/"
+        return "src/"
     elif (root / "lib").is_dir():
-        src_dir = "lib/"
+        return "lib/"
     else:
-        src_dir = "."
+        return "."
 
-    # Test dir detection
+
+def _detect_test_dir(root: Path) -> str:
+    """Detect the test directory path."""
     if (root / "tests").is_dir():
-        test_dir = "tests/"
+        return "tests/"
     elif (root / "test").is_dir():
-        test_dir = "test/"
+        return "test/"
     else:
-        test_dir = "tests/"
+        return "tests/"
 
-    # Extensions by language
+
+def _detect_extensions(language: str) -> list[str]:
+    """Return file extensions for the detected language."""
     ext_map = {
         "python": [".py"],
         "javascript": [".js", ".ts", ".tsx"],
         "rust": [".rs"],
         "go": [".go"],
     }
-    extensions = ext_map.get(language, [".py"])
+    return ext_map.get(language, [".py"])
+
+
+def _detect_project(root: Path) -> tuple[str, str, str, list[str]]:
+    """Auto-detect language, src dir, test dir, and extensions."""
+    counts = _detect_language_counts(root)
+    language = _detect_language(counts)
+    src_dir = _detect_src_dir(root)
+    test_dir = _detect_test_dir(root)
+    extensions = _detect_extensions(language)
 
     return language, src_dir, test_dir, extensions
 
@@ -375,6 +453,15 @@ _LANG_TEMPLATES: dict[str, dict[str, str]] = {
     },
 }
 
+_COMMAND_HINTS = {
+    "test_cmd": "Not detected. Try: 'npx vitest run {test_dir}'",
+    "lint_cmd": "Not detected. Try: 'npx eslint {file}'",
+    "format_cmd": "Not detected. Try: 'npx prettier --write {file}'",
+    "lint_fix_cmd": "Not detected. Try: 'npx eslint --fix {file}'",
+    "format_check_cmd": "Not detected. Try: 'npx prettier --check {file}'",
+    "type_check_cmd": "Not detected. Try: 'npx tsc --noEmit'",
+}
+
 
 def _render_project_toml(
     language: str,
@@ -385,44 +472,54 @@ def _render_project_toml(
     project_root: Path | None = None,
 ) -> str:
     """Render a project.toml string."""
+    cmds = _project_commands(language, src_dir, project_root)
+    ext_str = ", ".join(f'"{extension}"' for extension in extensions)
+    ignore_files = scope_ignore_files or []
+    lines = [
+        *_project_header_lines(language, src_dir, test_dir, ext_str),
+        *_project_command_lines(language, cmds),
+        *_coverage_lines(cmds),
+        *_setup_lines(language),
+        *_runtime_config_lines(),
+        *_tool_policy_lines(language),
+        *_scope_lines(ignore_files),
+        *_convention_lines(),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _project_commands(
+    language: str,
+    src_dir: str,
+    project_root: Path | None,
+) -> dict[str, str]:
     cmds = _LANG_TEMPLATES.get(language, _LANG_TEMPLATES["python"])
 
-    # For JavaScript, detect actual tooling and override defaults
     if language == "javascript" and project_root is not None:
         detected = _detect_js_tooling(project_root)
-        cmds = {**cmds, **detected}
-    elif (
+        return {**cmds, **detected}
+    if (
         language == "python"
         and project_root is not None
         and _python_project_uses_pytest(project_root)
     ):
         coverage_source = src_dir.rstrip("/") or "."
-        cmds = {
+        return {
             **cmds,
             "coverage_cmd": (
                 f"uv run pytest --cov={coverage_source} --cov-report=json:{{output}} -q"
             ),
         }
+    return dict(cmds)
 
-    ext_str = ", ".join(f'"{e}"' for e in extensions)
-    ignore_files = scope_ignore_files or []
 
-    def render_cmd(key: str, hint: str) -> str:
-        """Render a command line, showing empty strings as commented hints."""
-        value = cmds.get(key, "")
-        if value:
-            return f'{key} = "{value}"'
-        return f'{key} = ""  # {hint}'
-
-    # Hints shown as comments when a tool isn't detected
-    test_hint = "Not detected. Try: 'npx vitest run {test_dir}'"
-    lint_hint = "Not detected. Try: 'npx eslint {file}'"
-    format_hint = "Not detected. Try: 'npx prettier --write {file}'"
-    lint_fix_hint = "Not detected. Try: 'npx eslint --fix {file}'"
-    format_check_hint = "Not detected. Try: 'npx prettier --check {file}'"
-    type_check_hint = "Not detected. Try: 'npx tsc --noEmit'"
-
-    lines = [
+def _project_header_lines(
+    language: str,
+    src_dir: str,
+    test_dir: str,
+    ext_str: str,
+) -> list[str]:
+    return [
         "[project]",
         f'language = "{language}"',
         f'src_dir = "{src_dir}"',
@@ -438,39 +535,55 @@ def _render_project_toml(
         '# Run "dgov sentrux gate-save" after bootstrap and whenever you intentionally',
         "# refresh the architectural baseline for this repo.",
         "",
-        render_cmd("test_cmd", test_hint),
-        render_cmd("lint_cmd", lint_hint),
-        render_cmd("format_cmd", format_hint),
-        render_cmd("lint_fix_cmd", lint_fix_hint),
-        render_cmd("format_check_cmd", format_check_hint),
     ]
 
-    # Add type_check_cmd for JavaScript or as commented example for others
+
+def _project_command_lines(language: str, cmds: dict[str, str]) -> list[str]:
+    lines = [
+        _render_cmd(cmds, "test_cmd"),
+        _render_cmd(cmds, "lint_cmd"),
+        _render_cmd(cmds, "format_cmd"),
+        _render_cmd(cmds, "lint_fix_cmd"),
+        _render_cmd(cmds, "format_check_cmd"),
+    ]
     if language == "javascript":
-        lines.append(render_cmd("type_check_cmd", type_check_hint))
+        lines.append(_render_cmd(cmds, "type_check_cmd"))
     else:
         lines.append("# type_check_cmd = \"\"  # Optional: e.g. 'uv run ty check' for Python")
+    return lines
 
+
+def _render_cmd(cmds: dict[str, str], key: str) -> str:
+    value = cmds.get(key, "")
+    if value:
+        return f'{key} = "{value}"'
+    return f'{key} = ""  # {_COMMAND_HINTS[key]}'
+
+
+def _coverage_lines(cmds: dict[str, str]) -> list[str]:
     coverage_cmd = cmds.get("coverage_cmd")
     if coverage_cmd:
-        lines.append(f'coverage_cmd = "{coverage_cmd}"')
-    else:
-        lines.append(
+        return [f'coverage_cmd = "{coverage_cmd}"', "coverage_threshold = 2.0"]
+    return [
+        (
             '# coverage_cmd = ""  # Optional: e.g. '
             "'uv run pytest --cov=src --cov-report=json:{output} -q'"
-        )
-    lines.append("coverage_threshold = 2.0")
+        ),
+        "coverage_threshold = 2.0",
+    ]
 
-    # setup_cmd: runs in worktree before lint/test/format gates
+
+def _setup_lines(language: str) -> list[str]:
     if language == "javascript":
-        lines.append(
+        return [
             'setup_cmd = "npm ci --ignore-scripts 2>/dev/null'
             ' || npm install --ignore-scripts 2>/dev/null"'
-        )
-    else:
-        lines.append('# setup_cmd = ""  # Runs in worktree before gates')
+        ]
+    return ['# setup_cmd = ""  # Runs in worktree before gates']
 
-    lines.extend([
+
+def _runtime_config_lines() -> list[str]:
+    return [
         "",
         "# Worktree bootstrap timeout in seconds",
         "bootstrap_timeout = 300",
@@ -487,6 +600,11 @@ def _render_project_toml(
         '  # "detect-secrets-hook --baseline .secrets.baseline {file}",  # Example: secrets',
         "]",
         "",
+    ]
+
+
+def _tool_policy_lines(language: str) -> list[str]:
+    return [
         "[tool_policy]",
         "restrict_run_bash = true",
         'deny_shell_commands = ["pip", "python -m pip", "pip3", "python -m venv", "uv venv"]',
@@ -494,18 +612,31 @@ def _render_project_toml(
         f"require_wrapped_verify_tools = {'true' if language == 'python' else 'false'}",
         f"require_uv_run = {'true' if language == 'python' else 'false'}",
         "",
+    ]
+
+
+def _scope_lines(ignore_files: list[str]) -> list[str]:
+    return [
         "[scope]",
         "# Files exempted from scope-violation checks in addition to dgov's built-in",
         "# Python defaults: .venv, uv.lock, __pycache__, and *.pyc.",
         "# Add repo-specific managed files here when workers may touch them incidentally.",
         "# Exact paths, directory names, and constrained globs like *.pyc are supported.",
-        f"ignore_files = [{', '.join(f'"{name}"' for name in ignore_files)}]",
+        f"ignore_files = [{_quoted_string_list(ignore_files)}]",
         "",
+    ]
+
+
+def _quoted_string_list(values: list[str]) -> str:
+    return ", ".join(f'"{value}"' for value in values)
+
+
+def _convention_lines() -> list[str]:
+    return [
         "[conventions]",
         "# Add project-specific rules here for the agent to follow",
         '# style = "Prefer functional over OOP"',
-    ])
-    return "\n".join(lines) + "\n"
+    ]
 
 
 def _render_governor_md() -> str:
@@ -538,6 +669,90 @@ def _write_bootstrap_files(
     return created
 
 
+def _prepare_runtime_dirs(project_root: Path, dgov_dir: Path) -> None:
+    dgov_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_gitignore(dgov_dir, _DGOV_GITIGNORE)
+
+    sentrux_dir = project_root / ".sentrux"
+    sentrux_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_gitignore(sentrux_dir, _SENTRUX_GITIGNORE)
+
+
+def _write_init_files(
+    config_path: Path,
+    toml_content: str,
+    dgov_dir: Path,
+    *,
+    force: bool,
+) -> list[Path]:
+    created: list[Path] = []
+    if force or not config_path.exists():
+        config_path.write_text(toml_content)
+        created.append(config_path)
+    created.extend(_write_bootstrap_files(_bootstrap_policy_targets(dgov_dir), force=force))
+    return created
+
+
+def _exit_already_initialized(dgov_dir: Path) -> None:
+    click.echo(f"Already initialized: {dgov_dir}")
+    click.echo("Use --force to overwrite bootstrap files.")
+    raise click.exceptions.Exit(code=1)
+
+
+def _print_created_paths(created: list[Path]) -> None:
+    for path in created:
+        click.echo(f"Created {path}")
+
+
+def _print_init_config_summary(
+    language: str,
+    src_dir: str,
+    test_dir: str,
+    scope_ignore_files: list[str],
+) -> None:
+    click.echo(f"  language: {language}")
+    click.echo(f"  src_dir:  {src_dir}")
+    click.echo(f"  test_dir: {test_dir}")
+    if scope_ignore_files:
+        click.echo(f"  scope.ignore_files: {', '.join(scope_ignore_files)}")
+
+
+def _should_prompt_for_sentrux_baseline(yes: bool) -> bool:
+    headless = not sys.stdin.isatty() or want_json()
+    return not yes and not headless
+
+
+def _maybe_create_sentrux_baseline(project_root: Path, *, yes: bool) -> tuple[Path, bool]:
+    baseline_path = _sentrux_baseline_path(project_root)
+    if baseline_path.exists() or not _sentrux_available():
+        return baseline_path, False
+
+    if _should_prompt_for_sentrux_baseline(yes) and not click.confirm(
+        "Run `dgov sentrux gate-save` now to create the repo baseline?",
+        default=True,
+    ):
+        return baseline_path, False
+
+    ok, details = _save_sentrux_baseline(project_root)
+    if ok:
+        click.echo(f"Created {baseline_path}")
+        return baseline_path, True
+    click.echo(f"Could not create sentrux baseline: {details}", err=True)
+    return baseline_path, False
+
+
+def _print_init_next_steps(baseline_path: Path, baseline_created: bool) -> None:
+    click.echo("Next:")
+    click.echo("  1. Review .dgov/project.toml, .dgov/governor.md, and .dgov/sops/")
+    if baseline_created or baseline_path.exists():
+        click.echo(
+            "  2. Refresh the architectural baseline with `dgov sentrux gate-save` "
+            "when you intentionally reset it"
+        )
+    else:
+        click.echo("  2. Run `dgov sentrux gate-save` to create the repo baseline")
+
+
 @cli.command(name="init")
 @click.option("--force", is_flag=True, help="Overwrite bootstrap files")
 @click.option("--yes", "-y", is_flag=True, help="Skip interactive prompts")
@@ -555,74 +770,15 @@ def init_cmd(force: bool, yes: bool) -> None:
         language, src_dir, test_dir, extensions, scope_ignore_files, project_root
     )
 
-    dgov_dir.mkdir(parents=True, exist_ok=True)
-    _ensure_gitignore(dgov_dir, _DGOV_GITIGNORE)
-
-    sentrux_dir = project_root / ".sentrux"
-    sentrux_dir.mkdir(parents=True, exist_ok=True)
-    _ensure_gitignore(sentrux_dir, _SENTRUX_GITIGNORE)
-
-    created: list[Path] = []
-
-    if force or not config_path.exists():
-        config_path.write_text(toml_content)
-        created.append(config_path)
-
-    created.extend(
-        _write_bootstrap_files(
-            _bootstrap_policy_targets(dgov_dir),
-            force=force,
-        )
-    )
+    _prepare_runtime_dirs(project_root, dgov_dir)
+    created = _write_init_files(config_path, toml_content, dgov_dir, force=force)
 
     if not created:
-        click.echo(f"Already initialized: {dgov_dir}")
-        click.echo("Use --force to overwrite bootstrap files.")
-        raise click.exceptions.Exit(code=1)
+        _exit_already_initialized(dgov_dir)
 
-    for path in created:
-        click.echo(f"Created {path}")
+    _print_created_paths(created)
 
     if config_path in created:
-        click.echo(f"  language: {language}")
-        click.echo(f"  src_dir:  {src_dir}")
-        click.echo(f"  test_dir: {test_dir}")
-        if scope_ignore_files:
-            click.echo(f"  scope.ignore_files: {', '.join(scope_ignore_files)}")
-        baseline_path = _sentrux_baseline_path(project_root)
-        baseline_created = False
-
-        headless = not sys.stdin.isatty() or want_json()
-        should_prompt = not yes and not headless
-
-        if not baseline_path.exists() and _sentrux_available():
-            if should_prompt:
-                create_baseline = click.confirm(
-                    "Run `dgov sentrux gate-save` now to create the repo baseline?",
-                    default=True,
-                )
-                if create_baseline:
-                    ok, details = _save_sentrux_baseline(project_root)
-                    if ok:
-                        click.echo(f"Created {baseline_path}")
-                        baseline_created = True
-                    else:
-                        click.echo(f"Could not create sentrux baseline: {details}", err=True)
-            else:
-                # Automate if --yes or headless
-                ok, details = _save_sentrux_baseline(project_root)
-                if ok:
-                    click.echo(f"Created {baseline_path}")
-                    baseline_created = True
-                else:
-                    click.echo(f"Could not create sentrux baseline: {details}", err=True)
-
-        click.echo("Next:")
-        click.echo("  1. Review .dgov/project.toml, .dgov/governor.md, and .dgov/sops/")
-        if baseline_created or baseline_path.exists():
-            click.echo(
-                "  2. Refresh the architectural baseline with `dgov sentrux gate-save` "
-                "when you intentionally reset it"
-            )
-        else:
-            click.echo("  2. Run `dgov sentrux gate-save` to create the repo baseline")
+        _print_init_config_summary(language, src_dir, test_dir, scope_ignore_files)
+        baseline_path, baseline_created = _maybe_create_sentrux_baseline(project_root, yes=yes)
+        _print_init_next_steps(baseline_path, baseline_created)
