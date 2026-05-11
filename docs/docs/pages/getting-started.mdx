@@ -6,6 +6,38 @@ through scoped settlement gates, and leaves an event log you can replay.
 
 This page walks from a fresh repo to a finished run.
 
+## Premise
+
+Most AI coding tooling rests on a hidden assumption: that the model will be
+careful. `dgov` rests on the opposite assumption.
+
+A worker is a stranger you let run commands in your repo. It will lie about
+whether tests passed. It will edit files outside its claimed scope. It will
+mark a task `done` while the working tree is broken. None of that is a bug
+in the model. It is what probabilistic systems do under load. A better
+prompt does not fix it. Structure does.
+
+`dgov`'s stance:
+
+- **The orchestrator is a compiler, not an agent.** Planning, retries, file
+  claims, and merge decisions are explicit state transitions over an event
+  log. You can read what happened. You can replay it.
+- **Workers are subprocesses, not collaborators.** They live in disposable
+  git worktrees, get judged by settlement gates, and merge only when every
+  gate passes. No shared state, no implicit trust.
+- **A clean merge is not a clean integration.** Semantic settlement asks
+  whether the integrated result still works — not just whether git could
+  replay the commit.
+- **Plans are contracts.** File claims declare legal concurrency;
+  dependencies declare legal order. The kernel rejects plans that violate
+  them before any worker runs.
+- **Failing closed is the point.** Out-of-scope edits fail review. Failing
+  tests fail settlement. A missing API key fails before dispatch.
+
+If you want a system that infers your intent and figures things out, this is
+not that system. `dgov` assumes you know what you want to change, and gives
+you the structure to change it without trusting the model to behave.
+
 ## Requirements
 
 - Python 3.12+
@@ -52,8 +84,9 @@ dgov init
   coverage knobs, scope ignore list.
 - `.dgov/governor.md` — governor charter: planning rules, retry rules, done
   criteria.
-- `.dgov/sops/*.md` — worker SOPs: error handling, git commits, large files,
-  refactoring discipline, return values, testing.
+- `.dgov/sops/*.md` — worker SOPs covering architecture, code review,
+  error handling, git commits, large-file handling, Python style,
+  refactoring discipline, return values, state modeling, and testing.
 
 If `sentrux` is installed and `.sentrux/baseline.json` does not exist, `dgov
 init` offers to create the baseline now. Otherwise run it later:
