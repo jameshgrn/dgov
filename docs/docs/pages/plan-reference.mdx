@@ -1,134 +1,158 @@
 # Plan Reference
 
-dgov authors plans as plan trees under `.dgov/plans/<name>/`. `dgov compile` turns that tree into `_compiled.toml`, and `dgov run <plan-dir>` recompiles current source before execution.
+A plan lives at `.dgov/plans/<name>/` as a tree of TOML files. `dgov compile`
+turns the tree into a normalized `_compiled.toml`, and `dgov run <plan-dir>`
+recompiles current source before execution.
 
-## Structure Overview
+You can author plans by hand or generate them with `dgov plan create
+"<goal>"`. Either way, the schema below applies.
+
+## Tree layout
+
+```
+.dgov/plans/refactor-api/
+├── _root.toml         # plan-level metadata
+├── _compiled.toml     # emitted by `dgov compile` (do not hand-edit)
+└── tasks/
+    ├── _example.toml  # scaffold (ignored — underscore-prefixed)
+    └── main.toml      # one or more [tasks.<slug>] entries
+```
+
+A minimal example:
 
 ```toml
-# .dgov/plans/refactor-api/_root.toml
+# _root.toml
 [plan]
 name = "refactor-api"
 summary = "Refactor the API surface"
 sections = ["tasks"]
 
-# .dgov/plans/refactor-api/tasks/main.toml
+# tasks/main.toml
 [tasks.validate]
-summary = "Validate current state"
-prompt = "Review src/api.py and verify the current endpoint structure"
-commit_message = "docs: add validation notes"
+summary = "Inspect current endpoints"
+prompt = "Review src/api.py and document the existing endpoint structure"
+commit_message = "docs: endpoint inventory"
 files.read = ["src/api.py"]
+files.create = ["docs/api-inventory.md"]
 
 [tasks.migrate]
-summary = "Migrate to new schema"
-prompt = "Refactor src/api.py to use the new typed response schema"
+summary = "Migrate to typed response schema"
+prompt = "Refactor src/api.py to return the typed schema in src/api/types.py"
 depends_on = ["validate"]
-commit_message = "refactor: migrate api to typed schema"
+commit_message = "refactor: typed response schema"
 files.edit = ["src/api.py"]
 files.create = ["src/api/types.py"]
 ```
 
----
-
-## `_root.toml` `[plan]` Section
-
-The plan-tree root metadata.
+## `_root.toml` `[plan]` section
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | — | Unique identifier for this plan |
-| `summary` | string | No | `""` | One-line summary of the plan |
+| `name` | string | Yes | — | Unique plan identifier |
+| `summary` | string | No | `""` | One-line plan summary |
 | `sections` | array of strings | Yes | — | Top-level section directories to compile |
+| `default_agent` | string | No | project default | Plan-level model override |
 
----
+`sections` is the list of immediate subdirectories that `dgov compile`
+walks. Files prefixed with `_` are ignored — use that prefix for scaffolds,
+notes, or anything you do not want compiled.
 
-## `[tasks.<slug>]` Section
+## `[tasks.<slug>]` section
 
-Individual task definitions live inside section TOMLs such as `tasks/main.toml`.
+Tasks live inside section TOMLs such as `tasks/main.toml`.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `slug` | string | Yes (implicit) | — | Task identifier (from table key) |
-| `summary` | string | Yes | — | Short description for logs and UI |
-| `prompt` | string | Yes | — | Instructions sent to the worker agent |
-| `agent` | string | No | project default | Model/router override for this task. Only overrides the model/router name—provider config stays in `project.toml` |
+| `slug` | string | Yes (implicit) | — | Task identifier (from the table key) |
+| `summary` | string | Yes | — | Short description used by logs and UI |
+| `prompt` | string | Yes | — | Instructions sent to the worker |
+| `agent` | string | No | plan/project default | Model/router override for this task |
 | `depends_on` | array of strings | No | `[]` | Slugs that must complete first |
 | `commit_message` | string | Yes | — | Git commit message on success |
-| `timeout_s` | integer | No | 900 | Seconds before task aborts |
+| `timeout_s` | integer | No | 900 | Seconds before the task aborts |
+| `role` | string | No | `worker` | One of `worker`, `researcher`, `reviewer` |
 
-### File Claims `[tasks.<slug>.files]`
+Slug grammar: `^[A-Za-z0-9_-]+$`. Compiled unit IDs are
+`<section>/<file-stem>.<slug>` (e.g. `tasks/main.add-feature`).
 
-File claims enforce **isolation** between concurrent tasks. The kernel validates that independent tasks (no dependency edge) never claim overlapping file paths.
+### Task roles
+
+| Role | Worktree | Writes? | Settlement | Merges? |
+|------|----------|---------|------------|---------|
+| `worker` | yes | yes | full settlement gates | yes, on pass |
+| `researcher` | yes | no (read-only) | auto-pass review | no |
+| `reviewer` | yes | no (read-only) | auto-pass review | no |
+
+`reviewer` tasks receive an auto-generated prompt with dependency diffs from
+the deploy log. The verdict goes into the `done` summary.
+
+### File claims `[tasks.<slug>.files]`
+
+File claims enforce isolation between concurrent tasks. The kernel rejects
+plans where independent tasks (no dependency edge) claim overlapping paths.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `create` | array of strings | Files the task will create. Use when the task generates new files that don't exist yet. |
-| `edit` | array of strings | Files the task will modify. Use when the task changes existing file content. |
-| `delete` | array of strings | Files the task will remove. Use when the task deletes existing files. |
-| `read` | array of strings | Files the task reads (informational, not enforced). Use when the task needs to reference a file without modifying it. |
-| `touch` | array of strings | Flat claim list used by compiled plans and shorthand authoring. Equivalent to `files = ["..."]` shorthand. |
+| `create` | array of strings | Files the task will create |
+| `edit` | array of strings | Files the task will modify |
+| `delete` | array of strings | Files the task will remove |
+| `read` | array of strings | Files the task references but does not write |
+| `touch` | array of strings | Flat claim list (equivalent to `files = [...]`) |
 
-#### Claim Type Examples
-
-Use explicit claim types when the operation is clear:
+#### Examples
 
 ```toml
 [tasks.add_feature]
-summary = "Add new authentication module"
+summary = "Add the auth module"
 prompt = "Create auth.py with login/logout functions"
 files.create = ["src/auth.py"]
 
 [tasks.fix_bug]
-summary = "Fix type error in utils"
+summary = "Fix the type error in utils"
 prompt = "Update the type annotation in utils.py line 42"
 files.edit = ["src/utils.py"]
 
 [tasks.cleanup]
-summary = "Remove deprecated module"
-prompt = "Delete the legacy helpers module"
+summary = "Remove the deprecated module"
+prompt = "Delete src/legacy_helpers.py"
 files.delete = ["src/legacy_helpers.py"]
 
 [tasks.audit]
-summary = "Review codebase for issues"
-prompt = "Read src/api.py and src/models.py, then write findings to audit.md"
+summary = "Inventory the API surface"
+prompt = "Read src/api.py and src/models.py, write findings to audit.md"
 files.read = ["src/api.py", "src/models.py"]
 files.create = ["audit.md"]
 ```
 
-### Flat File Claims Shorthand
+#### Flat shorthand
 
-For simple cases where you only need to claim files without specifying the operation type, use the `files` shorthand. This is equivalent to `touch`—the files will be created if they don't exist, and the task claims ownership.
+For tasks that only need to claim files without specifying the operation,
+use `files = [...]`. The shorthand is equivalent to `files.touch`.
 
 ```toml
 [tasks.generate_config]
-summary = "Generate default config"
-prompt = "Create a default config.json with basic settings"
+summary = "Generate the default config"
+prompt = "Write a default config.json"
 files = ["config.json"]
 ```
 
-This is equivalent to:
+Prefer explicit `create`/`edit`/`delete`/`read` when the operation matters
+for review. Use the shorthand when it is unambiguous from context.
 
-```toml
-[tasks.generate_config]
-summary = "Generate default config"
-prompt = "Create a default config.json with basic settings"
-files.touch = ["config.json"]
-```
-
-Use the shorthand for brevity when the operation is clear from context, or use explicit `create`/`edit`/`delete`/`read` when you need precise control.
-
----
-
-## File Claim Isolation
+## File-claim isolation
 
 File claims are the foundation of deterministic concurrency:
 
-1. **Declaration**: Every task must declare files it touches
-2. **Validation**: Before execution, the kernel checks for conflicts
-3. **Enforcement**: Independent tasks with overlapping paths fail validation
+1. **Declaration.** Every task declares the files it touches.
+2. **Validation.** The kernel checks for conflicts at compile time.
+3. **Enforcement.** Independent tasks with overlapping paths fail
+   validation.
 
-> **Kernel Validation Note**: The kernel validates that **independent tasks** (those with no dependency edge between them) never claim overlapping file paths. Dependent tasks (where A depends_on B) are allowed to touch the same files because they execute sequentially. This ensures safe parallel execution while allowing intentional file sharing through explicit ordering.
+The kernel only rejects overlap between **independent tasks**. Dependent
+tasks (`B depends_on A`) may touch the same files because they execute
+sequentially.
 
-### Conflict Example (Invalid)
+### Invalid (concurrent overlap)
 
 ```toml
 [tasks.a]
@@ -139,10 +163,10 @@ files.edit = ["config.yaml"]
 [tasks.b]
 summary = "Also update config"
 prompt = "Change port to 9090"
-files.edit = ["config.yaml"]  # ERROR: no dependency edge with task.a
+files.edit = ["config.yaml"]   # ERROR: no dependency edge to tasks.a
 ```
 
-### Valid Dependency Chain
+### Valid (sequential overlap)
 
 ```toml
 [tasks.a]
@@ -150,27 +174,25 @@ summary = "Update config"
 files.edit = ["config.yaml"]
 
 [tasks.b]
-summary = "Read updated config"
+summary = "Read the updated config"
 files.read = ["config.yaml"]
-depends_on = ["a"]  # OK: explicit ordering prevents conflict
+depends_on = ["a"]             # OK: explicit ordering
 ```
 
-### Path Overlap Rules
+### Path overlap rules
 
-Conflicts are detected when paths are identical or one is a parent of another:
+A path conflicts if it is identical to or a parent of another claimed path:
 
-- `src/main.py` overlaps with `src/main.py`
-- `src/` overlaps with `src/main.py`
-- `config.yaml` does NOT overlap with `other.yaml`
+- `src/main.py` overlaps `src/main.py`
+- `src/` overlaps `src/main.py`
+- `config.yaml` does not overlap `other.yaml`
 
----
-
-## Full Example
+## Full example
 
 ```toml
 [plan]
 name = "payment-gateway-refactor"
-summary = "Refactor payment integrations safely"
+summary = "Migrate payment integrations to a typed schema"
 sections = ["tasks"]
 
 # === Phase 1: Analysis ===
@@ -178,28 +200,28 @@ sections = ["tasks"]
 [tasks.audit]
 summary = "Audit current payment code"
 prompt = """
-Review src/payments/ directory and identify:
-1. All external API calls
+Review src/payments/. Identify:
+1. External API call sites
 2. Error handling gaps
 3. Missing type annotations
 
-Write findings to audit_report.md
+Write findings to audit_report.md.
 """
 agent = "senior-reviewer"
-commit_message = "docs: payment system audit report"
+commit_message = "docs: payment system audit"
 timeout_s = 1200
 files.read = [
-    "src/payments/",
-    "src/payments/stripe.py",
-    "src/payments/paypal.py",
+  "src/payments/",
+  "src/payments/stripe.py",
+  "src/payments/paypal.py",
 ]
 files.create = ["audit_report.md"]
 
 # === Phase 2: Design ===
 
 [tasks.design_schema]
-summary = "Design new payment schema"
-prompt = "Based on audit_report.md, design typed models for PaymentMethod and PaymentResult"
+summary = "Design the payment type schema"
+prompt = "Using audit_report.md, design PaymentMethod and PaymentResult"
 depends_on = ["audit"]
 commit_message = "design: payment type schema"
 files.read = ["audit_report.md"]
@@ -208,33 +230,31 @@ files.create = ["src/payments/types.py"]
 # === Phase 3: Implementation ===
 
 [tasks.refactor_stripe]
-summary = "Migrate Stripe integration"
-prompt = "Refactor src/payments/stripe.py to use new types from src/payments/types.py"
+summary = "Migrate the Stripe integration"
+prompt = "Refactor src/payments/stripe.py to use src/payments/types.py"
 depends_on = ["design_schema"]
-commit_message = "refactor: migrate stripe to typed models"
+commit_message = "refactor: stripe → typed schema"
 files.edit = ["src/payments/stripe.py"]
 files.read = ["src/payments/types.py"]
 
 [tasks.refactor_paypal]
-summary = "Migrate PayPal integration"
-prompt = "Refactor src/payments/paypal.py to use new types from src/payments/types.py"
+summary = "Migrate the PayPal integration"
+prompt = "Refactor src/payments/paypal.py to use src/payments/types.py"
 depends_on = ["design_schema"]
-commit_message = "refactor: migrate paypal to typed models"
+commit_message = "refactor: paypal → typed schema"
 files.edit = ["src/payments/paypal.py"]
 files.read = ["src/payments/types.py"]
 
 # === Phase 4: Cleanup ===
 
 [tasks.remove_legacy]
-summary = "Remove legacy payment module"
-prompt = "Delete src/payments/legacy.py after confirming no imports remain"
+summary = "Remove the legacy payment module"
+prompt = "Delete src/payments/legacy.py after verifying no imports remain"
 depends_on = ["refactor_stripe", "refactor_paypal"]
 commit_message = "chore: remove legacy payment module"
 files.read = ["src/payments/stripe.py", "src/payments/paypal.py"]
 files.delete = ["src/payments/legacy.py"]
 ```
-
----
 
 ## Validation
 
@@ -244,8 +264,9 @@ Validate a compiled plan without executing:
 dgov validate .dgov/plans/payment-gateway-refactor/_compiled.toml
 ```
 
-This checks:
+`validate` checks:
+
 - TOML syntax and schema
-- All dependencies reference existing tasks
-- No file conflicts between independent tasks
-- All tasks have resolvable agents
+- Every `depends_on` references an existing slug
+- No file-claim conflicts between independent tasks
+- Every task's agent resolves through the chain

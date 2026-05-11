@@ -1,198 +1,239 @@
 # CLI Reference
 
-Complete reference for the `dgov` command-line interface.
+Every `dgov` command and flag, grouped by what you do with them.
 
-## Commands Overview
+## Overview
 
-| Command | Description |
-|---------|-------------|
-| [`dgov run`](#dgov-run) | Compile and run a plan directory with quality gates |
-| [`dgov fix`](#dgov-fix) | Create and run a single-task fix plan |
-| [`dgov status`](#dgov-status) | Show event-derived governor state |
-| [`dgov clean`](#dgov-clean) | Clean stale worktrees and output directories |
-| [`dgov init`](#dgov-init) | Bootstrap project configuration |
-| [`dgov ledger`](#dgov-ledger) | Record bugs, rules, and technical debt |
-| [`dgov init-plan`](#dgov-init-plan) | Initialize a new plan directory with sections |
-| [`dgov compile`](#dgov-compile) | Compile a plan tree into `_compiled.toml` |
-| [`dgov validate`](#dgov-validate) | Parse and validate a plan without running it |
-| [`dgov plan status`](#dgov-plan-status) | Show pending vs deployed units for a plan |
-| [`dgov plan review`](#dgov-plan-review) | Post-hoc debrief of the last run for a plan |
-| [`dgov sentrux offenders`](#dgov-sentrux-offenders) | Show likely structural offenders |
-| [`dgov sentrux status`](#dgov-sentrux-status) | Check if Sentrux is installed and available |
+| Command | Group | Description |
+|---------|-------|-------------|
+| [`dgov init`](#dgov-init) | Bootstrap | Scaffold `.dgov/project.toml`, `governor.md`, and `sops/` |
+| [`dgov init-plan`](#dgov-init-plan) | Plans | Create an empty plan tree |
+| [`dgov plan create`](#dgov-plan-create) | Plans | Auto-generate a plan tree from a goal |
+| [`dgov compile`](#dgov-compile) | Plans | Compile a plan tree to `_compiled.toml` |
+| [`dgov validate`](#dgov-validate) | Plans | Parse and validate a compiled plan without running |
+| [`dgov run`](#dgov-run) | Run | Compile and execute a plan directory |
+| [`dgov fix`](#dgov-fix) | Run | Create and run a one-off single-task plan |
+| [`dgov plan status`](#dgov-plan-status) | Plans | Pending vs deployed unit summary |
+| [`dgov plan review`](#dgov-plan-review) | Plans | Post-hoc debrief of the last run |
+| [`dgov plan remediate`](#dgov-plan-remediate) | Plans | Scaffold a follow-up plan for a degraded deploy |
+| [`dgov archive-plan`](#dgov-archive-plan) | Plans | Move a plan to `archive/` |
+| [`dgov status`](#dgov-status) | Observability | Event-derived live state |
+| [`dgov watch`](#dgov-watch) | Observability | Stream events live |
+| [`dgov tools audit`](#dgov-tools-audit) | Observability | Worker tool-call telemetry |
+| [`dgov ledger`](#dgov-ledger) | Observability | Record bugs, rules, decisions, debt |
+| [`dgov preflight`](#dgov-preflight) | Gates | Run settlement gates on local changes |
+| [`dgov sentrux check`](#dgov-sentrux-check) | Gates | Run a sentrux architectural check |
+| [`dgov sentrux gate-save`](#dgov-sentrux-gate-save) | Gates | Save or refresh the sentrux baseline |
+| [`dgov sentrux gate`](#dgov-sentrux-gate) | Gates | Compare current state against the baseline |
+| [`dgov sentrux offenders`](#dgov-sentrux-offenders) | Gates | List long or complex function offenders |
+| [`dgov sentrux status`](#dgov-sentrux-status) | Gates | Check if sentrux is installed |
+| [`dgov coverage-baseline`](#dgov-coverage-baseline) | Gates | Save or refresh the coverage baseline |
+| [`dgov clean`](#dgov-clean) | Maintenance | Remove stale worktrees and outputs |
+| [`dgov prune`](#dgov-prune) | Maintenance | Drop historical runtime artifact rows |
 
 ---
 
-## `dgov fix`
+## Bootstrap
 
-Create and run a single-task fix plan — a shortcut that generates a one-task plan and runs it through the normal compile/run pipeline.
+### `dgov init`
+
+Scaffold `.dgov/project.toml`, `.dgov/governor.md`, and `.dgov/sops/*.md`.
+Auto-detects language, source directory, test directory, and toolchain.
 
 ```bash
-dgov fix "Refactor error handling" --file src/utils.py --file src/main.py
-dgov fix "Update docs" -f README.md -f docs/guide.md --name doc-update
-dgov fix "Fix bug" -f src/core.py --commit-message "fix: resolve edge case"
+dgov init
+dgov init --force
 ```
 
-### Options
+| Flag | Description |
+|------|-------------|
+| `--force` | Overwrite existing bootstrap files |
+| `-y, --yes` | Skip interactive prompts |
 
-| Option | Description |
-|--------|-------------|
-| `--file, -f` | File to include in the fix (required, repeatable) |
-| `--name` | Override the generated plan name |
-| `--commit-message` | Override the commit message (default: "Apply requested fix") |
+`dgov init` is idempotent for missing files: re-running it scaffolds whatever
+is missing without overwriting existing project config.
 
-### How It Works
+If `sentrux` is installed and `.sentrux/baseline.json` does not exist, `dgov
+init` offers to run `dgov sentrux gate-save` immediately.
 
-The `fix` command is a thin wrapper around the standard plan pipeline:
+Detected fields written to `[project]`:
 
-1. Generates a transient plan directory under `.dgov/runtime/fix-plans/fix-<slug>/`
-2. Creates a single task with the specified files
-3. Compiles the plan to `_compiled.toml`
-4. Runs the compiled plan through the normal executor
+- `language`, `src_dir`, `test_dir`, `source_extensions`
+- `test_cmd`, `lint_cmd`, `format_cmd`, `lint_fix_cmd`, `format_check_cmd`
+- `default_agent`, `llm_base_url`, `llm_api_key_env`
+- `coverage_cmd`, `coverage_threshold`
+- `[tool_policy]` defaults
+- `[scope] ignore_files` seeded from detected lockfiles
 
-This uses the same compilation, settlement, and quality gates as `dgov run`.
-Transient fix plans are archived under `.dgov/runtime/fix-plans/archive/`.
+See [LLM Providers](/llm-providers) for endpoint variations.
 
 ---
 
-## `dgov init-plan`
+## Plans
 
-Initialize a new plan directory under `.dgov/plans/<name>/` with `_root.toml` and section stubs.
+### `dgov init-plan`
+
+Create an empty plan tree at `.dgov/plans/<name>/` with `_root.toml` and one
+section per name in `--sections`. Each section directory gets an
+`_example.toml` showing the unit shape. Underscore-prefixed files are
+ignored by compile.
 
 ```bash
+dgov init-plan my-plan
 dgov init-plan my-plan --sections tasks,docs
 ```
 
-### Options
-
-| Option | Description |
-|--------|-------------|
-| `--sections TEXT` | Comma-separated section names to create (default: `tasks`) |
+| Flag | Description |
+|------|-------------|
+| `--sections TEXT` | Comma-separated section names (default: `tasks`) |
 | `--force` | Overwrite an existing plan directory |
 
----
+### `dgov plan create`
 
-## `dgov compile`
+Spawn the planner agent. The planner explores the codebase, asks clarifying
+questions unless `--auto` is set, drafts a plan tree, and writes it to disk.
 
-Compile a plan tree into a dispatch-ready `_compiled.toml`. Walks the plan tree, merges units, resolves references, validates the DAG, and bundles SOPs.
+```bash
+dgov plan create "Add input validation to the signup form"
+dgov plan create --auto "Refactor error handling in api.py"
+dgov plan create --auto --run "Fix the off-by-one in pagination"
+```
+
+| Flag | Description |
+|------|-------------|
+| `--auto` | Skip clarifying questions |
+| `--run` | Compile and run the plan after creation |
+| `--name TEXT` | Override the generated plan name |
+| `--model TEXT` | Override the planner model |
+| `--apply-config` | Apply discovered config overrides to `project.toml` |
+
+### `dgov compile`
+
+Walk the plan tree, merge units, resolve references, validate the DAG, bundle
+SOPs, and emit `_compiled.toml`. SOP bundling calls the LLM unless
+`--dry-run` is set.
 
 ```bash
 dgov compile .dgov/plans/my-plan/
 dgov compile .dgov/plans/my-plan/ --dry-run
+dgov compile .dgov/plans/my-plan/ --graph
 ```
 
-### Options
-
-| Option | Description |
-|--------|-------------|
-| `--dry-run` | Use the identity SOP bundler (no LLM call). Use this to validate structure quickly. |
-| `--recompile-sops` | Force SOP re-assignment even if the SOP set hash is unchanged |
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Use the identity SOP bundler (no LLM call) |
+| `--recompile-sops` | Force SOP re-assignment even if the SOP-set hash is unchanged |
 | `--graph` | Print the DAG shape after compiling |
 
----
+Compile fails closed on malformed SOPs, dangling dependencies, and file-claim
+conflicts between independent tasks.
 
-## `dgov validate`
+### `dgov validate`
 
-Parse and validate a plan file without running it. Checks dependencies, detects file-claim conflicts, and prints a summary of the DAG.
+Parse and validate a compiled plan without running it. Checks TOML syntax,
+dependency closure, file-claim conflicts, and agent resolvability.
 
 ```bash
-dgov validate <plan-dir>/_compiled.toml
+dgov validate .dgov/plans/my-plan/_compiled.toml
 ```
 
----
+### `dgov plan status`
 
-## `dgov plan status`
-
-Show deployment status for a compiled plan — which units have been deployed via `deployed.jsonl` versus which are still pending. Warns if the compiled plan is stale relative to source TOML files.
-
-Default output is a one-line summary: plan name, N/M deployed, and a staleness warning when the compile is out of date. Use `dgov plan review` for the rich per-unit debrief.
+One-line deployment summary for a compiled plan: name, `N/M` deployed, and a
+staleness warning if the compile is older than the source TOMLs.
 
 ```bash
 dgov plan status .dgov/plans/my-plan/
 dgov plan status .dgov/plans/my-plan/ --verbose
 ```
 
-### Options
+| Flag | Description |
+|------|-------------|
+| `-v, --verbose` | Show the per-unit list instead of the summary |
 
-| Option | Description |
-|--------|-------------|
-| `--verbose, -v` | Show the per-unit list (default: one-line summary) |
+### `dgov plan review`
 
----
-
-## `dgov plan review`
-
-Post-hoc debrief of the last `dgov run` for a plan.
-
-Shows what landed, how hard each worker worked to land it, and the reject reason with a hint when settlement failed. Scopes to the last run via the run_start marker.
-
-Accepts either a live plan directory or an archived one. If the live path does not exist but an archive copy is found, the debrief resolves to the archive automatically and prints a note to stderr.
+Post-hoc debrief of the last run for a plan. Scopes to the last run via the
+run-start marker. For each unit it shows: what landed, the number of
+self-corrected tool calls before `done`, the reject reason on failure, and
+diff stats.
 
 ```bash
 dgov plan review .dgov/plans/my-plan/
-dgov plan review my-plan/ --only tasks/main.thing
-dgov plan review my-plan/ --diff tasks/main.thing --events tasks/main.thing
+dgov plan review my-plan/ --only tasks/main.add-feature
+dgov plan review my-plan/ --diff tasks/main.add-feature
+dgov plan review my-plan/ --events tasks/main.add-feature
 ```
-
-### Options
-
-| Option | Description |
-|--------|-------------|
-| `--only <unit>` | Review only this exact unit id |
-| `--diff <unit>` | Print the full git show diff for this unit (exact match) |
-| `--events <unit>` | Print the full worker activity timeline for this unit (exact match) |
-
----
-
-## `dgov run`
-
-Compile and run a plan directory with isolated worktrees and Sentrux quality gates.
-
-```bash
-dgov run .dgov/plans/feature-plan/
-dgov run .dgov/plans/feature-plan/ --restart
-dgov run .dgov/plans/feature-plan/ --continue
-dgov run .dgov/plans/feature-plan/ --only=tasks/main.add-feature
-```
-
-If the repo has no commits yet and only `.dgov` bootstrap files exist, `dgov run`
-creates the bootstrap snapshot automatically. If there are other uncommitted
-files, it asks before creating that bootstrap commit.
-
-`dgov run` requires a saved Sentrux baseline at `.sentrux/baseline.json`.
-Create or refresh it explicitly with `dgov sentrux gate-save`. `dgov run`
-does not auto-save a new baseline.
-
-### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--restart` | Restart the plan from the beginning, clearing prior state |
-| `--continue` | Continue from where you left off, retrying failed tasks |
+| `--only <unit>` | Review only this exact unit id |
+| `--diff <unit>` | Print the full `git show` diff for this unit |
+| `--events <unit>` | Print the full worker activity timeline for this unit |
+
+If the live plan path does not exist but an archive copy is found, review
+resolves to the archive automatically and prints a note to stderr.
+
+### `dgov plan remediate`
+
+Scaffold a follow-up plan for a fully deployed but degraded plan. Useful
+when every task merged but a final-stage gate reported degradation.
+
+```bash
+dgov plan remediate .dgov/plans/my-plan/
+dgov plan remediate my-plan/ --name my-plan-cleanup
+```
+
+| Flag | Description |
+|------|-------------|
+| `--name TEXT` | Override the generated remediation plan name |
+
+### `dgov archive-plan`
+
+Move a plan directory to `.dgov/plans/archive/<name>`.
+
+```bash
+dgov archive-plan my-plan
+```
+
+Successful runs auto-archive. Use this command to archive manually.
+
+---
+
+## Run
+
+### `dgov run`
+
+Compile current source, then execute the plan. Each task runs in an isolated
+worktree with scoped settlement gates.
+
+```bash
+dgov run .dgov/plans/my-plan/
+dgov run .dgov/plans/my-plan/ --restart
+dgov run .dgov/plans/my-plan/ --continue
+dgov run .dgov/plans/my-plan/ --only=tasks/main.add-feature
+```
+
+| Flag | Description |
+|------|-------------|
+| `--restart` | Wipe prior run state and start fresh |
+| `--continue` | Retry failed or abandoned tasks from the last run |
 | `--only <task>` | Run only the specified task and its dependencies |
-| `-y, --yes` | Skip interactive prompts such as bootstrap-commit confirmation |
-| `--stream` | Stream worker thoughts and tool calls inline during the run |
-| `-v, --verbose` | Show a richer per-task summary when the run finishes |
+| `-y, --yes` | Skip interactive prompts (e.g. bootstrap-commit confirmation) |
+| `--stream` | Stream worker thoughts and tool calls inline |
+| `-v, --verbose` | Print a per-task duration block at end of run |
 
-### Examples
+If the repo has no commits yet and only `.dgov` bootstrap files exist, `dgov
+run` creates the bootstrap snapshot automatically. With other uncommitted
+files present, it asks first.
 
-**Restart a plan from scratch:**
-```bash
-dgov run .dgov/plans/feature-plan/ --restart
-```
+`dgov run` requires `.sentrux/baseline.json`. Create or refresh it with
+`dgov sentrux gate-save`. The baseline is governor-owned state; workers
+cannot edit it.
 
-**Retry failed tasks:**
-```bash
-dgov run .dgov/plans/feature-plan/ --continue
-```
+#### JSON output
 
-**Run a single task:**
-```bash
-dgov run .dgov/plans/feature-plan/ --only=tasks/main.add-tests
-```
-
-### Output
-
-The command outputs task progress to stderr and final results to stdout. In JSON mode (`--json`), it outputs structured data:
+In JSON mode (`--json`), `dgov run` emits structured results:
 
 ```json
 {
@@ -208,26 +249,59 @@ The command outputs task progress to stderr and final results to stdout. In JSON
 }
 ```
 
-If the final post-run sentrux comparison detects degradation after all tasks
-merged, the run reports `status: degraded`, returns zero, and surfaces the
-sentrux warning in the output. Task failures and abandoned tasks still exit
+If the post-run sentrux comparison detects degradation after all tasks
+merged, the status reports `degraded`, the exit code is zero, and the
+warning surfaces in the output. Task failures and abandoned tasks exit
 nonzero.
+
+#### Recovery
+
+There is no separate `dgov recover` command. Recovery flows through `dgov
+run`:
+
+- bare `dgov run <plan-dir>` — surfaces abandoned work from a crashed prior run
+- `dgov run <plan-dir> --continue` — retries failed or abandoned tasks
+- `dgov run <plan-dir> --restart` — clears prior run state and starts fresh
+
+### `dgov fix`
+
+Create and run a single-task plan. A thin wrapper around the standard
+pipeline.
+
+```bash
+dgov fix "Repair the off-by-one in pagination" -f src/pagination.py
+dgov fix "Tighten error messages" -f src/api.py -f src/errors.py
+dgov fix "Fix the auth bug" -f src/auth.py --commit-message "fix: auth race"
+```
+
+| Flag | Description |
+|------|-------------|
+| `-f, --file TEXT` | File to include in the fix (required, repeatable) |
+| `--name TEXT` | Override the generated plan name |
+| `--commit-message TEXT` | Override the commit message |
+
+`fix` writes a transient plan under `.dgov/runtime/fix-plans/fix-<slug>/`,
+compiles it, runs it through the same gates as `dgov run`, and archives the
+plan under `.dgov/runtime/fix-plans/archive/`.
 
 ---
 
-## `dgov status`
+## Observability
 
-Show the current governor state. By default this surfaces only live state derived from the latest run window for each plan; use `--all` to include event-derived history.
+### `dgov status`
+
+Show the current governor state. By default, only live state from the latest
+run window for each plan. Pass `--all` for full event-derived history.
 
 ```bash
 dgov status
 dgov status --all
+dgov --json status
 ```
 
-### Examples
+Example output:
 
-**Default output:**
-```bash
+```
 $ dgov status
 status: active
 tasks: 5 total
@@ -237,267 +311,198 @@ tasks:
   pending         add-tests
 ```
 
-**JSON output:**
-```bash
-$ dgov --json status
-{
-  "status": "active",
-  "tasks": 5,
-  "active": 2,
-  "task_list": [
-    {"slug": "add-feature", "state": "active"},
-    {"slug": "add-tests", "state": "pending"}
-  ]
-}
-```
+`--json` is a global flag — place it before the subcommand.
 
-`--json` is a global flag, so place it before the subcommand.
+### `dgov watch`
 
----
-
-## `dgov clean`
-
-Clean stale worktrees and output directories.
-
-Use this when:
-- Output directories accumulate and need periodic cleaning
-- Inactive worktrees remain after task completion
+Stream events in real time. Useful in a second terminal during a run.
 
 ```bash
-dgov clean
-dgov clean --dry-run
+dgov watch
+dgov watch --all      # include events from all plans
+dgov watch --plan my-plan
 ```
 
-### Options
+`watch` polls the SQLite event log in WAL mode, so it does not block the
+runner.
 
-| Option | Description |
-|--------|-------------|
-| `--dry-run` | Show what would be deleted without deleting |
+### `dgov tools audit`
 
-### Behavior
-
-1. Deletes all directories from `.dgov/out/`
-2. Removes orphan worktrees and merged `dgov/*` branches that git no longer tracks as live
-3. Removes transient fix plans from `.dgov/runtime/fix-plans/` unless they belong to a live plan in the latest event window
-4. Preserves git-tracked inspection worktrees and runtime fix plans for currently live plans
-
-### Examples
+Summarize worker tool-call telemetry from the event log. Tells you which
+tools each worker used, how often, and at what cost in tool calls.
 
 ```bash
-$ dgov clean
-Deleted: .dgov/out/build-20240115
-Deleted: .dgov/worktrees/fix-refactor-abc123
-Preserved (active): .dgov/worktrees/feature-login-def456
-Clean complete. Deleted 2 directories.
+dgov tools audit
+dgov tools audit --plan my-plan --role worker --limit 20
 ```
-
----
-
-There is no separate `dgov recover` command. Recovery flows through `dgov run`:
-
-- bare `dgov run <plan-dir>` surfaces abandoned work from a crashed prior run
-- `dgov run <plan-dir> --continue` retries failed or abandoned tasks
-- `dgov run <plan-dir> --restart` clears prior run state and starts fresh
-
----
-
-## `dgov init`
-
-Bootstrap `.dgov/project.toml` and `.dgov/governor.md` for the current repository. Auto-detects language, source directory, and test directory.
-
-```bash
-dgov init
-dgov init --force
-```
-
-### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--force` | Overwrite bootstrap files (`project.toml` and `governor.md`) |
+| `--plan TEXT` | Restrict to one plan |
+| `--role TEXT` | Restrict to one worker role (worker, reviewer, researcher) |
+| `--limit INTEGER` | Cap the rendered tool rows. `0` means all |
+| `-r, --root TEXT` | Project root |
 
-### Auto-Detection
+### `dgov ledger`
 
-The init command detects:
-- **Language**: Python, JavaScript, Rust, or Go (by file prevalence)
-- **Source directory**: `src/`, `lib/`, or current directory
-- **Test directory**: `tests/` or `test/`
-- **Tooling**: Appropriate lint, format, and test commands
-
-It also writes the repo-level OpenAI-compatible endpoint settings:
-- `default_agent`
-- `llm_base_url`
-- `llm_api_key_env`
-
-It also scaffolds `.dgov/governor.md`, the repo-local governor charter for:
-- planning rules
-- task authoring rules
-- retry/failure rules
-- done criteria
-
-If `sentrux` is installed and `.sentrux/baseline.json` does not exist yet,
-`dgov init` offers to run `dgov sentrux gate-save` immediately.
-
-See [LLM Providers](/llm-providers) for provider-specific examples.
-
-### Examples
-
-**Create new project config:**
-```bash
-$ dgov init
-Created .dgov/project.toml
-Created .dgov/governor.md
-  language: python
-  src_dir:  src/
-  test_dir: tests/
-Run `dgov sentrux gate-save` now to create the repo baseline? [Y/n]:
-Next:
-  1. Review .dgov/project.toml and .dgov/governor.md
-  2. Refresh the architectural baseline with `dgov sentrux gate-save` when you intentionally reset it
-```
-
-**Regenerate (overwrite):**
-```bash
-$ dgov init --force
-Created .dgov/project.toml
-Created .dgov/governor.md
-  language: python
-  src_dir:  src/
-  test_dir: tests/
-Next:
-  1. Review .dgov/project.toml and .dgov/governor.md
-  2. Run `dgov sentrux gate-save` to create the repo baseline
-```
-
----
-
-## `dgov ledger`
-
-Operational ledger — record and list bugs, rules, and technical debt.
-
-### Subcommands
-
-| Subcommand | Description |
-|------------|-------------|
-| `add` | Add an entry to the ledger |
-| `list` | List ledger entries |
-| `resolve` | Mark a ledger entry as resolved |
-
-### `dgov ledger add`
+Operational ledger — record and query bugs, rules, patterns, decisions, and
+debt. Backed by SQLite alongside the event log.
 
 ```bash
 dgov ledger add <category> <content>
+dgov ledger list [-c <category>] [-s <status>] [-q <keyword>]
+dgov ledger resolve <id>
 ```
 
-**Categories:**
-- `bug` — Known bugs or issues to address
-- `rule` — Project conventions or rules
-- `debt` — Technical debt to pay down
+Categories: `bug`, `rule`, `pattern`, `decision`, `debt`.
 
-**Examples:**
-```bash
-# Record a known bug
-dgov ledger add bug "Race condition in task_runner.py when handling timeouts"
-
-# Record a project rule
-dgov ledger add rule "Always use absolute imports, ruff-enforced"
-
-# Record technical debt
-dgov ledger add debt "Refactor the persistence layer to use async I/O"
-```
-
-### `dgov ledger list`
+Examples:
 
 ```bash
-dgov ledger list [options]
-```
+dgov ledger add bug "Race condition in task_runner.py on timeout"
+dgov ledger add rule "Always use absolute imports; ruff-enforced"
+dgov ledger add debt "Migrate persistence layer to async I/O"
 
-**Options:**
-| Option | Description |
-|--------|-------------|
-| `-c, --category` | Filter by category (bug, rule, debt) |
-| `-s, --status` | Filter by status: `open` (default) or `resolved` |
-| `-q, --query` | Search content by keyword |
-| `-r, --root` | Project root directory |
+dgov ledger list                            # open entries
+dgov ledger list -c bug                     # open bugs only
+dgov ledger list -q "race condition"        # keyword search
+dgov ledger list -c rule -s resolved        # resolved rules
 
-**Examples:**
-```bash
-# List all open entries
-dgov ledger list
-
-# List only bugs
-dgov ledger list --category=bug
-
-# Search for specific content
-dgov ledger list --query="race condition"
-
-# List resolved rules
-dgov ledger list --category=rule --status=resolved
-```
-
-### `dgov ledger resolve`
-
-```bash
-dgov ledger resolve <entry_id>
-```
-
-**Example:**
-```bash
-# Resolve entry #3
-dgov ledger resolve 3
-# Output: Resolved entry #3
+dgov ledger resolve 3                       # mark entry #3 resolved
 ```
 
 ---
 
-## `dgov sentrux offenders`
+## Gates
 
-Show likely long/complex function offenders for the current commit.
+### `dgov preflight`
 
-Uses the structural snapshot to identify functions with high complexity or length that may need attention.
+Run the settlement acceptance gates against the local working tree without
+spawning a worker. Useful for "does my checkout pass the same bar a task
+would have to clear?"
+
+```bash
+dgov preflight
+```
+
+### `dgov sentrux check`
+
+Run a sentrux architectural check against a directory.
+
+```bash
+dgov sentrux check
+dgov sentrux check /path/to/project
+```
+
+### `dgov sentrux gate-save`
+
+Save or refresh `.sentrux/baseline.json`. The baseline is the reference
+point every `dgov run` compares against.
+
+```bash
+dgov sentrux gate-save
+```
+
+### `dgov sentrux gate`
+
+Compare the current sentrux state against the saved baseline. Exits nonzero
+if degradation is detected.
+
+```bash
+dgov sentrux gate
+dgov sentrux gate --fail-on-degradation
+```
+
+### `dgov sentrux offenders`
+
+List functions in the current snapshot that exceed length or complexity
+heuristics. Use this to triage what to refactor next.
 
 ```bash
 dgov sentrux offenders
 dgov sentrux offenders /path/to/project
 ```
 
----
+### `dgov sentrux status`
 
-## `dgov sentrux status`
-
-Check if Sentrux is installed and available.
+Check whether sentrux is installed.
 
 ```bash
 dgov sentrux status
 ```
 
-**Output:**
-- `sentrux: installed and available` — Sentrux is ready to use
-- `sentrux: not found in PATH` — Sentrux needs to be installed
+Outputs `sentrux: installed and available` or `sentrux: not found in PATH`.
+
+### `dgov coverage-baseline`
+
+Save or refresh the line-coverage baseline at `.coverage-baseline/`. Required
+when `coverage_cmd` is set in `project.toml`.
+
+```bash
+dgov coverage-baseline
+```
+
+After a baseline exists, `dgov run` fails the run if line coverage drops by
+more than `coverage_threshold` percentage points.
 
 ---
 
-## Global Options
+## Maintenance
+
+### `dgov clean`
+
+Remove stale worktrees and output directories. Preserves anything tied to a
+live plan in the latest event window.
+
+```bash
+dgov clean
+dgov clean --dry-run
+```
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Show what would be deleted without deleting |
+
+What `clean` does:
+
+1. Deletes everything under `.dgov/out/`.
+2. Removes orphan worktrees and merged `dgov/*` branches git no longer
+   tracks as live.
+3. Removes transient fix plans from `.dgov/runtime/fix-plans/` unless they
+   belong to a currently live plan.
+4. Preserves git-tracked inspection worktrees and fix plans for live plans.
+
+### `dgov prune`
+
+Drop historical runtime artifact rows from the SQLite database. Lifecycle
+truth lives in the event log, so pruning artifact rows is safe; it only
+reduces operational bookkeeping.
+
+```bash
+dgov prune
+```
+
+---
+
+## Global options
 
 | Option | Description |
 |--------|-------------|
-| `--json` | Output as JSON instead of human-readable text |
-| `--version` | Show version and exit |
-| `--help` | Show help message for any command |
+| `--json` | Emit JSON instead of human-readable text |
+| `--version` | Print the version and exit |
+| `--help` | Show help for any command |
 
-### JSON Mode
-
-Most commands support `--json` for machine-readable output:
+`--json` is a global flag and must come before the subcommand:
 
 ```bash
 dgov --json status
-dgov --json run plan.toml
+dgov --json run .dgov/plans/my-plan/
 dgov --json ledger list
 ```
 
-You can also enable JSON mode via environment variable:
+You can also enable JSON mode through the environment:
 
 ```bash
 export DGOV_JSON=1
-dgov status  # Will output JSON
+dgov status     # JSON output
 ```

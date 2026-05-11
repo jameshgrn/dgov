@@ -8,9 +8,9 @@ import { HomePage } from 'vocs/components'
   <HomePage.Logo />
   <HomePage.Tagline>Deterministic kernel for multi-agent orchestration via git worktrees.</HomePage.Tagline>
   <div className="vocs_HomePage_InstallPackage">
-    <pre className="vocs_CodeBlock_pre"><code className="vocs_CodeBlock_code">uv tool install dgov</code></pre>
+    <pre className="vocs_CodeBlock_pre"><code className="vocs_CodeBlock_code">uv tool install --from . dgov</code></pre>
   </div>
-  <HomePage.Description>Isolated, event-sourced, and perfectly repeatable AI coding workflows.</HomePage.Description>
+  <HomePage.Description>Each task gets its own worktree, its own event log, and a settlement gate before merge.</HomePage.Description>
   <HomePage.Buttons>
     <HomePage.Button href="/getting-started" variant="accent">Get started</HomePage.Button>
     <HomePage.Button href="https://github.com/jameshgrn/dgov">GitHub</HomePage.Button>

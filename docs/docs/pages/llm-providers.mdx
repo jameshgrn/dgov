@@ -1,15 +1,15 @@
 # LLM Providers
 
-`dgov` uses an OpenAI-compatible client for both:
+`dgov` talks to one OpenAI-compatible endpoint at a time, for both:
 
 - worker execution at `dgov run` time
 - SOP assignment at `dgov compile` time
 
-That means provider configuration has to be consistent across the whole repo.
+Provider configuration is therefore repo-level, not per-task.
 
-## Configuration Model
+## Configuration
 
-The repo-level settings live in `.dgov/project.toml`:
+Three fields in `.dgov/project.toml` control the endpoint:
 
 ```toml
 [project]
@@ -18,16 +18,16 @@ llm_base_url = "https://api.fireworks.ai/inference/v1"
 llm_api_key_env = "FIREWORKS_API_KEY"
 ```
 
-The meanings are:
+| Field | Meaning |
+|-------|---------|
+| `default_agent` | Model or router name passed in the request body |
+| `llm_base_url` | OpenAI-compatible API base URL |
+| `llm_api_key_env` | Name of the env var that holds the API key |
 
-- `default_agent`: model or router name
-- `llm_base_url`: OpenAI-compatible API base URL
-- `llm_api_key_env`: environment variable name to read the API key from
+Task-level `agent = "..."` overrides only the model/router name. It does not
+override the base URL or the API-key env var.
 
-Task-level `agent = "..."` fields override the model/router name only. They do
-not override the base URL or API key env.
-
-## Fireworks
+## Fireworks (default)
 
 ```toml
 [project]
@@ -57,20 +57,19 @@ export OPENAI_API_KEY=your-key-here
 
 ```toml
 [project]
-default_agent = "google/gemma-4-26b-a4b-it"
+default_agent = "anthropic/claude-3.5-sonnet"
 llm_base_url = "https://openrouter.ai/api/v1"
-llm_api_key_env = "OPENAI_API_KEY"
+llm_api_key_env = "OPENROUTER_API_KEY"
 ```
 
 ```bash
-export OPENAI_API_KEY=your-openrouter-key
+export OPENROUTER_API_KEY=your-key-here
 ```
 
-`dgov` has been smoke-tested with this exact OpenRouter pattern.
+Any model OpenRouter exposes is valid in `default_agent`; pick one whose
+output schema your worker tools can consume.
 
-## Other OpenAI-Compatible Endpoints
-
-If your provider exposes an OpenAI-compatible API, configure it the same way:
+## Other OpenAI-compatible endpoints
 
 ```toml
 [project]
@@ -83,45 +82,35 @@ llm_api_key_env = "YOUR_PROVIDER_API_KEY"
 export YOUR_PROVIDER_API_KEY=your-key-here
 ```
 
-## Compile-Time Behavior
+## Compile-time behavior
 
-`dgov compile` may call the LLM when SOP bundling is enabled. That means the
-provider config must already be correct before compile, not just before run.
+`dgov compile` calls the LLM when SOP bundling is on. The provider config
+must be valid at compile time, not only at run time.
 
-If you want to skip the compile-time LLM call:
+To skip the compile-time LLM call:
 
 ```bash
 dgov compile .dgov/plans/my-plan --dry-run
 ```
 
-That uses the identity SOP bundler instead of the LLM-backed one.
+`--dry-run` uses the identity SOP bundler instead of the LLM-backed one.
 
-## Common Mistakes
+## Common mistakes
 
-### Wrong env var name
+**Wrong env var name.** `.dgov/project.toml` says `llm_api_key_env =
+"OPENAI_API_KEY"` but you exported `FIREWORKS_API_KEY`. Both `dgov compile`
+and `dgov run` fail at preflight.
 
-If `.dgov/project.toml` says:
+**Confusing model name with endpoint.** `default_agent` is the model or
+router identifier. It does not select the provider — the endpoint is set by
+`llm_base_url`.
 
-```toml
-llm_api_key_env = "OPENAI_API_KEY"
-```
-
-but you exported `FIREWORKS_API_KEY`, both `dgov compile` and `dgov run` will
-fail preflight.
-
-### Confusing model names with provider endpoints
-
-`default_agent` is just the model/router identifier. It does not imply which
-provider to call. The endpoint is determined by `llm_base_url`.
-
-### Assuming task `agent` overrides provider
-
-This is not how `dgov` works today. Per-task `agent` changes the model name, not
-the base URL or key env. Provider selection is repo-level.
+**Assuming a task `agent` switches provider.** Per-task `agent` overrides
+the model name only. Provider selection is repo-level.
 
 ## Recommendation
 
-For release docs, keep the user guidance simple:
+For most repos:
 
 1. set `default_agent`
 2. set `llm_base_url`

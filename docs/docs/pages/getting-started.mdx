@@ -1,10 +1,22 @@
 # Getting Started
 
-Deterministic kernel for multi-agent orchestration via git worktrees.
+`dgov` is a local CLI that drives AI coding agents through a deterministic
+plan/compile/run/review loop. Each task runs in its own git worktree, lands
+through scoped settlement gates, and leaves an event log you can replay.
+
+This page walks from a fresh repo to a finished run.
+
+## Requirements
+
+- Python 3.12+
+- git
+- [uv](https://docs.astral.sh/uv/)
+- [sentrux](https://github.com/sentrux/sentrux)
+- An OpenAI-compatible API endpoint and key
 
 ## Install
 
-From source today:
+`dgov` is not on PyPI yet. Install from source:
 
 ```bash
 git clone https://github.com/jameshgrn/dgov
@@ -12,99 +24,209 @@ cd dgov
 uv tool install --from . dgov
 ```
 
-Once published to PyPI:
+## The Loop
 
-```bash
-uv tool install dgov
+```
+Plan  →  Compile  →  Run  →  Review
 ```
 
-Requires Python 3.12+, git, `uv`, `sentrux`, and an OpenAI-compatible API key.
+Plans are authored as TOML trees. Compile turns the tree into a normalized
+DAG. Run dispatches each unit to a worker subprocess in an isolated worktree.
+Review debriefs the last run, unit by unit. Every step writes to the event
+log; nothing about lifecycle is implicit.
 
-## Usage
-
-The dgov workflow follows a loop: **Plan → Compile → Run → Review**.
-
-### 1. Bootstrap
-
-```bash
-git init
-dgov init                # Bootstrap .dgov/project.toml and .dgov/governor.md
-# Review .dgov/project.toml for repo toolchain defaults
-# Review .dgov/governor.md for planning and retry rules
-# If sentrux is installed, dgov init offers to create the baseline now.
-dgov sentrux gate-save   # Otherwise create the repo's explicit baseline yourself
-```
-
-`dgov init` is idempotent for missing bootstrap files. If `.dgov/project.toml`
-exists but `.dgov/governor.md` does not, running `dgov init` again will scaffold
-the missing governor charter without overwriting project config.
-
-`dgov run` requires an existing `.sentrux/baseline.json`. Create or refresh it
-explicitly with `dgov sentrux gate-save`. The baseline is governor-owned state,
-not a worker-editable file. If the final post-run sentrux comparison detects
-degradation after tasks merged cleanly, `dgov run` reports a degraded result
-and keeps the warning visible without relabeling the task run as failed.
-
-If the repo has no commits yet and only `.dgov` bootstrap files exist, the first `dgov run`
-creates the bootstrap commit automatically. If there are other uncommitted files, dgov asks
-before creating that snapshot.
-
-### 2. Plan → Compile → Run → Review
+## 1. Bootstrap
 
 ```bash
-# Plan: author the work
-dgov init-plan my-plan   # Create a plan tree
+# Inside a git repo (initialize one if needed)
+git rev-parse --is-inside-work-tree >/dev/null || git init
 
-# Compile: validate and lock the plan
-dgov compile .dgov/plans/my-plan/  # Compile it to _compiled.toml
+export FIREWORKS_API_KEY=your-key-here    # or whichever provider you use
 
-# Run: execute the compiled plan
-dgov run .dgov/plans/my-plan/      # Dispatch tasks to workers
-
-# Review: debrief the results
-dgov plan review .dgov/plans/my-plan/  # Post-hoc debrief of the last run
+dgov init
 ```
 
-Use `dgov plan review` as the standard way to debrief after a run. It shows
-per-unit results, diff stats, and any settlement issues that arose during
-execution.
+`dgov init` writes three things and detects most of them from the repo:
 
-### 3. Monitor and recover
+- `.dgov/project.toml` — toolchain commands, LLM endpoint, tool policy,
+  coverage knobs, scope ignore list.
+- `.dgov/governor.md` — governor charter: planning rules, retry rules, done
+  criteria.
+- `.dgov/sops/*.md` — worker SOPs: error handling, git commits, large files,
+  refactoring discipline, return values, testing.
+
+If `sentrux` is installed and `.sentrux/baseline.json` does not exist, `dgov
+init` offers to create the baseline now. Otherwise run it later:
 
 ```bash
-dgov status              # Show live task status
-dgov --json status       # JSON status output
-dgov watch               # Stream events in real-time
-dgov clean               # Clean stale worktrees and outputs
+dgov sentrux gate-save
 ```
 
-`dgov status`, `dgov watch`, and `dgov clean` derive live state from the event
-log, not from mutable task snapshots. Recovery flows through `dgov run`:
+The baseline is governor-owned state. Workers cannot edit it; a run fails if
+the post-run sentrux comparison shows degradation.
+
+`dgov init` is idempotent for missing files. Re-running it scaffolds whatever
+is missing without overwriting existing project config. Pass `--force` to
+overwrite.
+
+## 2. Author a plan
+
+Two paths.
+
+**Manual.** Scaffold an empty plan tree and edit the TOML:
+
+```bash
+dgov init-plan my-plan --sections tasks
+```
+
+That creates `.dgov/plans/my-plan/_root.toml` and a `tasks/` section directory
+with a `_example.toml` you can copy and rename. Underscore-prefixed files are
+ignored by compile.
+
+A minimal `tasks/main.toml`:
+
+```toml
+[tasks.add-feature]
+summary = "Add the rate limiter"
+prompt = '''
+Orient:
+Read src/limiter.py before editing. Keep the public API unchanged.
+
+Edit:
+1. Add token-bucket logic in src/limiter.py.
+2. Keep the change scoped to the existing module.
+
+Verify:
+uv run ruff check src/limiter.py
+uv run ty check
+'''
+commit_message = "feat: token-bucket rate limiter"
+files.edit = ["src/limiter.py"]
+
+[tasks.add-tests]
+summary = "Test the rate limiter"
+prompt = '''
+Orient:
+Read src/limiter.py and the existing test style.
+
+Edit:
+1. Cover the success path and one over-limit case in tests/test_limiter.py.
+
+Verify:
+uv run pytest -q tests/test_limiter.py
+'''
+commit_message = "test: rate limiter coverage"
+files.create = ["tests/test_limiter.py"]
+files.read = ["src/limiter.py"]
+depends_on = ["add-feature"]
+```
+
+See the [Plan Reference](/plan-reference) for the full schema.
+
+**Auto.** Hand the goal to the planner and it writes the tree for you:
+
+```bash
+dgov plan create "Add a token-bucket rate limiter to src/limiter.py"
+```
+
+The planner explores the repo, drafts a plan, and writes it to disk. Add
+`--run` to compile and execute immediately. Add `--auto` to skip the planner's
+clarifying questions.
+
+## 3. Compile
+
+```bash
+dgov compile .dgov/plans/my-plan/
+```
+
+Compile walks the tree, merges units, resolves cross-section references,
+validates the DAG, bundles SOPs, and emits `_compiled.toml`. SOP bundling
+calls the LLM unless you pass `--dry-run`. Pass `--graph` to print the DAG.
+
+Compile fails closed: malformed SOPs, dangling dependencies, or file-claim
+conflicts between independent tasks stop the pipeline before any worker
+runs.
+
+## 4. Run
+
+```bash
+dgov run .dgov/plans/my-plan/
+```
+
+`dgov run` recompiles current source, then dispatches each ready task to a
+worker subprocess in its own git worktree. Settlement runs after each task:
+ruff auto-fix, lint, type-check, scope check, sentrux comparison, optional
+coverage gate, optional semantic settlement. Only candidates that pass
+settlement merge to the integration branch.
+
+Useful flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--restart` | Wipe prior run state and start fresh |
+| `--continue` | Retry failed or abandoned tasks from the last run |
+| `--only <task>` | Run a single task and its dependencies |
+| `--stream` | Stream worker thoughts and tool calls inline |
+| `-v, --verbose` | Print per-task duration block at end of run |
+| `-y, --yes` | Skip the bootstrap-commit prompt |
+
+If the repo has no commits yet and only `.dgov` bootstrap files exist, `dgov
+run` creates the bootstrap snapshot automatically. If other uncommitted files
+are present, it asks first.
+
+## 5. Review
+
+```bash
+dgov plan review .dgov/plans/my-plan/
+```
+
+Review scopes to the last run via the run-start marker. For each unit it
+shows: what landed, how many self-corrected tool calls fired before `done`,
+the reject reason on failure, and the diff stats. Drill in with `--diff
+<unit>` for the full `git show` and `--events <unit>` for the worker
+timeline.
+
+If the plan already auto-archived on success, review resolves to the archive
+copy and prints a note to stderr.
+
+## 6. Monitor and recover
+
+```bash
+dgov status              # one-line summary of the active run
+dgov --json status       # same, as JSON
+dgov watch               # tail the event log live
+dgov tools audit         # summarize worker tool-call telemetry
+dgov clean               # remove stale worktrees and outputs
+```
+
+`status`, `watch`, and `clean` derive state from the event log, not from
+mutable task snapshots. The event log is the authority.
+
+Recovery flows through `dgov run`:
 
 - bare `dgov run <plan-dir>` surfaces abandoned work from a crashed prior run
 - `dgov run <plan-dir> --continue` retries failed or abandoned tasks
 - `dgov run <plan-dir> --restart` clears prior run state and starts fresh
 
-### 4. One-off fixes
+## 7. One-off fixes
 
-For quick tasks that don't need a full plan:
-
-```bash
-dgov fix "Refactor utils" -f src/utils.py -f src/main.py  # One-off fix
-```
-
-### 5. Quality checks
+For a single-file change you do not need a full plan:
 
 ```bash
-dgov sentrux check       # Run architectural quality check
+dgov fix "Repair the off-by-one in pagination" -f src/pagination.py
+dgov fix "Tighten error messages" -f src/api.py -f src/errors.py
 ```
 
-## LLM Endpoint Configuration
+`fix` scaffolds a transient one-task plan under `.dgov/runtime/fix-plans/`,
+compiles it, runs it through the same gates, and archives the plan on
+success.
 
-`dgov` uses an OpenAI-compatible client. Configure the worker endpoint in `.dgov/project.toml`.
-Task-level `agent = "..."` values override the model/router name only.
+## Project configuration
 
-Default generated config:
+`.dgov/project.toml` carries everything repo-scoped. `dgov init` detects most
+of it from the repo. Three blocks worth knowing:
+
+**LLM endpoint** — see [LLM Providers](/llm-providers) for full examples:
 
 ```toml
 [project]
@@ -113,58 +235,38 @@ llm_base_url = "https://api.fireworks.ai/inference/v1"
 llm_api_key_env = "FIREWORKS_API_KEY"
 ```
 
-Official OpenAI:
+**Tool policy** — constrains worker shell-outs:
 
 ```toml
-[project]
-default_agent = "gpt-4.1-mini"
-llm_base_url = "https://api.openai.com/v1"
-llm_api_key_env = "OPENAI_API_KEY"
+[tool_policy]
+restrict_run_bash = true
+deny_shell_commands = ["pip", "python -m pip", "pip3", "python -m venv", "uv venv"]
+deny_shell_file_mutations = true
+require_wrapped_verify_tools = true
+require_uv_run = true
 ```
 
-Another OpenAI-compatible endpoint:
+**Coverage** — optional gate on line-coverage drop. When `coverage_cmd` is
+set, run `dgov coverage-baseline` once; subsequent runs fail if coverage drops
+by more than `coverage_threshold` percentage points.
 
 ```toml
-[project]
-default_agent = "your-model-name"
-llm_base_url = "https://your-endpoint.example.com/v1"
-llm_api_key_env = "YOUR_PROVIDER_API_KEY"
+coverage_cmd = "uv run pytest --cov=src --cov-report=json:{output} -q"
+coverage_threshold = 2.0
 ```
 
-Export the configured env var before `dgov compile` or `dgov run`.
+## SOP format
 
-See [LLM Providers](/llm-providers) for provider-specific examples.
+`.dgov/sops/*.md` files follow a fixed shape:
 
-## SOPs
-
-Worker guidance in `.dgov/sops/*.md` now uses a standard format:
 - front matter: `name`, `title`, `summary`, `applies_to`, `priority`
 - sections: `When`, `Do`, `Do Not`, `Verify`, `Escalate`
 
-Malformed SOPs fail closed at `dgov compile`.
+`dgov compile` validates SOP structure and fails closed on malformed files.
 
-## Plan format
+## Next steps
 
-Plans are authored as plan trees and then compiled:
-
-```toml
-# .dgov/plans/example/_root.toml
-[plan]
-name = "example"
-summary = "Add a feature safely"
-sections = ["tasks"]
-
-# .dgov/plans/example/tasks/main.toml
-[tasks.add-feature]
-summary = "Add the feature"
-prompt = "Add the feature to src/foo.py"
-commit_message = "feat: add feature"
-files.edit = ["src/foo.py"]
-
-[tasks.add-tests]
-summary = "Write tests for the feature"
-prompt = "Write tests for the feature"
-commit_message = "test: add tests for feature"
-files.edit = ["tests/test_foo.py"]
-depends_on = ["add-feature"]
-```
+- [Concepts](/concepts) — the kernel model, settlement, semantic integration
+- [CLI Reference](/cli-reference) — every command and flag
+- [Plan Reference](/plan-reference) — full plan-tree schema
+- [LLM Providers](/llm-providers) — Fireworks, OpenAI, OpenRouter, custom
