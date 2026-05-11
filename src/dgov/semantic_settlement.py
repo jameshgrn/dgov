@@ -514,62 +514,57 @@ def _parse_python_source(source: str, source_hint: str) -> ast.Module | None:
         return None
 
 
-def _is_method_node(node: ast.AST, class_nodes: list[ast.ClassDef]) -> bool:
-    """Check if a function node is a method of any class in the given list."""
-    return any(node in cls.body for cls in class_nodes)
-
-
 def _extract_module_symbols(tree: ast.Module, file_path: str) -> dict[str, _SymbolInfo]:
     """Extract symbols from a parsed Python module AST.
 
     Returns a dict mapping symbol name to _SymbolInfo.
     """
     symbols: dict[str, _SymbolInfo] = {}
-
-    # Collect all class definitions for method detection
-    class_nodes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
-
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            # Skip methods (handled via their class)
-            if _is_method_node(node, class_nodes):
-                continue
-
-            sig = _extract_function_signature(node)
-            symbols[node.name] = _SymbolInfo(
-                name=node.name,
-                symbol_type="function",
-                file_path=file_path,
-                line_start=node.lineno,
-                line_end=getattr(node, "end_lineno", node.lineno),
-                signature=sig,
-            )
-
-        elif isinstance(node, ast.ClassDef):
-            symbols[node.name] = _SymbolInfo(
-                name=node.name,
-                symbol_type="class",
-                file_path=file_path,
-                line_start=node.lineno,
-                line_end=getattr(node, "end_lineno", node.lineno),
-                signature=None,
-            )
-
-            # Extract methods from class body
-            for item in node.body:
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    sig = _extract_function_signature(item)
-                    method_name = f"{node.name}.{item.name}"
-                    symbols[method_name] = _SymbolInfo(
-                        name=method_name,
-                        symbol_type="method",
-                        file_path=file_path,
-                        line_start=item.lineno,
-                        line_end=getattr(item, "end_lineno", item.lineno),
-                        signature=sig,
-                    )
-
+        symbols.update(_top_level_symbol_infos(node, file_path))
     return symbols
+
+
+def _top_level_symbol_infos(node: ast.AST, file_path: str) -> dict[str, _SymbolInfo]:
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        return {node.name: _function_symbol_info(node, node.name, "function", file_path)}
+    if isinstance(node, ast.ClassDef):
+        return _class_symbol_infos(node, file_path)
+    return {}
+
+
+def _class_symbol_infos(node: ast.ClassDef, file_path: str) -> dict[str, _SymbolInfo]:
+    symbols = {
+        node.name: _SymbolInfo(
+            name=node.name,
+            symbol_type="class",
+            file_path=file_path,
+            line_start=node.lineno,
+            line_end=getattr(node, "end_lineno", node.lineno),
+            signature=None,
+        )
+    }
+    for item in node.body:
+        if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef):
+            method_name = f"{node.name}.{item.name}"
+            symbols[method_name] = _function_symbol_info(item, method_name, "method", file_path)
+    return symbols
+
+
+def _function_symbol_info(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    name: str,
+    symbol_type: str,
+    file_path: str,
+) -> _SymbolInfo:
+    return _SymbolInfo(
+        name=name,
+        symbol_type=symbol_type,
+        file_path=file_path,
+        line_start=node.lineno,
+        line_end=getattr(node, "end_lineno", node.lineno),
+        signature=_extract_function_signature(node),
+    )
 
 
 def _analyze_python_file_symbols(file_path: Path) -> dict[str, _SymbolInfo]:
@@ -1045,6 +1040,40 @@ def _concurrent_symbol_verdict(
     return None
 
 
+def _run_python_symbol_checks(
+    *,
+    candidate_files: list[Path],
+    project_root: str,
+    task_base_sha: str,
+    task_commit_sha: str | None,
+    target_head_sha: str,
+    py_files: list[str],
+    touched_files: tuple[str, ...],
+    task_slug: str,
+) -> SemanticGateVerdict:
+    candidate_symbols = _extract_candidate_symbols(candidate_files)
+    duplicates = _check_duplicate_definitions(candidate_files)
+    if duplicates:
+        return _duplicate_definition_verdict(task_slug, duplicates)
+
+    comparison = _load_comparison_symbols(
+        project_root, task_base_sha, task_commit_sha, target_head_sha, py_files, candidate_symbols
+    )
+    if comparison is None:
+        return _semantic_gate_pass(task_slug)
+    task_base_symbols, task_commit_symbols, target_head_symbols = comparison
+
+    verdict = _concurrent_symbol_verdict(
+        task_slug=task_slug,
+        task_base_symbols=task_base_symbols,
+        task_commit_symbols=task_commit_symbols,
+        target_head_symbols=target_head_symbols,
+        candidate_symbols=candidate_symbols,
+        touched_set=set(touched_files),
+    )
+    return verdict if verdict is not None else _semantic_gate_pass(task_slug)
+
+
 def run_python_semantic_gate(
     candidate_path: Path,
     project_root: str,
@@ -1066,30 +1095,16 @@ def run_python_semantic_gate(
     py_files = _filter_python_files(touched_files)
     assert candidate_files is not None
 
-    candidate_symbols = _extract_candidate_symbols(candidate_files)
-    duplicates = _check_duplicate_definitions(candidate_files)
-    if duplicates:
-        return _duplicate_definition_verdict(task_slug, duplicates)
-
-    comparison = _load_comparison_symbols(
-        project_root, task_base_sha, task_commit_sha, target_head_sha, py_files, candidate_symbols
-    )
-    if comparison is None:
-        return _semantic_gate_pass(task_slug)
-    task_base_symbols, task_commit_symbols, target_head_symbols = comparison
-
-    verdict = _concurrent_symbol_verdict(
+    return _run_python_symbol_checks(
+        candidate_files=candidate_files,
+        project_root=project_root,
+        task_base_sha=task_base_sha,
+        task_commit_sha=task_commit_sha,
+        target_head_sha=target_head_sha,
+        py_files=py_files,
+        touched_files=touched_files,
         task_slug=task_slug,
-        task_base_symbols=task_base_symbols,
-        task_commit_symbols=task_commit_symbols,
-        target_head_symbols=target_head_symbols,
-        candidate_symbols=candidate_symbols,
-        touched_set=set(touched_files),
     )
-    if verdict is not None:
-        return verdict
-
-    return _semantic_gate_pass(task_slug)
 
 
 # -----------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from dgov.cli import cli
+from dgov.plan_review import DiffStat, PlanReview, UnitReview
 
 pytestmark = pytest.mark.unit
 
@@ -53,11 +54,8 @@ def _make_compiled_plan(
     return plan_dir
 
 
-def _patched_load_review(monkeypatch, **overrides):
-    """Return a helper that stubs load_review to return a fixed PlanReview."""
-    from dgov.plan_review import DiffStat, PlanReview, UnitReview
-
-    default_unit = UnitReview(
+def _default_unit_review() -> UnitReview:
+    return UnitReview(
         unit="tasks/main.a",
         summary="do a",
         status="deployed",
@@ -74,14 +72,21 @@ def _patched_load_review(monkeypatch, **overrides):
         settlement="ok",
         done_summary="Added the thing.",
     )
-    default_review = PlanReview(
+
+
+def _default_plan_review() -> PlanReview:
+    return PlanReview(
         plan_name="p",
         source_dir=Path("p"),
         last_run_ts="2026-04-10T12:00:00Z",
         last_run_duration_s=12.5,
-        units=[default_unit],
+        units=[_default_unit_review()],
     )
-    review = overrides.get("review", default_review)
+
+
+def _patched_load_review(monkeypatch, **overrides):
+    """Return a helper that stubs load_review to return a fixed PlanReview."""
+    review = overrides.get("review", _default_plan_review())
 
     def _fake(**kwargs):
         # Honor only-filter semantics for the `only=...` tests.

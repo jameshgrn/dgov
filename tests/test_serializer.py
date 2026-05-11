@@ -8,6 +8,9 @@ Tests cover:
 """
 
 import tomllib
+from pathlib import Path
+
+import pytest
 
 from dgov.plan import PlanUnit, PlanUnitFiles
 from dgov.plan_tree import FlatPlan, RootMeta
@@ -135,20 +138,18 @@ class TestTomlKey:
 # =============================================================================
 
 
-def _create_flat_plan(tmp_path) -> FlatPlan:
-    """Create a minimal FlatPlan with 2 units for testing."""
-    plan_root = tmp_path / "test_plan"
-    plan_root.mkdir()
-
-    # Create RootMeta
-    root_meta = RootMeta(
+def _create_test_root_meta() -> RootMeta:
+    """Create a standard RootMeta for test plans."""
+    return RootMeta(
         name="test-plan",
         summary="Test plan summary",
         sections=("section1",),
     )
 
-    # Create units: one with depends_on, one with files
-    unit_a = PlanUnit(
+
+def _create_unit_a() -> PlanUnit:
+    """Create unit A with edit and create file claims, no dependencies."""
+    return PlanUnit(
         slug="section1/file1.unit_a",
         summary="First unit",
         prompt="Do first thing",
@@ -160,7 +161,10 @@ def _create_flat_plan(tmp_path) -> FlatPlan:
         depends_on=(),
     )
 
-    unit_b = PlanUnit(
+
+def _create_unit_b() -> PlanUnit:
+    """Create unit B with delete file claim, depends on unit A."""
+    return PlanUnit(
         slug="section1/file1.unit_b",
         summary="Second unit",
         prompt="Do second thing\nWith multiple lines",
@@ -171,19 +175,32 @@ def _create_flat_plan(tmp_path) -> FlatPlan:
         depends_on=("section1/file1.unit_a",),
     )
 
-    units = {
-        "section1/file1.unit_a": unit_a,
-        "section1/file1.unit_b": unit_b,
+
+def _create_test_source_map(plan_root: Path) -> dict[str, Path]:
+    """Create source map mapping unit slugs to their source TOML files."""
+    toml_path = plan_root / "section1" / "file1.toml"
+    return {
+        "section1/file1.unit_a": toml_path,
+        "section1/file1.unit_b": toml_path,
     }
+
+
+def _create_flat_plan(tmp_path) -> FlatPlan:
+    """Create a minimal FlatPlan with 2 units for testing."""
+    plan_root = tmp_path / "test_plan"
+    plan_root.mkdir()
+
+    unit_a = _create_unit_a()
+    unit_b = _create_unit_b()
 
     return FlatPlan(
         plan_root=plan_root,
-        root_meta=root_meta,
-        units=units,
-        source_map={
-            "section1/file1.unit_a": plan_root / "section1" / "file1.toml",
-            "section1/file1.unit_b": plan_root / "section1" / "file1.toml",
+        root_meta=_create_test_root_meta(),
+        units={
+            "section1/file1.unit_a": unit_a,
+            "section1/file1.unit_b": unit_b,
         },
+        source_map=_create_test_source_map(plan_root),
         source_mtime_max=1234567890.0,
     )
 
@@ -200,6 +217,118 @@ def _create_bundle_result(flat_plan: FlatPlan) -> BundleResult:
         sop_mapping=sop_mapping,
         sop_set_hash="abc123def456",
     )
+
+
+def _extract_task_section(serialized: str, task_key: str) -> str:
+    """Extract a single task section from serialized TOML output.
+
+    Args:
+        serialized: The full TOML output from serialize_compiled_toml.
+        task_key: The task key (e.g., 'section1/file.complete_task').
+
+    Returns:
+        The task section as a string, or empty string if not found.
+    """
+    section_header = f'[tasks."{task_key}"]'
+    start = serialized.find(section_header)
+    if start == -1:
+        return ""
+
+    # Find the end of this section (next section header or end of string)
+    end = serialized.find("\n[", start + 1)
+    if end == -1:
+        end = len(serialized)
+
+    return serialized[start:end]
+
+
+def _find_field_position(task_section: str, field_pattern: str) -> int:
+    """Find the position of a field within a task section.
+
+    Args:
+        task_section: The task section string (from _extract_task_section).
+        field_pattern: The field pattern to search for (e.g., 'timeout_s = 300').
+
+    Returns:
+        The position index, or -1 if not found.
+    """
+    return task_section.find(field_pattern)
+
+
+def _create_complete_optional_fields_plan(tmp_path) -> tuple[FlatPlan, BundleResult]:
+    """Create a FlatPlan and BundleResult with all optional fields populated.
+
+    Creates a plan with timeout_s, iteration_budget, test_cmd, and sop_mapping
+    to test field ordering in serialized output.
+
+    Returns:
+        Tuple of (flat_plan, bundle_result) ready for serialization.
+    """
+    plan_root = tmp_path / "test_plan"
+    plan_root.mkdir()
+
+    root_meta = RootMeta(
+        name="ordering-plan",
+        summary="Test field ordering",
+        sections=("section1",),
+    )
+
+    unit = PlanUnit(
+        slug="section1/file.complete_task",
+        summary="Complete task with all optional fields",
+        prompt="Do everything",
+        commit_message="Complete",
+        files=PlanUnitFiles(edit=("src/main.py",)),
+        timeout_s=300,
+        iteration_budget=5,
+        test_cmd="pytest tests/test_main.py",
+    )
+
+    flat_plan = FlatPlan(
+        plan_root=plan_root,
+        root_meta=root_meta,
+        units={"section1/file.complete_task": unit},
+        source_map={"section1/file.complete_task": plan_root / "section1" / "file.toml"},
+        source_mtime_max=1234567890.0,
+    )
+
+    bundle = BundleResult(
+        plan=flat_plan,
+        sop_mapping={"section1/file.complete_task": ("sop-a", "sop-b")},
+        sop_set_hash="ordering_hash",
+    )
+
+    return flat_plan, bundle
+
+
+def _assert_field_order(task_section: str, field_specs: list[tuple[str, str]]) -> None:
+    """Assert that fields appear in task_section in the specified order.
+
+    Args:
+        task_section: The task section extracted from serialized TOML.
+        field_specs: List of (field_pattern, field_name) tuples defining
+            the expected order. Each pattern is searched for in the section.
+
+    Raises:
+        AssertionError: If any field is missing or ordering is violated.
+    """
+    positions: list[int] = []
+    field_names: list[str] = []
+
+    for pattern, name in field_specs:
+        pos = _find_field_position(task_section, pattern)
+        if pos == -1:
+            raise AssertionError(f"{name} not found in task section")
+        positions.append(pos)
+        field_names.append(name)
+
+    # Verify strict ascending order
+    for i in range(len(positions) - 1):
+        if positions[i] >= positions[i + 1]:
+            details = ", ".join(
+                f"{name}={pos}" for name, pos in zip(field_names, positions, strict=True)
+            )
+            raise AssertionError(f"Field ordering violated: {details}")
 
 
 class TestSerializeCompiledToml:
@@ -622,71 +751,25 @@ class TestSerializeCompiledTomlWithAgentAndTimeout:
 
         assert "iteration_budget = 12" in result
 
+    @pytest.mark.unit
     def test_sop_mapping_appears_after_numeric_and_test_cmd_fields(self, tmp_path):
         """sop_mapping should be emitted after timeout_s, iteration_budget, and test_cmd.
 
         This ensures the original field ordering is preserved: agent, role,
         depends_on, timeout_s, iteration_budget, test_cmd, sop_mapping, then files.
         """
-        plan_root = tmp_path / "test_plan"
-        plan_root.mkdir()
-
-        root_meta = RootMeta(
-            name="ordering-plan",
-            summary="Test field ordering",
-            sections=("section1",),
-        )
-
-        unit = PlanUnit(
-            slug="section1/file.complete_task",
-            summary="Complete task with all optional fields",
-            prompt="Do everything",
-            commit_message="Complete",
-            files=PlanUnitFiles(edit=("src/main.py",)),
-            timeout_s=300,
-            iteration_budget=5,
-            test_cmd="pytest tests/test_main.py",
-        )
-
-        flat_plan = FlatPlan(
-            plan_root=plan_root,
-            root_meta=root_meta,
-            units={"section1/file.complete_task": unit},
-            source_map={"section1/file.complete_task": plan_root / "section1" / "file.toml"},
-            source_mtime_max=1234567890.0,
-        )
-
-        bundle = BundleResult(
-            plan=flat_plan,
-            sop_mapping={"section1/file.complete_task": ("sop-a", "sop-b")},
-            sop_set_hash="ordering_hash",
-        )
-
+        flat_plan, bundle = _create_complete_optional_fields_plan(tmp_path)
         result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
 
-        # Extract the task section to verify field ordering
-        task_section_start = result.find('[tasks."section1/file.complete_task"]')
-        assert task_section_start != -1
-        task_section_end = result.find("\n[", task_section_start + 1)
-        if task_section_end == -1:
-            task_section_end = len(result)
-        task_section = result[task_section_start:task_section_end]
+        task_section = _extract_task_section(result, "section1/file.complete_task")
+        assert task_section, "Task section not found"
 
-        # Find positions of each field
-        timeout_pos = task_section.find("timeout_s = 300")
-        iteration_pos = task_section.find("iteration_budget = 5")
-        test_cmd_pos = task_section.find('test_cmd = "pytest tests/test_main.py"')
-        sop_mapping_pos = task_section.find('sop_mapping = ["sop-a", "sop-b"]')
-
-        # All fields must be present
-        assert timeout_pos != -1, "timeout_s not found"
-        assert iteration_pos != -1, "iteration_budget not found"
-        assert test_cmd_pos != -1, "test_cmd not found"
-        assert sop_mapping_pos != -1, "sop_mapping not found"
-
-        # Verify ordering: timeout_s, iteration_budget, test_cmd, then sop_mapping
-        assert timeout_pos < iteration_pos < test_cmd_pos < sop_mapping_pos, (
-            f"Field ordering violated: timeout_s={timeout_pos}, "
-            f"iteration_budget={iteration_pos}, test_cmd={test_cmd_pos}, "
-            f"sop_mapping={sop_mapping_pos}"
+        _assert_field_order(
+            task_section,
+            [
+                ("timeout_s = 300", "timeout_s"),
+                ("iteration_budget = 5", "iteration_budget"),
+                ('test_cmd = "pytest tests/test_main.py"', "test_cmd"),
+                ('sop_mapping = ["sop-a", "sop-b"]', "sop_mapping"),
+            ],
         )

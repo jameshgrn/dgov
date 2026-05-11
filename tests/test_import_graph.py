@@ -144,14 +144,8 @@ def test_detect_import_conflicts_in_diamond_dependency_pattern() -> None:
     assert [(c.task_a, c.task_b) for c in conflicts] == [("left", "right")]
 
 
-def test_compile_plan_emits_import_conflict_warning(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    _write(tmp_path / "src" / "models.py", "class UserModel: ...\n")
-    _write(tmp_path / "src" / "service.py", "from models import UserModel\n")
-
+def _write_import_conflict_plan(tmp_path: Path) -> Path:
+    """Create a plan tree with tasks that have import conflicts."""
     plan_root = tmp_path / ".dgov" / "plans" / "import-conflict"
     tasks_dir = plan_root / "tasks"
     tasks_dir.mkdir(parents=True)
@@ -175,6 +169,29 @@ commit_message = "Update service"
 files.edit = ["src/service.py"]
 """,
     )
+    return plan_root
+
+
+def _assert_has_import_conflict_warning(payload: dict) -> None:
+    """Assert that the payload contains the expected import conflict warning."""
+    warnings = [warning["message"] for warning in payload["warnings"]]
+    assert any(
+        "tasks 'tasks/main.models' and 'tasks/main.service' may conflict" in warning
+        and "'tasks/main.models' writes src/models.py" in warning
+        and "src/service.py (written by 'tasks/main.service')" in warning
+        for warning in warnings
+    )
+
+
+def test_compile_plan_emits_import_conflict_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write(tmp_path / "src" / "models.py", "class UserModel: ...\n")
+    _write(tmp_path / "src" / "service.py", "from models import UserModel\n")
+
+    plan_root = _write_import_conflict_plan(tmp_path)
 
     result = CliRunner().invoke(
         cli,
@@ -184,10 +201,4 @@ files.edit = ["src/service.py"]
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    warnings = [warning["message"] for warning in payload["warnings"]]
-    assert any(
-        "tasks 'tasks/main.models' and 'tasks/main.service' may conflict" in warning
-        and "'tasks/main.models' writes src/models.py" in warning
-        and "src/service.py (written by 'tasks/main.service')" in warning
-        for warning in warnings
-    )
+    _assert_has_import_conflict_warning(payload)

@@ -40,22 +40,13 @@ def add_ledger_entry(
     return res.lastrowid or 0
 
 
-def list_ledger_entries(
-    session_root: str,
-    category: str | None = None,
-    status: str | None = None,
-    query: str | None = None,
-) -> list[LedgerEntry]:
-    """List ledger entries, optionally filtered by category, status, and keyword query."""
-    conn = _get_db(session_root)
-    _migrate_ledger(conn)
-    sql = (
-        "SELECT id, category, content, status, created_at, resolved_at, "
-        "affected_paths, affected_tags FROM ledger"
-    )
-    params = []
-    filters = []
-
+def _ledger_filters(
+    category: str | None,
+    status: str | None,
+    query: str | None,
+) -> tuple[list[str], list[object]]:
+    filters: list[str] = []
+    params: list[object] = []
     if category:
         filters.append("category = ?")
         params.append(category)
@@ -65,26 +56,44 @@ def list_ledger_entries(
     if query:
         filters.append("content LIKE ?")
         params.append(f"%{query}%")
+    return filters, params
 
+
+def _ledger_select_sql(filters: list[str]) -> str:
+    sql = (
+        "SELECT id, category, content, status, created_at, resolved_at, "
+        "affected_paths, affected_tags FROM ledger"
+    )
     if filters:
         sql += " WHERE " + " AND ".join(filters)
+    return sql + " ORDER BY created_at DESC"
 
-    sql += " ORDER BY created_at DESC"
 
-    cursor = conn.execute(sql, params)
-    return [
-        LedgerEntry(
-            id=row[0],
-            category=row[1],
-            content=row[2],
-            status=row[3],
-            created_at=row[4],
-            resolved_at=row[5],
-            affected_paths=tuple(json.loads(row[6])) if row[6] else (),
-            affected_tags=tuple(json.loads(row[7])) if row[7] else (),
-        )
-        for row in cursor.fetchall()
-    ]
+def _ledger_entry_from_row(row) -> LedgerEntry:
+    return LedgerEntry(
+        id=row[0],
+        category=row[1],
+        content=row[2],
+        status=row[3],
+        created_at=row[4],
+        resolved_at=row[5],
+        affected_paths=tuple(json.loads(row[6])) if row[6] else (),
+        affected_tags=tuple(json.loads(row[7])) if row[7] else (),
+    )
+
+
+def list_ledger_entries(
+    session_root: str,
+    category: str | None = None,
+    status: str | None = None,
+    query: str | None = None,
+) -> list[LedgerEntry]:
+    """List ledger entries, optionally filtered by category, status, and keyword query."""
+    conn = _get_db(session_root)
+    _migrate_ledger(conn)
+    filters, params = _ledger_filters(category, status, query)
+    cursor = conn.execute(_ledger_select_sql(filters), params)
+    return [_ledger_entry_from_row(row) for row in cursor.fetchall()]
 
 
 def resolve_ledger_entry(session_root: str, entry_id: int) -> bool:

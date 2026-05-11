@@ -15,6 +15,7 @@ from dgov.persistence.schema import (
 logger = logging.getLogger(__name__)
 
 _NON_PERSISTED_TASK_FIELDS = frozenset({"prompt", "file_claims", "commit_message"})
+_PERSISTED_TASK_FIELDS = _TASK_COLUMNS | _TASK_TYPED_COLS
 
 
 def _validate_state(state: str) -> str:
@@ -48,34 +49,37 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 
 def _insert_task_dict(conn: sqlite3.Connection, task_dict: dict) -> None:
     """Insert a task dict into the database, separating known columns from metadata."""
+    values, extras = _split_task_values(task_dict)
+    _normalize_task_values(values, extras)
+    _insert_task_values(conn, values)
+
+
+def _split_task_values(task_dict: dict) -> tuple[dict, dict]:
     values: dict = {}
     extras: dict = {}
     for k, v in task_dict.items():
         if k in _NON_PERSISTED_TASK_FIELDS:
             continue
-        if k in _TASK_COLUMNS:
-            # Serialize complex types to JSON for DB columns that expect TEXT
-            if isinstance(v, (dict, list, tuple)):
-                values[k] = json.dumps(v, default=str)
-            else:
-                values[k] = v
-        elif k in _TASK_TYPED_COLS:
-            if isinstance(v, (dict, list, tuple)):
-                values[k] = json.dumps(v, default=str)
-            else:
-                values[k] = v
+        if k in _PERSISTED_TASK_FIELDS:
+            values[k] = _db_task_value(v)
         else:
-            # Serialize complex types (dataclasses become dicts) to JSON
-            if isinstance(v, (dict, list, tuple)):
-                extras[k] = json.dumps(v, default=str)
-            else:
-                extras[k] = v
+            extras[k] = _db_task_value(v)
+    return values, extras
 
+
+def _db_task_value(value):
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, default=str)
+    return value
+
+
+def _normalize_task_values(values: dict, extras: dict) -> None:
     if "owns_worktree" in values and isinstance(values["owns_worktree"], bool):
         values["owns_worktree"] = int(values["owns_worktree"])
-
     values["metadata"] = json.dumps(extras) if extras else None
 
+
+def _insert_task_values(conn: sqlite3.Connection, values: dict) -> None:
     cols = ", ".join(values.keys())
     placeholders = ", ".join("?" * len(values))
     conn.execute(

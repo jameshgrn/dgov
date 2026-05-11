@@ -21,13 +21,22 @@ def _get_imports(filepath: Path) -> set[str]:
     tree = ast.parse(filepath.read_text())
     imports = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("dgov"):
-            imports.add(node.module)
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name.startswith("dgov"):
-                    imports.add(alias.name)
+        imports.update(_dgov_imports_from_node(node))
     return imports
+
+
+def _dgov_imports_from_node(node: ast.AST) -> set[str]:
+    if isinstance(node, ast.ImportFrom):
+        return _dgov_from_import_from(node)
+    if isinstance(node, ast.Import):
+        return {alias.name for alias in node.names if alias.name.startswith("dgov")}
+    return set()
+
+
+def _dgov_from_import_from(node: ast.ImportFrom) -> set[str]:
+    if node.module is None or not node.module.startswith("dgov"):
+        return set()
+    return {node.module}
 
 
 class TestKernelPurity:

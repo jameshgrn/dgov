@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import cast
 
 import click
 
@@ -194,57 +195,80 @@ def _cmd_status(project_root: str, show_all: bool = False) -> None:
         _output({"status": "idle", "tasks": 0})
         return
 
+    status = _status_view(all_history, live_history, show_all)
+    if want_json():
+        click.echo(json.dumps(_status_payload(status), indent=2))
+    else:
+        _echo_status_text(status, show_all)
+
+
+def _status_view(
+    all_history: list[dict],
+    live_history: list[dict],
+    show_all: bool,
+) -> dict[str, object]:
     live = [t for t in live_history if t.get("state") in _LIVE_STATES]
     active = [t for t in live if t.get("state") == "active"]
     settling = [t for t in live if t.get("state") == "settling"]
     visible = all_history if show_all else live
-
-    # Build per-state counts for detailed visibility
     state_counts: dict[str, int] = {}
     for t in live:
         state = t.get("state", "unknown")
         state_counts[state] = state_counts.get(state, 0) + 1
+    return {
+        "status": "active" if live else "idle",
+        "tasks": len(all_history),
+        "active": len(active),
+        "settling": len(settling),
+        "state_counts": state_counts,
+        "visible": visible,
+    }
 
-    if want_json():
-        click.echo(
-            json.dumps(
-                {
-                    "status": "active" if live else "idle",
-                    "tasks": len(all_history),
-                    "active": len(active),
-                    "settling": len(settling),
-                    "state_counts": state_counts,
-                    "task_list": [
-                        {
-                            "slug": t.get("slug"),
-                            "state": t.get("state"),
-                            "plan_name": t.get("plan_name"),
-                            "phase": t.get("phase"),
-                        }
-                        for t in visible
-                    ],
-                },
-                indent=2,
-            )
-        )
+
+def _status_payload(status: dict[str, object]) -> dict[str, object]:
+    visible = cast("list[dict]", status["visible"])
+    return {
+        "status": status["status"],
+        "tasks": status["tasks"],
+        "active": status["active"],
+        "settling": status["settling"],
+        "state_counts": status["state_counts"],
+        "task_list": [_status_task_payload(task) for task in visible],
+    }
+
+
+def _status_task_payload(task: dict) -> dict[str, object]:
+    return {
+        "slug": task.get("slug"),
+        "state": task.get("state"),
+        "plan_name": task.get("plan_name"),
+        "phase": task.get("phase"),
+    }
+
+
+def _echo_status_text(status: dict[str, object], show_all: bool) -> None:
+    visible = cast("list[dict]", status["visible"])
+    click.echo(f"status: {status['status']}")
+    click.echo(f"tasks: {status['tasks']} total")
+    click.echo(f"active: {status['active']}")
+    if status["settling"]:
+        click.echo(f"settling: {status['settling']}")
+    if visible:
+        click.echo("tasks:")
+        for task in visible:
+            _echo_status_task(task)
+    elif not show_all:
+        click.echo("  (no live tasks — use --all to show history)")
+
+
+def _echo_status_task(task: dict) -> None:
+    state = task.get("state", "?")
+    slug = task.get("slug", "?")
+    phase = task.get("phase")
+    if phase:
+        click.echo(f"  {state:14s}  {slug}  ({phase})")
     else:
-        click.echo(f"status: {'active' if live else 'idle'}")
-        click.echo(f"tasks: {len(all_history)} total")
-        click.echo(f"active: {len(active)}")
-        if settling:
-            click.echo(f"settling: {len(settling)}")
-        if visible:
-            click.echo("tasks:")
-            for t in visible:
-                state = t.get("state", "?")
-                slug = t.get("slug", "?")
-                phase = t.get("phase")
-                if phase:
-                    click.echo(f"  {state:14s}  {slug}  ({phase})")
-                else:
-                    click.echo(f"  {state:14s}  {slug}")
-        elif not show_all:
-            click.echo("  (no live tasks — use --all to show history)")
+        click.echo(f"  {state:14s}  {slug}")
 
 
 # Register subcommand modules — must be at bottom after cli is defined

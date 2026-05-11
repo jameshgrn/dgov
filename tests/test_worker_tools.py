@@ -123,6 +123,21 @@ class TestAstGrep:
         assert result == "No matches found."
 
 
+class TestRelatedFiles:
+    def test_reports_imports_and_importers(self, tools, worktree):
+        (worktree / "src" / "foo.py").write_text(
+            "from pathlib import Path\n\n\ndef hello():\n    return Path('.')\n"
+        )
+        (worktree / "src" / "baz.py").write_text("from foo import hello\n")
+
+        result = tools.related_files("src/foo.py")
+
+        assert "Imports from (1):" in result
+        assert "  pathlib" in result
+        assert "Imported by (1):" in result
+        assert "  src/baz.py" in result
+
+
 class TestRevertFile:
     def test_reverts_changes(self, tools, worktree):
         # Initial state is committed in the fixture's tmp_path (simulated by git diff empty)

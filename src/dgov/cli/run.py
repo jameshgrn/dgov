@@ -10,7 +10,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -19,6 +20,7 @@ import click
 
 from dgov.archive import archive_plan
 from dgov.cli import _output, cli, want_json
+from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition
 from dgov.deploy_log import is_plan_complete
 from dgov.event_types import RunCompleted
@@ -287,8 +289,7 @@ def _create_bootstrap_commit(project_root: str, files: list[str]) -> None:
     click.echo(f"Created bootstrap commit from current working tree ({len(files)} file(s)).")
 
 
-def _ensure_git_ready(project_root: str, yes: bool = False) -> None:
-    """Fail fast unless the current directory is a git repo with a clean working tree."""
+def _require_git_repo(project_root: str) -> None:
     repo_check = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
         cwd=project_root,
@@ -300,67 +301,94 @@ def _ensure_git_ready(project_root: str, yes: bool = False) -> None:
         click.echo("Fix: run `git init` in this project first.", err=True)
         raise click.exceptions.Exit(code=1)
 
+
+def _has_git_head(project_root: str) -> bool:
     head_check = subprocess.run(
         ["git", "rev-parse", "--verify", "HEAD"],
         cwd=project_root,
         capture_output=True,
         text=True,
     )
-    if head_check.returncode != 0:
-        files = _working_tree_files(project_root)
-        if not files:
-            click.echo(
-                "Error: repository has no commits and nothing to snapshot for dgov.",
-                err=True,
-            )
-            click.echo("Fix: run `dgov init` or add files, then try again.", err=True)
-            raise click.exceptions.Exit(code=1)
+    return head_check.returncode == 0
 
-        if all(path.startswith(".dgov/") for path in files):
-            _create_bootstrap_commit(project_root, files)
-            return
 
-        headless = not sys.stdin.isatty()
-        if yes or headless:
-            # Auto-create bootstrap commit if --yes flag or headless mode
-            _create_bootstrap_commit(project_root, files)
-            return
+def _raise_no_bootstrap_files() -> None:
+    click.echo(
+        "Error: repository has no commits and nothing to snapshot for dgov.",
+        err=True,
+    )
+    click.echo("Fix: run `dgov init` or add files, then try again.", err=True)
+    raise click.exceptions.Exit(code=1)
 
-        create_bootstrap = click.confirm(
-            (
-                "Repository has no commits. Create a bootstrap commit from the current working "
-                f"tree ({len(files)} file(s))?"
-            ),
-            default=True,
-        )
-        if create_bootstrap:
-            _create_bootstrap_commit(project_root, files)
-            return
 
-        click.echo(
-            "Error: repository has no commits. dgov needs an initial snapshot before it can "
-            "create worktrees.",
-            err=True,
-        )
-        click.echo("Fix: create a bootstrap commit or commit manually, then try again.", err=True)
-        raise click.exceptions.Exit(code=1)
+def _confirm_bootstrap_commit(files: Sequence[str]) -> bool:
+    return click.confirm(
+        (
+            "Repository has no commits. Create a bootstrap commit from the current working "
+            f"tree ({len(files)} file(s))?"
+        ),
+        default=True,
+    )
 
-    # HEAD exists — check for uncommitted changes. Worktrees branch from HEAD,
-    # so uncommitted files cause cherry-pick conflicts at merge time.
+
+def _raise_bootstrap_declined() -> None:
+    click.echo(
+        "Error: repository has no commits. dgov needs an initial snapshot before it can "
+        "create worktrees.",
+        err=True,
+    )
+    click.echo("Fix: create a bootstrap commit or commit manually, then try again.", err=True)
+    raise click.exceptions.Exit(code=1)
+
+
+def _ensure_bootstrap_commit(project_root: str, yes: bool) -> None:
+    files = _working_tree_files(project_root)
+    if not files:
+        _raise_no_bootstrap_files()
+
+    if all(path.startswith(".dgov/") for path in files):
+        _create_bootstrap_commit(project_root, files)
+        return
+
+    if yes or not sys.stdin.isatty():
+        _create_bootstrap_commit(project_root, files)
+        return
+
+    if _confirm_bootstrap_commit(files):
+        _create_bootstrap_commit(project_root, files)
+        return
+    _raise_bootstrap_declined()
+
+
+def _dirty_worker_files(project_root: str) -> list[str]:
     dirty = _working_tree_files(project_root)
-    dirty = [f for f in dirty if not f.startswith(".dgov/")]
+    return [f for f in dirty if not f.startswith(".dgov/")]
+
+
+def _raise_dirty_worktree(dirty: Sequence[str]) -> None:
+    click.echo("Error: working tree has uncommitted changes.", err=True)
+    click.echo(
+        "Worktrees branch from HEAD — uncommitted files cause merge conflicts.",
+        err=True,
+    )
+    for f in dirty[:10]:
+        click.echo(f"  {f}", err=True)
+    if len(dirty) > 10:
+        click.echo(f"  ... and {len(dirty) - 10} more", err=True)
+    click.echo("Fix: commit or stash your changes, then retry.", err=True)
+    raise click.exceptions.Exit(code=1)
+
+
+def _ensure_git_ready(project_root: str, yes: bool = False) -> None:
+    """Fail fast unless the current directory is a git repo with a clean working tree."""
+    _require_git_repo(project_root)
+    if not _has_git_head(project_root):
+        _ensure_bootstrap_commit(project_root, yes)
+        return
+
+    dirty = _dirty_worker_files(project_root)
     if dirty:
-        click.echo("Error: working tree has uncommitted changes.", err=True)
-        click.echo(
-            "Worktrees branch from HEAD — uncommitted files cause merge conflicts.",
-            err=True,
-        )
-        for f in dirty[:10]:
-            click.echo(f"  {f}", err=True)
-        if len(dirty) > 10:
-            click.echo(f"  ... and {len(dirty) - 10} more", err=True)
-        click.echo("Fix: commit or stash your changes, then retry.", err=True)
-        raise click.exceptions.Exit(code=1)
+        _raise_dirty_worktree(dirty)
 
 
 def _sentrux_baseline_path(project_root: str) -> Path:
@@ -469,46 +497,58 @@ def _scan_head_against_sentrux_baseline(
         return result, offenders
 
 
-def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[str, object]:
-    """Run `sentrux gate` and build a gate_result dict comparing against baseline."""
-    gate_result: dict[str, object] = {
+def _initial_sentrux_gate_result(baseline_quality: int | None) -> dict[str, object]:
+    return {
         "degradation": None,
         "quality_before": baseline_quality,
         "quality_after": None,
         "structural_offenders": None,
     }
+
+
+def _record_sentrux_compare_error(
+    gate_result: dict[str, object],
+    *,
+    message: str,
+    echo: str,
+) -> dict[str, object]:
+    gate_result["error"] = message
     if not want_json():
-        click.echo("[sentrux] Comparing against baseline...")
+        click.echo(echo, err=True)
+    return gate_result
 
-    baseline_path = _sentrux_baseline_path(project_root)
-    if _baseline_from_empty_project(baseline_path):
-        gate_result["degradation"] = False
-        if not want_json():
-            click.echo("[sentrux] Gate result: ✓ clean (empty baseline skipped)")
-        return gate_result
 
-    try:
-        result, offenders = _scan_head_against_sentrux_baseline(project_root, baseline_path)
-    except subprocess.CalledProcessError as e:
-        gate_result["error"] = f"Sentrux gate setup failed: {e}"
-        if not want_json():
-            click.echo(f"[sentrux] Gate setup failed: {e}", err=True)
-        return gate_result
-    except subprocess.TimeoutExpired as e:
-        gate_result["error"] = f"Sentrux gate timed out: {e}"
-        if not want_json():
-            click.echo(f"[sentrux] Gate comparison failed: {e}", err=True)
-        return gate_result
+def _empty_baseline_sentrux_result(gate_result: dict[str, object]) -> dict[str, object]:
+    gate_result["degradation"] = False
+    if not want_json():
+        click.echo("[sentrux] Gate result: ✓ clean (empty baseline skipped)")
+    return gate_result
 
-    output = (result.stdout or "") + (result.stderr or "")
-    degradation, quality_after = _parse_sentrux_gate_output(output)
 
-    if result.returncode != 0 and not degradation:
-        gate_result["error"] = output.strip() or "Sentrux gate failed."
-        if not want_json():
-            click.echo(f"[sentrux] Gate comparison failed: {gate_result['error']}", err=True)
-        return gate_result
+def _failed_sentrux_process_result(
+    gate_result: dict[str, object],
+    *,
+    result: subprocess.CompletedProcess[str],
+    output: str,
+    degradation: bool,
+) -> dict[str, object] | None:
+    if result.returncode == 0 or degradation:
+        return None
+    error = output.strip() or "Sentrux gate failed."
+    return _record_sentrux_compare_error(
+        gate_result,
+        message=error,
+        echo=f"[sentrux] Gate comparison failed: {error}",
+    )
 
+
+def _complete_sentrux_gate_result(
+    gate_result: dict[str, object],
+    *,
+    degradation: bool,
+    quality_after: int | None,
+    offenders: dict[str, object] | None,
+) -> dict[str, object]:
     gate_result["degradation"] = degradation
     gate_result["quality_after"] = quality_after
     if degradation and offenders is not None:
@@ -517,6 +557,49 @@ def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[st
         status = "✓ clean" if not degradation else "✗ degradation detected"
         click.echo(f"[sentrux] Gate result: {status}")
     return gate_result
+
+
+def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[str, object]:
+    """Run `sentrux gate` and build a gate_result dict comparing against baseline."""
+    gate_result = _initial_sentrux_gate_result(baseline_quality)
+    if not want_json():
+        click.echo("[sentrux] Comparing against baseline...")
+
+    baseline_path = _sentrux_baseline_path(project_root)
+    if _baseline_from_empty_project(baseline_path):
+        return _empty_baseline_sentrux_result(gate_result)
+
+    try:
+        result, offenders = _scan_head_against_sentrux_baseline(project_root, baseline_path)
+    except subprocess.CalledProcessError as e:
+        return _record_sentrux_compare_error(
+            gate_result,
+            message=f"Sentrux gate setup failed: {e}",
+            echo=f"[sentrux] Gate setup failed: {e}",
+        )
+    except subprocess.TimeoutExpired as e:
+        return _record_sentrux_compare_error(
+            gate_result,
+            message=f"Sentrux gate timed out: {e}",
+            echo=f"[sentrux] Gate comparison failed: {e}",
+        )
+
+    output = (result.stdout or "") + (result.stderr or "")
+    degradation, quality_after = _parse_sentrux_gate_output(output)
+    failed_result = _failed_sentrux_process_result(
+        gate_result,
+        result=result,
+        output=output,
+        degradation=degradation,
+    )
+    if failed_result is not None:
+        return failed_result
+    return _complete_sentrux_gate_result(
+        gate_result,
+        degradation=degradation,
+        quality_after=quality_after,
+        offenders=offenders,
+    )
 
 
 def _branch_verification_base(project_root: str) -> str | None:
@@ -962,26 +1045,12 @@ def _maybe_archive_completed_plan(
         click.echo(f"Plan fully deployed → archived to {dest}")
 
 
-def run_compiled_plan(
-    plan_file: str,
-    project_root: str,
-    restart: bool = False,
-    continue_failed: bool = False,
-    only: str | None = None,
-    plan_dir: Path | None = None,
-    yes: bool = False,
-    stream: bool = False,
-    verbose: bool = False,
-) -> str:
-    """Execute a plan TOML with Sentrux quality gates."""
-    from dgov.config import load_project_config
+def _compile_dag_for_run(plan_file: str, pc: ProjectConfig, only: str | None) -> DagDefinition:
     from dgov.plan import PlanValidationError
     from dgov.types import ConstitutionalViolation
 
     plan = parse_plan_file(plan_file)
     _ensure_compiled_plan(plan, plan_file)
-
-    pc = load_project_config(project_root)
     try:
         dag = compile_plan(
             plan,
@@ -990,49 +1059,30 @@ def run_compiled_plan(
         )
     except (ConstitutionalViolation, PlanValidationError) as exc:
         raise click.ClickException(str(exc)) from None
-    dag = _filter_dag_to_task(dag, only)
+    return _filter_dag_to_task(dag, only)
 
-    _ensure_git_ready(project_root, yes=yes)
 
-    baseline_quality = _require_sentrux_baseline(project_root)
-
-    runner = EventDagRunner(
-        dag,
-        session_root=project_root,
-        on_event=_make_worker_event_callback(stream=stream),
-        restart=restart,
-        continue_failed=continue_failed,
-    )
-    _emit_run_start(dag.name, baseline_quality)
-
-    results, duration = _run_plan_runner(runner)
-    gate_result = _sentrux_compare(project_root, baseline_quality)
-    branch_result = _branch_verification_gate(project_root, pc)
-    completed_gate_result = {**gate_result, "branch_verification": branch_result}
-    failed_now = [s for s, st in results.items() if st == "failed"]
-    task_errors = {slug: err for slug, err in runner.task_errors.items() if slug in failed_now}
-    token_usage = cast(dict[str, tuple[int, int]], getattr(runner, "token_usage", {}))
+def _run_token_totals(token_usage: dict[str, tuple[int, int]]) -> tuple[int, int]:
     total_prompt_tokens = sum(prompt for prompt, _ in token_usage.values())
     total_completion_tokens = sum(completion for _, completion in token_usage.values())
-    run_status, failed, abandoned, skipped, succeeded, _ = _run_status_and_summary(
-        results,
-        task_errors,
-        gate_result,
-        branch_result,
-        duration,
-    )
-    _emit_run_warnings(
-        failed=failed,
-        abandoned=abandoned,
-        skipped=skipped,
-        succeeded=succeeded,
-        task_errors=task_errors,
-        gate_result=gate_result,
-        branch_result=branch_result,
-        duration=duration,
-    )
+    return total_prompt_tokens, total_completion_tokens
 
-    output_data = {
+
+def _run_output_data(
+    *,
+    run_status: str,
+    succeeded: list[str],
+    failed: list[str],
+    abandoned: list[str],
+    skipped: list[str],
+    task_errors: dict[str, str],
+    gate_result: dict[str, object],
+    branch_result: dict[str, object],
+    duration: timedelta,
+    total_prompt_tokens: int,
+    total_completion_tokens: int,
+) -> dict[str, object]:
+    return {
         "status": run_status,
         "succeeded": len(succeeded),
         "failed": len(failed),
@@ -1047,12 +1097,169 @@ def run_compiled_plan(
         "total_prompt_tokens": total_prompt_tokens,
         "total_completion_tokens": total_completion_tokens,
     }
+
+
+def _emit_run_output_data(output_data: dict[str, object]) -> None:
     if want_json():
         _output(output_data)
-    else:
-        hidden_human_fields = {"total_prompt_tokens", "total_completion_tokens"}
-        _output({k: v for k, v in output_data.items() if k not in hidden_human_fields})
-        click.echo(f"tokens: {_format_token_totals(total_prompt_tokens, total_completion_tokens)}")
+        return
+    hidden_human_fields = {"total_prompt_tokens", "total_completion_tokens"}
+    _output({k: v for k, v in output_data.items() if k not in hidden_human_fields})
+    prompt_tokens = cast(int, output_data["total_prompt_tokens"])
+    completion_tokens = cast(int, output_data["total_completion_tokens"])
+    click.echo(f"tokens: {_format_token_totals(prompt_tokens, completion_tokens)}")
+
+
+def _make_event_runner(
+    dag: DagDefinition,
+    *,
+    project_root: str,
+    stream: bool,
+    restart: bool,
+    continue_failed: bool,
+) -> EventDagRunner:
+    return EventDagRunner(
+        dag,
+        session_root=project_root,
+        on_event=_make_worker_event_callback(stream=stream),
+        restart=restart,
+        continue_failed=continue_failed,
+    )
+
+
+@dataclass(frozen=True)
+class PlanRunArtifacts:
+    runner: EventDagRunner
+    results: dict[str, str]
+    duration: timedelta
+    gate_result: dict[str, object]
+    branch_result: dict[str, object]
+    completed_gate_result: dict[str, object]
+    token_usage: dict[str, tuple[int, int]]
+    total_prompt_tokens: int
+    total_completion_tokens: int
+
+
+@dataclass(frozen=True)
+class PlanRunSummary:
+    run_status: str
+    failed: list[str]
+    abandoned: list[str]
+    skipped: list[str]
+    succeeded: list[str]
+    task_errors: dict[str, str]
+
+
+def _execute_plan_with_gates(
+    *,
+    dag: DagDefinition,
+    project_root: str,
+    pc: ProjectConfig,
+    baseline_quality: int | None,
+    stream: bool,
+    restart: bool,
+    continue_failed: bool,
+) -> PlanRunArtifacts:
+    runner = _make_event_runner(
+        dag,
+        project_root=project_root,
+        stream=stream,
+        restart=restart,
+        continue_failed=continue_failed,
+    )
+    _emit_run_start(dag.name, baseline_quality)
+    results, duration = _run_plan_runner(runner)
+    gate_result = _sentrux_compare(project_root, baseline_quality)
+    branch_result = _branch_verification_gate(project_root, pc)
+    token_usage = cast(dict[str, tuple[int, int]], getattr(runner, "token_usage", {}))
+    total_prompt_tokens, total_completion_tokens = _run_token_totals(token_usage)
+    return PlanRunArtifacts(
+        runner=runner,
+        results=results,
+        duration=duration,
+        gate_result=gate_result,
+        branch_result=branch_result,
+        completed_gate_result={**gate_result, "branch_verification": branch_result},
+        token_usage=token_usage,
+        total_prompt_tokens=total_prompt_tokens,
+        total_completion_tokens=total_completion_tokens,
+    )
+
+
+def _record_run_completion(
+    *,
+    project_root: str,
+    dag: DagDefinition,
+    plan_file: str,
+    artifacts: PlanRunArtifacts,
+    summary: PlanRunSummary,
+    only: str | None,
+    plan_dir: Path | None,
+) -> None:
+    _append_run_log(
+        project_root,
+        dag.name,
+        plan_file,
+        artifacts.results,
+        artifacts.gate_result,
+        artifacts.branch_result,
+        artifacts.duration,
+        artifacts.runner.task_durations,
+        summary.task_errors,
+        artifacts.total_prompt_tokens,
+        artifacts.total_completion_tokens,
+    )
+    _maybe_archive_completed_plan(
+        run_status=summary.run_status,
+        only=only,
+        plan_dir=plan_dir,
+        project_root=project_root,
+        dag=dag,
+    )
+    _emit_run_completed(
+        project_root=project_root,
+        plan_name=dag.name,
+        run_status=summary.run_status,
+        duration=artifacts.duration,
+        gate_result=artifacts.completed_gate_result,
+    )
+
+
+def _emit_run_summary_output(
+    *,
+    run_status: str,
+    succeeded: list[str],
+    failed: list[str],
+    abandoned: list[str],
+    skipped: list[str],
+    task_errors: dict[str, str],
+    gate_result: dict[str, object],
+    branch_result: dict[str, object],
+    duration: timedelta,
+    total_prompt_tokens: int,
+    total_completion_tokens: int,
+    verbose: bool,
+    runner: EventDagRunner,
+    token_usage: dict[str, tuple[int, int]],
+    results: dict[str, str],
+    stream: bool,
+    plan_dir: Path | None,
+    plan_file: str,
+) -> None:
+    output_data = _run_output_data(
+        run_status=run_status,
+        succeeded=succeeded,
+        failed=failed,
+        abandoned=abandoned,
+        skipped=skipped,
+        task_errors=task_errors,
+        gate_result=gate_result,
+        branch_result=branch_result,
+        duration=duration,
+        total_prompt_tokens=total_prompt_tokens,
+        total_completion_tokens=total_completion_tokens,
+    )
+    _emit_run_output_data(output_data)
     _emit_verbose_task_durations(
         verbose=verbose,
         task_durations=runner.task_durations,
@@ -1061,38 +1268,167 @@ def run_compiled_plan(
     )
     _emit_post_run_hint(stream=stream, plan_dir=plan_dir, plan_file=plan_file)
 
-    _append_run_log(
-        project_root,
-        dag.name,
-        plan_file,
-        results,
-        gate_result,
-        branch_result,
-        duration,
-        runner.task_durations,
+
+def _summarize_plan_run(artifacts: PlanRunArtifacts) -> PlanRunSummary:
+    failed_now = [s for s, st in artifacts.results.items() if st == "failed"]
+    task_errors = {
+        slug: err for slug, err in artifacts.runner.task_errors.items() if slug in failed_now
+    }
+    run_status, failed, abandoned, skipped, succeeded, _ = _run_status_and_summary(
+        artifacts.results,
         task_errors,
-        total_prompt_tokens,
-        total_completion_tokens,
+        artifacts.gate_result,
+        artifacts.branch_result,
+        artifacts.duration,
     )
-    _maybe_archive_completed_plan(
+    return PlanRunSummary(
         run_status=run_status,
-        only=only,
+        failed=failed,
+        abandoned=abandoned,
+        skipped=skipped,
+        succeeded=succeeded,
+        task_errors=task_errors,
+    )
+
+
+def _emit_plan_run_summary(
+    *,
+    summary: PlanRunSummary,
+    artifacts: PlanRunArtifacts,
+    verbose: bool,
+    stream: bool,
+    plan_dir: Path | None,
+    plan_file: str,
+) -> None:
+    _emit_run_warnings(
+        failed=summary.failed,
+        abandoned=summary.abandoned,
+        skipped=summary.skipped,
+        succeeded=summary.succeeded,
+        task_errors=summary.task_errors,
+        gate_result=artifacts.gate_result,
+        branch_result=artifacts.branch_result,
+        duration=artifacts.duration,
+    )
+    _emit_run_summary_output(
+        run_status=summary.run_status,
+        succeeded=summary.succeeded,
+        failed=summary.failed,
+        abandoned=summary.abandoned,
+        skipped=summary.skipped,
+        task_errors=summary.task_errors,
+        gate_result=artifacts.gate_result,
+        branch_result=artifacts.branch_result,
+        duration=artifacts.duration,
+        total_prompt_tokens=artifacts.total_prompt_tokens,
+        total_completion_tokens=artifacts.total_completion_tokens,
+        verbose=verbose,
+        runner=artifacts.runner,
+        token_usage=artifacts.token_usage,
+        results=artifacts.results,
+        stream=stream,
         plan_dir=plan_dir,
+        plan_file=plan_file,
+    )
+
+
+def _record_plan_run(
+    *,
+    project_root: str,
+    dag: DagDefinition,
+    plan_file: str,
+    artifacts: PlanRunArtifacts,
+    summary: PlanRunSummary,
+    only: str | None,
+    plan_dir: Path | None,
+) -> None:
+    _record_run_completion(
         project_root=project_root,
         dag=dag,
+        plan_file=plan_file,
+        artifacts=artifacts,
+        summary=summary,
+        only=only,
+        plan_dir=plan_dir,
     )
 
-    _emit_run_completed(
-        project_root=project_root,
-        plan_name=dag.name,
-        run_status=run_status,
-        duration=duration,
-        gate_result=completed_gate_result,
-    )
 
+def _raise_on_unsuccessful_run(run_status: str, branch_result: dict[str, object]) -> None:
     if run_status in ("failed", "partial") or _branch_verification_failed(branch_result):
         raise click.exceptions.Exit(code=1)
-    return run_status
+
+
+def _finalize_plan_run(
+    artifacts: PlanRunArtifacts,
+    *,
+    dag: DagDefinition,
+    project_root: str,
+    plan_file: str,
+    only: str | None,
+    plan_dir: Path | None,
+    verbose: bool,
+    stream: bool,
+) -> str:
+    """Summarize, emit, record, and validate a completed plan run."""
+    summary = _summarize_plan_run(artifacts)
+    _emit_plan_run_summary(
+        summary=summary,
+        artifacts=artifacts,
+        verbose=verbose,
+        stream=stream,
+        plan_dir=plan_dir,
+        plan_file=plan_file,
+    )
+    _record_plan_run(
+        project_root=project_root,
+        dag=dag,
+        plan_file=plan_file,
+        artifacts=artifacts,
+        summary=summary,
+        only=only,
+        plan_dir=plan_dir,
+    )
+    _raise_on_unsuccessful_run(summary.run_status, artifacts.branch_result)
+    return summary.run_status
+
+
+def run_compiled_plan(
+    plan_file: str,
+    project_root: str,
+    restart: bool = False,
+    continue_failed: bool = False,
+    only: str | None = None,
+    plan_dir: Path | None = None,
+    yes: bool = False,
+    stream: bool = False,
+    verbose: bool = False,
+) -> str:
+    """Execute a plan TOML with Sentrux quality gates."""
+    from dgov.config import load_project_config
+
+    pc = load_project_config(project_root)
+    dag = _compile_dag_for_run(plan_file, pc, only)
+    _ensure_git_ready(project_root, yes=yes)
+    baseline_quality = _require_sentrux_baseline(project_root)
+    artifacts = _execute_plan_with_gates(
+        dag=dag,
+        project_root=project_root,
+        pc=pc,
+        baseline_quality=baseline_quality,
+        stream=stream,
+        restart=restart,
+        continue_failed=continue_failed,
+    )
+    return _finalize_plan_run(
+        artifacts,
+        dag=dag,
+        project_root=project_root,
+        plan_file=plan_file,
+        only=only,
+        plan_dir=plan_dir,
+        verbose=verbose,
+        stream=stream,
+    )
 
 
 def _append_run_log(

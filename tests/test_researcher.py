@@ -107,20 +107,20 @@ def test_researcher_tool_spec_excludes_write_and_shell_tools() -> None:
     assert "done" in names
 
 
-def test_researcher_execution_rejects_disallowed_tool(tmp_path: Path) -> None:
-    (tmp_path / "hello.py").write_text("x = 1\n")
-    actuators = AtomicTools(tmp_path, AtomicConfig())
-    call = SimpleNamespace(
+def _researcher_edit_file_call() -> SimpleNamespace:
+    return SimpleNamespace(
         id="call-researcher-1",
         function=SimpleNamespace(
             name="edit_file",
-            arguments=json.dumps({
-                "path": "hello.py",
-                "old_text": "x = 1",
-                "new_text": "x = 2",
-            }),
+            arguments=json.dumps({"path": "hello.py", "old_text": "x = 1", "new_text": "x = 2"}),
         ),
     )
+
+
+def test_researcher_execution_rejects_disallowed_tool(tmp_path: Path) -> None:
+    (tmp_path / "hello.py").write_text("x = 1\n")
+    actuators = AtomicTools(tmp_path, AtomicConfig())
+    call = _researcher_edit_file_call()
 
     events: list[tuple[str, object]] = []
     with patch(

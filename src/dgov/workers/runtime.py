@@ -63,33 +63,45 @@ _ENDGAME_REMAINING_CALLS = 8
 _FORCE_DONE_REMAINING_CALLS = 2
 _EXHAUSTION_SUMMARY_MAX_CHARS = 2_000
 _SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_REPO_MAP_SYMBOL_LIMIT = 8
+_REPO_MAP_METHOD_LIMIT = 5
+_TOOL_ERROR_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("policy_blocked", ("not allowed",)),
+    ("not_found", ("not found", "no such file", "does not exist")),
+    ("ambiguous_match", ("multiple", "ambiguous")),
+    ("timeout", ("timed out", "timeout")),
+    ("command_failed", ("exit code", "command failed")),
+    ("validation_failed", ("requires", "invalid", "malformed", "must")),
+)
+
+
+def _is_repo_map_candidate(path: Path, worktree: Path) -> bool:
+    if not path.is_file():
+        return False
+    rel_parts = path.relative_to(worktree).parts
+    if any(part.startswith(".") for part in rel_parts):
+        return False
+    return not any(part in {"__pycache__", "node_modules", ".venv"} for part in rel_parts)
+
+
+def _repo_map_priority(path: Path, worktree: Path, config: AtomicConfig) -> tuple[int, str]:
+    rel = str(path.relative_to(worktree))
+    src_root = config.src_dir.rstrip("/")
+    test_root = config.test_dir.rstrip("/")
+    if src_root and rel.startswith(f"{src_root}/"):
+        return (0, rel)
+    if test_root and rel.startswith(f"{test_root}/"):
+        return (1, rel)
+    if path.suffix == ".py":
+        return (2, rel)
+    return (3, rel)
 
 
 def _iter_repo_map_files(worktree: Path, config: AtomicConfig) -> list[Path]:
-    files: list[Path] = []
-    for path in sorted(worktree.rglob("*")):
-        if not path.is_file():
-            continue
-        rel_parts = path.relative_to(worktree).parts
-        if any(part.startswith(".") for part in rel_parts):
-            continue
-        if any(part in {"__pycache__", "node_modules", ".venv"} for part in rel_parts):
-            continue
-        files.append(path)
-
-    def _priority(path: Path) -> tuple[int, str]:
-        rel = str(path.relative_to(worktree))
-        src_root = config.src_dir.rstrip("/")
-        test_root = config.test_dir.rstrip("/")
-        if src_root and rel.startswith(f"{src_root}/"):
-            return (0, rel)
-        if test_root and rel.startswith(f"{test_root}/"):
-            return (1, rel)
-        if path.suffix == ".py":
-            return (2, rel)
-        return (3, rel)
-
-    return sorted(files, key=_priority)
+    files = [
+        path for path in sorted(worktree.rglob("*")) if _is_repo_map_candidate(path, worktree)
+    ]
+    return sorted(files, key=lambda path: _repo_map_priority(path, worktree, config))
 
 
 def _python_symbol_lines(path: Path) -> list[str]:
@@ -99,21 +111,32 @@ def _python_symbol_lines(path: Path) -> list[str]:
         tree = ast.parse(path.read_text())
     except (OSError, SyntaxError, UnicodeDecodeError):
         return []
+    return _module_symbol_lines(tree)
 
+
+def _module_symbol_lines(tree: ast.Module) -> list[str]:
     lines: list[str] = []
     for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.ClassDef):
-            lines.append(f"class {node.name}")
-            method_count = 0
-            for item in ast.iter_child_nodes(node):
-                if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef):
-                    lines.append(f"  def {node.name}.{item.name}")
-                    method_count += 1
-                    if method_count >= 5:
-                        break
-        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            lines.append(f"def {node.name}")
-        if len(lines) >= 8:
+        lines.extend(_top_level_symbol_lines(node))
+        if len(lines) >= _REPO_MAP_SYMBOL_LIMIT:
+            break
+    return lines[:_REPO_MAP_SYMBOL_LIMIT]
+
+
+def _top_level_symbol_lines(node: ast.AST) -> list[str]:
+    if isinstance(node, ast.ClassDef):
+        return [f"class {node.name}", *_class_method_symbol_lines(node)]
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        return [f"def {node.name}"]
+    return []
+
+
+def _class_method_symbol_lines(node: ast.ClassDef) -> list[str]:
+    lines: list[str] = []
+    for item in ast.iter_child_nodes(node):
+        if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef):
+            lines.append(f"  def {node.name}.{item.name}")
+        if len(lines) >= _REPO_MAP_METHOD_LIMIT:
             break
     return lines
 
@@ -177,18 +200,9 @@ def _clip_tool_result_with_stats(
 
 def _classify_tool_error(result: str) -> str:
     text = result.lower()
-    if "not allowed" in text:
-        return "policy_blocked"
-    if "not found" in text or "no such file" in text or "does not exist" in text:
-        return "not_found"
-    if "multiple" in text or "ambiguous" in text:
-        return "ambiguous_match"
-    if "timed out" in text or "timeout" in text:
-        return "timeout"
-    if "exit code" in text or "command failed" in text:
-        return "command_failed"
-    if "requires" in text or "invalid" in text or "malformed" in text or "must" in text:
-        return "validation_failed"
+    for kind, patterns in _TOOL_ERROR_PATTERNS:
+        if any(pattern in text for pattern in patterns):
+            return kind
     return "unknown"
 
 
@@ -326,68 +340,228 @@ def task_scope_section(task_scope: Mapping[str, object] | None) -> str:
 
 
 def _validate_plan(args: dict[str, Any]) -> str | None:
-    tasks = args.get("tasks")
-    if not tasks or not isinstance(tasks, list):
-        return "Error: emit_plan requires at least one task."
+    tasks, error = _extract_plan_tasks(args)
+    if error is not None:
+        return error
+    return (
+        _validate_plan_task_contracts(tasks)
+        or _validate_plan_dependencies(tasks)
+        or _validate_plan_cycles(tasks)
+    )
 
-    slugs: list[str] = []
-    for i, raw_task in enumerate(tasks):
+
+def _extract_plan_tasks(args: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    raw_tasks = args.get("tasks")
+    if not raw_tasks or not isinstance(raw_tasks, list):
+        return [], "Error: emit_plan requires at least one task."
+
+    tasks: list[dict[str, Any]] = []
+    for index, raw_task in enumerate(raw_tasks):
         if not isinstance(raw_task, dict):
-            return f"Error: Task {i} is not a dict."
-        task = cast(dict[str, Any], raw_task)
-        slug = task.get("slug", "")
-        if not slug or not _SLUG_RE.match(slug):
-            return f"Error: Task {i} has invalid slug {slug!r}. Must match [A-Za-z0-9_-]+."
-        if slug in slugs:
-            return f"Error: Duplicate task slug {slug!r}."
-        slugs.append(slug)
+            return [], f"Error: Task {index} is not a dict."
+        tasks.append(cast(dict[str, Any], raw_task))
+    return tasks, None
 
-        if not task.get("prompt", "").strip():
-            return f"Error: Task {slug!r} has empty prompt."
-        if not task.get("commit_message", "").strip():
-            return f"Error: Task {slug!r} has empty commit_message."
 
-        role = task.get("role", "worker")
-        if role == "worker":
-            files = task.get("files", {})
-            has_files = any(
-                files.get(k) for k in ("create", "edit", "touch") if isinstance(files.get(k), list)
-            )
-            if not has_files:
-                return (
-                    f"Error: Worker task {slug!r} must claim at least one file "
-                    "(create, edit, or touch)."
-                )
+def _validate_plan_task_contracts(tasks: list[dict[str, Any]]) -> str | None:
+    slugs: set[str] = set()
+    for index, task in enumerate(tasks):
+        error = _validate_plan_task_contract(index, task, slugs)
+        if error is not None:
+            return error
+    return None
 
-    slug_set = set(slugs)
-    for raw in tasks:
-        t = cast(dict[str, Any], raw)
-        for dep in t.get("depends_on", []):
+
+def _validate_plan_task_contract(
+    index: int,
+    task: dict[str, Any],
+    slugs: set[str],
+) -> str | None:
+    slug = _task_slug(task)
+    if not slug or not _SLUG_RE.match(slug):
+        return f"Error: Task {index} has invalid slug {slug!r}. Must match [A-Za-z0-9_-]+."
+    if slug in slugs:
+        return f"Error: Duplicate task slug {slug!r}."
+    slugs.add(slug)
+
+    for field_name in ("prompt", "commit_message"):
+        if not _task_text(task, field_name):
+            return f"Error: Task {slug!r} has empty {field_name}."
+
+    if task.get("role", "worker") == "worker" and not _worker_task_claims_file(task):
+        return (
+            f"Error: Worker task {slug!r} must claim at least one file (create, edit, or touch)."
+        )
+    return None
+
+
+def _task_slug(task: dict[str, Any]) -> str:
+    slug = task.get("slug", "")
+    return slug if isinstance(slug, str) else ""
+
+
+def _task_text(task: dict[str, Any], key: str) -> str:
+    value = task.get(key, "")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _worker_task_claims_file(task: dict[str, Any]) -> bool:
+    files = task.get("files", {})
+    if not isinstance(files, dict):
+        return False
+    return any(_file_claim_has_values(files, claim) for claim in ("create", "edit", "touch"))
+
+
+def _file_claim_has_values(files: dict[Any, Any], claim: str) -> bool:
+    value = files.get(claim)
+    return isinstance(value, list) and bool(value)
+
+
+def _validate_plan_dependencies(tasks: list[dict[str, Any]]) -> str | None:
+    slug_set = {_task_slug(task) for task in tasks}
+    for task in tasks:
+        slug = _task_slug(task)
+        dependencies = _task_dependencies(task)
+        if dependencies is None:
+            return f"Error: Task {slug!r} has invalid depends_on. Must be a list."
+        for dep in dependencies:
             if dep not in slug_set:
-                return f"Error: Task {t['slug']!r} depends on unknown slug {dep!r}."
+                return f"Error: Task {slug!r} depends on unknown slug {dep!r}."
+    return None
 
+
+def _task_dependencies(task: dict[str, Any]) -> list[str] | None:
+    raw_dependencies = task.get("depends_on", [])
+    if not isinstance(raw_dependencies, list):
+        return None
+    if not all(isinstance(dep, str) for dep in raw_dependencies):
+        return None
+    return cast(list[str], raw_dependencies)
+
+
+def _validate_plan_cycles(tasks: list[dict[str, Any]]) -> str | None:
+    dep_map = {_task_slug(task): _task_dependencies(task) or [] for task in tasks}
     visited: set[str] = set()
     in_stack: set[str] = set()
-    dep_map = {t["slug"]: t.get("depends_on", []) for t in tasks}
-
-    def _has_cycle(slug: str) -> bool:
-        if slug in in_stack:
-            return True
-        if slug in visited:
-            return False
-        visited.add(slug)
-        in_stack.add(slug)
-        for dep in dep_map.get(slug, []):
-            if _has_cycle(dep):
-                return True
-        in_stack.discard(slug)
-        return False
-
-    for slug in slugs:
-        if _has_cycle(slug):
+    for slug in dep_map:
+        if _plan_has_cycle(slug, dep_map, visited, in_stack):
             return f"Error: Dependency cycle detected involving {slug!r}."
-
     return None
+
+
+def _plan_has_cycle(
+    slug: str,
+    dep_map: dict[str, list[str]],
+    visited: set[str],
+    in_stack: set[str],
+) -> bool:
+    if slug in in_stack:
+        return True
+    if slug in visited:
+        return False
+    visited.add(slug)
+    in_stack.add(slug)
+    for dep in dep_map.get(slug, []):
+        if _plan_has_cycle(dep, dep_map, visited, in_stack):
+            return True
+    in_stack.discard(slug)
+    return False
+
+
+def _tool_base_event(
+    name: str,
+    args: dict[str, Any],
+    call_id: str | None,
+    role: str,
+    turn_index: int,
+    tool_index: int,
+) -> dict[str, Any]:
+    return {
+        "tool": name,
+        "args": args,
+        "arg_keys": sorted(args),
+        "call_id": call_id,
+        "role": role,
+        "turn_index": turn_index,
+        "tool_index": tool_index,
+    }
+
+
+def _emit_tool_result(
+    base_event: Mapping[str, Any],
+    start: float,
+    result: str,
+    status: str,
+    activity: list[dict[str, Any]],
+) -> str:
+    clipped_result, result_stats = _clip_tool_result_with_stats(result)
+    content: dict[str, Any] = {
+        **base_event,
+        "status": status,
+        "activity": activity,
+        "duration_ms": _duration_ms(start),
+        **result_stats,
+    }
+    if status == "failed":
+        content["error_kind"] = _classify_tool_error(result)
+    WorkerEvent("result", content).emit()
+    return clipped_result
+
+
+def _execute_done_tool(
+    args: dict[str, Any],
+    actuators: AtomicTools,
+    base_event: Mapping[str, Any],
+    start: float,
+) -> tuple[str, bool]:
+    verification_error = actuators._done_verification_error()
+    if verification_error is not None:
+        return _emit_tool_result(base_event, start, verification_error, "failed", []), False
+    summary = args.get("summary", "")
+    _emit_tool_result(base_event, start, summary, "success", [])
+    WorkerEvent("done", args.get("summary")).emit()
+    return args.get("summary", ""), True
+
+
+def _execute_emit_plan_tool(
+    args: dict[str, Any],
+    base_event: Mapping[str, Any],
+    start: float,
+) -> tuple[str, bool]:
+    error = _validate_plan(args)
+    if error:
+        return _emit_tool_result(base_event, start, error, "failed", []), False
+    result = args.get("summary", "Plan emitted.")
+    _emit_tool_result(base_event, start, result, "success", [])
+    WorkerEvent("plan", args).emit()
+    return args.get("summary", "Plan emitted."), True
+
+
+def _execute_ask_user_tool(
+    args: dict[str, Any],
+    ask_user_fn: Callable[[str], str] | None,
+    base_event: Mapping[str, Any],
+    start: float,
+) -> tuple[str, bool]:
+    if ask_user_fn is None:
+        result = "Error: ask_user is not available in autonomous mode."
+        return _emit_tool_result(base_event, start, result, "failed", []), False
+    answer = ask_user_fn(args.get("question", ""))
+    return _emit_tool_result(base_event, start, answer, "success", []), False
+
+
+def _execute_actuator_tool(
+    name: str,
+    args: dict[str, Any],
+    actuators: AtomicTools,
+    base_event: Mapping[str, Any],
+    start: float,
+) -> tuple[str, bool]:
+    func = getattr(actuators, name, None)
+    result = func(**args) if func else f"Error: Unknown tool {name}"
+    activity = actuators._consume_activity()
+    status = "failed" if result.startswith("Error:") else "success"
+    return _emit_tool_result(base_event, start, result, status, activity), False
 
 
 def execute_tool_call(
@@ -404,66 +578,20 @@ def execute_tool_call(
     args = json.loads(call.function.arguments)
     call_id = _tool_call_id(call)
     start = time.perf_counter()
-    base_event = {
-        "tool": name,
-        "args": args,
-        "arg_keys": sorted(args),
-        "call_id": call_id,
-        "role": role,
-        "turn_index": turn_index,
-        "tool_index": tool_index,
-    }
+    base_event = _tool_base_event(name, args, call_id, role, turn_index, tool_index)
     WorkerEvent("call", base_event).emit()
-
-    def _emit_result(result: str, status: str, activity: list[dict[str, Any]]) -> str:
-        clipped_result, result_stats = _clip_tool_result_with_stats(result)
-        content: dict[str, Any] = {
-            "tool": name,
-            "status": status,
-            "activity": activity,
-            "call_id": call_id,
-            "role": role,
-            "turn_index": turn_index,
-            "tool_index": tool_index,
-            "duration_ms": _duration_ms(start),
-            **result_stats,
-        }
-        if status == "failed":
-            content["error_kind"] = _classify_tool_error(result)
-        WorkerEvent("result", content).emit()
-        return clipped_result
 
     if allowed_tools is not None and name not in allowed_tools:
         result = f"Error: Tool {name} is not allowed in this worker role."
-        return _emit_result(result, "failed", []), False
+        return _emit_tool_result(base_event, start, result, "failed", []), False
 
     if name == "done":
-        verification_error = actuators._done_verification_error()
-        if verification_error is not None:
-            return _emit_result(verification_error, "failed", []), False
-        summary = args.get("summary", "")
-        _emit_result(summary, "success", [])
-        WorkerEvent("done", args.get("summary")).emit()
-        return args.get("summary", ""), True
+        return _execute_done_tool(args, actuators, base_event, start)
 
     if name == "emit_plan":
-        error = _validate_plan(args)
-        if error:
-            return _emit_result(error, "failed", []), False
-        result = args.get("summary", "Plan emitted.")
-        _emit_result(result, "success", [])
-        WorkerEvent("plan", args).emit()
-        return args.get("summary", "Plan emitted."), True
+        return _execute_emit_plan_tool(args, base_event, start)
 
     if name == "ask_user":
-        if ask_user_fn is None:
-            result = "Error: ask_user is not available in autonomous mode."
-            return _emit_result(result, "failed", []), False
-        answer = ask_user_fn(args.get("question", ""))
-        return _emit_result(answer, "success", []), False
+        return _execute_ask_user_tool(args, ask_user_fn, base_event, start)
 
-    func = getattr(actuators, name, None)
-    result = func(**args) if func else f"Error: Unknown tool {name}"
-    activity = actuators._consume_activity()
-    status = "failed" if result.startswith("Error:") else "success"
-    return _emit_result(result, status, activity), False
+    return _execute_actuator_tool(name, args, actuators, base_event, start)

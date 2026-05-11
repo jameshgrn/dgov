@@ -59,6 +59,49 @@ def emit_event(session_root: str, event: DgovEvent | str, pane: str = "", **kwar
         _emit_raw(session_root, event_name, evt_pane, **evt_kwargs)
 
 
+def _event_query_parts(
+    slug: str | None,
+    plan_name: str | None,
+    task_slug: str | None,
+    after_id: int,
+    limit: int | None,
+) -> tuple[str, str, str, list[str | int]]:
+    conditions: list[str] = []
+    params: list[str | int] = []
+    if slug is not None:
+        conditions.append("pane = ?")
+        params.append(slug)
+    if plan_name is not None:
+        conditions.append("plan_name = ?")
+        params.append(plan_name)
+    if task_slug is not None:
+        conditions.append("task_slug = ?")
+        params.append(task_slug)
+    if after_id > 0:
+        conditions.append("id > ?")
+        params.append(after_id)
+
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    order = "ORDER BY id DESC" if limit is not None else "ORDER BY id"
+    limit_clause = ""
+    if limit is not None:
+        limit_clause = " LIMIT ?"
+        params.append(limit)
+    return where, order, limit_clause, params
+
+
+def _decode_event_row(row, typed_col_names: list[str]) -> dict:
+    row_id, ts, event, pane, data_str = row[0], row[1], row[2], row[3], row[4]
+    ev: dict = {"id": row_id, "ts": ts, "event": event, "pane": pane}
+    with contextlib.suppress(json.JSONDecodeError, TypeError):
+        ev.update(json.loads(data_str))
+    for i, col in enumerate(typed_col_names):
+        val = row[5 + i]
+        if val:
+            ev[col] = val
+    return ev
+
+
 def read_events(
     session_root: str,
     slug: str | None = None,
@@ -74,49 +117,21 @@ def read_events(
     _typed = ", ".join(_EVENT_TYPED_COLS)
     _select = f"id, ts, event, pane, data, {_typed}"
     conn = _get_db(session_root)
-    conditions: list[str] = []
-    params: list[str | int] = []
-    if slug is not None:
-        conditions.append("pane = ?")
-        params.append(slug)
-    if plan_name is not None:
-        conditions.append("plan_name = ?")
-        params.append(plan_name)
-    if task_slug is not None:
-        conditions.append("task_slug = ?")
-        params.append(task_slug)
-    if after_id > 0:
-        conditions.append("id > ?")
-        params.append(after_id)
-    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
-    # Limited queries fetch newest-first for perf, reversed below for chronological order
-    order = "ORDER BY id DESC" if limit is not None else "ORDER BY id"
-    limit_clause = ""
-    if limit is not None:
-        limit_clause = " LIMIT ?"
-        params.append(limit)
+    where, order, limit_clause, params = _event_query_parts(
+        slug,
+        plan_name,
+        task_slug,
+        after_id,
+        limit,
+    )
     rows = conn.execute(
         f"SELECT {_select} FROM events{where} {order}{limit_clause}",
         tuple(params),
     ).fetchall()
     typed_col_names = list(_EVENT_TYPED_COLS)
-    events = []
-    # For limited queries we fetch newest-first for performance, then reverse to keep
-    # chronological (oldest-first) order at the API boundary.
     if limit is not None:
         rows = list(reversed(rows))
-    for row in rows:
-        row_id, ts, event, pane, data_str = row[0], row[1], row[2], row[3], row[4]
-        ev: dict = {"id": row_id, "ts": ts, "event": event, "pane": pane}
-        with contextlib.suppress(json.JSONDecodeError, TypeError):
-            ev.update(json.loads(data_str))
-        # Overlay typed columns (non-empty values win over JSON blob)
-        for i, col in enumerate(typed_col_names):
-            val = row[5 + i]
-            if val:
-                ev[col] = val
-        events.append(ev)
-    return events
+    return [_decode_event_row(row, typed_col_names) for row in rows]
 
 
 def latest_event_id(session_root: str) -> int:

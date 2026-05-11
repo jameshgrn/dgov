@@ -21,6 +21,7 @@ from dgov.workers.config import (
 
 _DEFAULT_AGENT = "accounts/fireworks/routers/kimi-k2p5-turbo"
 _DEFAULT_SCOPE_IGNORE_FILES = (".venv", "uv.lock", "__pycache__", "*.pyc")
+_RESERVED_SCOPE_IGNORE_PATHS = (".sentrux/baseline.json", ".coverage-baseline/")
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,91 @@ class ProjectConfig(AtomicConfig):
         return "\n".join(lines)
 
 
+def _table(raw: Mapping[str, Any], key: str) -> dict[str, Any]:
+    value = raw.get(key, {})
+    return value if isinstance(value, dict) else {}
+
+
+def _tuple_if_list(value: Any) -> Any:
+    return tuple(value) if isinstance(value, list) else value
+
+
+def _configured_scope_ignores(raw: Mapping[str, Any]) -> tuple[str, ...]:
+    scope_section = raw.get("scope", {})
+    ignore_raw = scope_section.get("ignore_files", ()) if isinstance(scope_section, dict) else ()
+    if not isinstance(ignore_raw, list):
+        return ()
+    return tuple(str(p).strip() for p in ignore_raw if str(p).strip())
+
+
+def _validate_scope_ignores(configured_scope_ignores: tuple[str, ...]) -> None:
+    bad = sorted(
+        path
+        for path in configured_scope_ignores
+        if any(
+            path == reserved or path.startswith(reserved)
+            for reserved in _RESERVED_SCOPE_IGNORE_PATHS
+        )
+    )
+    if bad:
+        raise ValueError(f"project.toml [scope] ignore_files cannot include reserved paths: {bad}")
+
+
+def _scope_ignore_files(raw: Mapping[str, Any]) -> tuple[str, ...]:
+    configured_scope_ignores = _configured_scope_ignores(raw)
+    # Reserved-path guard: the scope ignore list must not shadow governor-owned
+    # files, otherwise a worker could silently mutate them.
+    _validate_scope_ignores(configured_scope_ignores)
+    return tuple(dict.fromkeys((*ProjectConfig.scope_ignore_files, *configured_scope_ignores)))
+
+
+def _worker_config_fields(proj: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "language": proj.get("language", ProjectConfig.language),
+        "src_dir": proj.get("src_dir", ProjectConfig.src_dir),
+        "test_dir": proj.get("test_dir", ProjectConfig.test_dir),
+        "llm_base_url": proj.get("llm_base_url", ProjectConfig.llm_base_url),
+        "llm_api_key_env": proj.get("llm_api_key_env", ProjectConfig.llm_api_key_env),
+        "test_cmd": proj.get("test_cmd", ProjectConfig.test_cmd),
+        "lint_cmd": proj.get("lint_cmd", ProjectConfig.lint_cmd),
+        "format_cmd": proj.get("format_cmd", ProjectConfig.format_cmd),
+        "lint_fix_cmd": proj.get("lint_fix_cmd", ProjectConfig.lint_fix_cmd),
+        "type_check_cmd": proj.get("type_check_cmd") or None,
+        "test_markers": _tuple_if_list(proj.get("test_markers", ())),
+        "worker_iteration_budget": proj.get("worker_iteration_budget", 50),
+        "worker_iteration_warn_at": proj.get("worker_iteration_warn_at", 40),
+        "worker_tree_max_lines": proj.get("worker_tree_max_lines", 80),
+        "line_length": proj.get("line_length", 99),
+    }
+
+
+def _governor_config_fields(raw: Mapping[str, Any], proj: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "source_extensions": _tuple_if_list(proj.get("source_extensions", (".py",))),
+        "default_agent": proj.get("default_agent", _DEFAULT_AGENT),
+        "format_check_cmd": proj.get("format_check_cmd", ProjectConfig.format_check_cmd),
+        "bootstrap_timeout": proj.get("bootstrap_timeout", 300),
+        "settlement_timeout": proj.get("settlement_timeout", 120),
+        "review_hooks": _tuple_if_list(proj.get("review_hooks", ())),
+        "agents": _table(raw, "agents"),
+        "conventions": _table(raw, "conventions"),
+        "tool_policy": parse_tool_policy(raw.get("tool_policy", {})),
+        "scope_ignore_files": _scope_ignore_files(raw),
+        "setup_cmd": proj.get("setup_cmd") or None,
+        "coverage_cmd": proj.get("coverage_cmd") or None,
+        "coverage_threshold": proj.get("coverage_threshold", 2.0),
+        "departments": _table(raw, "departments"),
+    }
+
+
+def _project_config_fields(raw: Mapping[str, Any]) -> dict[str, Any]:
+    proj = _table(raw, "project")
+    return {
+        **_worker_config_fields(proj),
+        **_governor_config_fields(raw, proj),
+    }
+
+
 def load_project_config(root: str | Path) -> ProjectConfig:
     """Load .dgov/project.toml from a project root. Returns defaults if missing."""
     path = Path(root) / ".dgov" / "project.toml"
@@ -138,73 +224,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
     if not raw:
         return ProjectConfig()
 
-    proj = raw.get("project", {})
-    agents = raw.get("agents", {})
-    conventions = raw.get("conventions", {})
-    departments = raw.get("departments", {})
-    markers = proj.get("test_markers", ())
-    if isinstance(markers, list):
-        markers = tuple(markers)
-
-    hooks = proj.get("review_hooks", ())
-    if isinstance(hooks, list):
-        hooks = tuple(hooks)
-
-    extensions = proj.get("source_extensions", (".py",))
-    if isinstance(extensions, list):
-        extensions = tuple(extensions)
-
-    scope_section = raw.get("scope", {})
-    ignore_raw = scope_section.get("ignore_files", ()) if isinstance(scope_section, dict) else ()
-    if isinstance(ignore_raw, list):
-        configured_scope_ignores = tuple(str(p).strip() for p in ignore_raw if str(p).strip())
-    else:
-        configured_scope_ignores = ()
-    # Reserved-path guard: the scope ignore list must not shadow governor-owned
-    # files, otherwise a worker could silently mutate them.
-    _RESERVED_PATHS = (".sentrux/baseline.json", ".coverage-baseline/")
-    bad = sorted(
-        path
-        for path in configured_scope_ignores
-        if any(path == reserved or path.startswith(reserved) for reserved in _RESERVED_PATHS)
-    )
-    if bad:
-        raise ValueError(f"project.toml [scope] ignore_files cannot include reserved paths: {bad}")
-    scope_ignore_files = tuple(
-        dict.fromkeys((*ProjectConfig.scope_ignore_files, *configured_scope_ignores))
-    )
-
-    return ProjectConfig(
-        language=proj.get("language", ProjectConfig.language),
-        src_dir=proj.get("src_dir", ProjectConfig.src_dir),
-        test_dir=proj.get("test_dir", ProjectConfig.test_dir),
-        source_extensions=extensions,
-        default_agent=proj.get("default_agent", _DEFAULT_AGENT),
-        llm_base_url=proj.get("llm_base_url", ProjectConfig.llm_base_url),
-        llm_api_key_env=proj.get("llm_api_key_env", ProjectConfig.llm_api_key_env),
-        test_cmd=proj.get("test_cmd", ProjectConfig.test_cmd),
-        lint_cmd=proj.get("lint_cmd", ProjectConfig.lint_cmd),
-        format_cmd=proj.get("format_cmd", ProjectConfig.format_cmd),
-        lint_fix_cmd=proj.get("lint_fix_cmd", ProjectConfig.lint_fix_cmd),
-        format_check_cmd=proj.get("format_check_cmd", ProjectConfig.format_check_cmd),
-        type_check_cmd=proj.get("type_check_cmd") or None,
-        test_markers=markers,
-        worker_iteration_budget=proj.get("worker_iteration_budget", 50),
-        worker_iteration_warn_at=proj.get("worker_iteration_warn_at", 40),
-        worker_tree_max_lines=proj.get("worker_tree_max_lines", 80),
-        bootstrap_timeout=proj.get("bootstrap_timeout", 300),
-        settlement_timeout=proj.get("settlement_timeout", 120),
-        line_length=proj.get("line_length", 99),
-        review_hooks=hooks,
-        agents=agents,
-        conventions=conventions,
-        tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
-        scope_ignore_files=scope_ignore_files,
-        setup_cmd=proj.get("setup_cmd") or None,
-        coverage_cmd=proj.get("coverage_cmd") or None,
-        coverage_threshold=proj.get("coverage_threshold", 2.0),
-        departments=departments,
-    )
+    return ProjectConfig(**_project_config_fields(raw))
 
 
 def _read_toml(path: Path) -> dict:

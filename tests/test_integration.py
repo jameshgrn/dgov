@@ -129,6 +129,211 @@ def _mock_settlement_fail(*_args, **_kwargs):
     return GateResult(passed=False, error="lint failure")
 
 
+_SEMANTIC_EVENT_FIELDS = (
+    "task_slug",
+    "error",
+    "pane",
+    "failure_class",
+    "gate_name",
+    "risk_level",
+    "python_overlap_detected",
+)
+
+
+def _semantic_gate_worker(code: str, filename: str = "module.py"):
+    async def _worker(
+        project_root,
+        plan_name,
+        task_slug,
+        pane_slug,
+        worktree_path,
+        task,
+        task_scope,
+        on_exit,
+        on_event=None,
+    ):
+        (worktree_path / filename).write_text(code)
+        on_exit(task_slug, pane_slug, 0, "")
+
+    return _worker
+
+
+def _semantic_event_capture(events: list[dict]):
+    def _capture_event(project_root, event, pane_slug="", **kwargs):
+        events.append(_semantic_event_record(event, pane_slug, kwargs))
+
+    return _capture_event
+
+
+def _semantic_event_record(event, pane_slug: str, kwargs: dict) -> dict:
+    if isinstance(event, str):
+        return {"event": event, "pane_slug": pane_slug, **kwargs}
+    return {
+        "event": getattr(event, "event_type", ""),
+        **{field: getattr(event, field, None) for field in _SEMANTIC_EVENT_FIELDS},
+    }
+
+
+def _same_symbol_edit_verdict(*_args, **_kwargs):
+    from dgov.semantic_settlement import FailureClass, SemanticGateVerdict, SymbolOverlap
+
+    return SemanticGateVerdict(
+        task_slug="same-edit-test",
+        gate_name="same_symbol_edit",
+        passed=False,
+        failure_class=FailureClass.SAME_SYMBOL_EDIT,
+        evidence=(
+            SymbolOverlap(
+                symbol_name="process",
+                symbol_type="function",
+                file_path="module.py",
+                task_line_range=(1, 2),
+                target_line_range=(1, 2),
+            ),
+        ),
+        error_message="Both sides modified 'process'",
+        checked_at=0.0,
+    )
+
+
+def _signature_drift_verdict(*_args, **_kwargs):
+    from dgov.semantic_settlement import FailureClass, SemanticGateVerdict, SignatureDrift
+
+    return SemanticGateVerdict(
+        task_slug="drift-test",
+        gate_name="signature_drift",
+        passed=False,
+        failure_class=FailureClass.SIGNATURE_DRIFT,
+        evidence=(
+            SignatureDrift(
+                symbol_name="helper",
+                file_path="module.py",
+                base_signature="def helper()",
+                integrated_signature="def helper(x)",
+            ),
+        ),
+        error_message="Signature changed for 'helper'",
+        checked_at=0.0,
+    )
+
+
+def _semantic_gate_rejections(events: list[dict]) -> list[dict]:
+    return [event for event in events if event.get("event") == "semantic_gate_rejected"]
+
+
+def _retry_worker(initial_code: str, retry_code: str, filename: str = "out.py"):
+    """Factory for a worker that writes different code on initial vs retry attempts.
+
+    Detects retry by checking if pane_slug ends with '-retry'.
+    """
+
+    async def _worker(
+        project_root,
+        plan_name,
+        task_slug,
+        pane_slug,
+        worktree_path,
+        task,
+        task_scope,
+        on_exit,
+        on_event=None,
+    ):
+        is_retry = pane_slug.endswith("-retry")
+        code = retry_code if is_retry else initial_code
+        (worktree_path / filename).write_text(code)
+        on_exit(task_slug, pane_slug, 0, "")
+
+    return _worker
+
+
+def _retry_worker_with_counts(initial_code: str, retry_code: str, filename: str = "out.py"):
+    """Factory for a worker that writes different code on initial vs retry attempts.
+
+    Detects retry by checking if pane_slug ends with '-retry'.
+    Returns the worker and a call_count dict for assertions.
+    """
+    call_count = {"initial": 0, "retry": 0}
+
+    async def _worker(
+        project_root,
+        plan_name,
+        task_slug,
+        pane_slug,
+        worktree_path,
+        task,
+        task_scope,
+        on_exit,
+        on_event=None,
+    ):
+        is_retry = pane_slug.endswith("-retry")
+        code = retry_code if is_retry else initial_code
+        call_count["retry" if is_retry else "initial"] += 1
+        (worktree_path / filename).write_text(code)
+        on_exit(task_slug, pane_slug, 0, "")
+
+    return _worker, call_count
+
+
+def _assert_retry_success(
+    git_repo: Path,
+    results: dict,
+    task_slug: str,
+    call_count: dict,
+    filename: str,
+    expected_content: str,
+):
+    """Assert retry call counts and final merged output content."""
+    assert call_count["initial"] == 1, "Initial worker should run once"
+    assert call_count["retry"] == 1, "Retry worker should run once"
+    assert results[task_slug] == "merged"
+    assert (git_repo / filename).exists()
+    final_code = (git_repo / filename).read_text()
+    assert expected_content in final_code
+
+
+def _assert_settlement_retry_event(events: list[dict], task_slug: str) -> dict:
+    """Assert exactly one settlement_retry event exists for the given task_slug.
+
+    Returns the matched event for additional assertions.
+    """
+    retry_events = [e for e in events if e.get("event") == "settlement_retry"]
+    assert len(retry_events) == 1, (
+        f"Expected exactly one settlement_retry event, got {len(retry_events)}"
+    )
+    event = retry_events[0]
+    actual_slug = event.get("task_slug")
+    assert actual_slug == task_slug, f"Expected task_slug={task_slug}, got {actual_slug}"
+    assert "error" in event, "Expected 'error' field in settlement_retry event"
+    return event
+
+
+def _record_active_orphan(session_root: str, git_repo: Path, dag, slug: str, pane: str):
+    """Simulate a crashed run: record an ACTIVE task and emit dispatched event."""
+    from dgov.persistence import WorkerTask, emit_event, record_runtime_artifact
+    from dgov.types import TaskState
+
+    record = WorkerTask(
+        slug=slug,
+        prompt="do the thing",
+        agent="mock",
+        project_root=session_root,
+        worktree_path=str(git_repo / ".dgov" / "worktrees" / slug),
+        branch_name=f"dgov/{slug}",
+        state=TaskState.ACTIVE,
+        plan_name=dag.name,
+    )
+    record_runtime_artifact(session_root, record)
+    emit_event(
+        session_root,
+        EvtTaskDispatched(
+            pane=pane,
+            plan_name=dag.name,
+            task_slug=slug,
+            agent="mock",
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Single task: happy path
 # ---------------------------------------------------------------------------
@@ -138,7 +343,7 @@ class TestSingleTaskHappyPath:
     def test_file_lands_on_main(self, git_repo, monkeypatch):
         """Worker writes a file → it ends up on main after merge."""
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({"add-file": _task("add-file")})
         runner = EventDagRunner(dag, session_root=str(git_repo))
@@ -151,7 +356,7 @@ class TestSingleTaskHappyPath:
     def test_commit_message_preserved(self, git_repo, monkeypatch):
         """Custom commit message appears in git log."""
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({"msg-test": _task("msg-test", commit_message="feat: custom message")})
         runner = EventDagRunner(dag, session_root=str(git_repo))
@@ -168,7 +373,7 @@ class TestSingleTaskHappyPath:
     def test_worktree_cleaned_up(self, git_repo, monkeypatch):
         """No leftover worktrees after completion."""
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({"cleanup-test": _task("cleanup-test")})
         runner = EventDagRunner(dag, session_root=str(git_repo))
@@ -181,7 +386,7 @@ class TestSingleTaskHappyPath:
     def test_no_leftover_branches(self, git_repo, monkeypatch):
         """dgov/* branches are removed after merge."""
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({"branch-test": _task("branch-test")})
         runner = EventDagRunner(dag, session_root=str(git_repo))
@@ -205,7 +410,7 @@ class TestWorkerFailure:
     def test_worker_exit_1_fails_task(self, git_repo, monkeypatch):
         """Worker exit code 1 → task marked failed."""
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_fail)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({"fail-test": _task("fail-test")})
         runner = EventDagRunner(dag, session_root=str(git_repo))
@@ -217,7 +422,7 @@ class TestWorkerFailure:
     def test_worktree_cleaned_on_failure(self, git_repo, monkeypatch):
         """Worktrees cleaned even when worker fails and max retries reached."""
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_fail)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({"fail-cleanup": _task("fail-cleanup")})
         runner = EventDagRunner(dag, session_root=str(git_repo))
@@ -239,7 +444,7 @@ class TestSettlementRejection:
     def test_lint_failure_rejects_merge(self, git_repo, monkeypatch):
         """Settlement gate failure → task fails, file not on main."""
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_fail)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_fail)
 
         dag = _dag({"lint-fail": _task("lint-fail")})
         runner = EventDagRunner(dag, session_root=str(git_repo))
@@ -259,56 +464,29 @@ class TestSettlementRetry:
 
     def test_settlement_retry_succeeds_on_second_attempt(self, git_repo, monkeypatch):
         """Worker produces bad code → retry with feedback → fix → merge."""
-        call_count = {"initial": 0, "retry": 0}
+        bad_code = "print(undefined_var)\n"  # F821: Undefined name
+        fixed_code = "undefined_var = 'hello'\nprint(undefined_var)\n"
 
-        async def _retry_worker(
-            project_root,
-            plan_name,
-            task_slug,
-            pane_slug,
-            worktree_path,
-            task,
-            task_scope,
-            on_exit,
-            on_event=None,
-        ):
-            # Track which call this is by checking pane_slug suffix
-            is_retry = pane_slug.endswith("-retry")
+        worker, call_count = _retry_worker_with_counts(
+            initial_code=bad_code,
+            retry_code=fixed_code,
+            filename="output.py",
+        )
 
-            if not is_retry:
-                # First attempt: write code with undefined variable (F821)
-                call_count["initial"] += 1
-                # F821: Undefined name - ruff check --fix cannot fix this
-                bad_code = "print(undefined_var)\n"  # F821 undefined name
-                (worktree_path / "output.py").write_text(bad_code)
-                on_exit(task_slug, pane_slug, 0, "")
-            else:
-                # Retry: define the variable
-                call_count["retry"] += 1
-                fixed_code = "undefined_var = 'hello'\nprint(undefined_var)\n"
-                (worktree_path / "output.py").write_text(fixed_code)
-                on_exit(task_slug, pane_slug, 0, "")
-
-        # Don't mock settlement — use real ruff validation
-        monkeypatch.setattr("dgov.runner.run_headless_worker", _retry_worker)
+        monkeypatch.setattr("dgov.runner.run_headless_worker", worker)
 
         dag = _dag({"retry-task": _task("retry-task", commit_message="feat: retry test")})
         runner = EventDagRunner(dag, session_root=str(git_repo))
         results = asyncio.run(runner.run())
 
-        # Verify both worker calls were made
-        assert call_count["initial"] == 1, "Initial worker should run once"
-        assert call_count["retry"] == 1, "Retry worker should run once"
-
-        # Task should succeed after retry
-        assert results["retry-task"] == "merged"
-        assert (git_repo / "output.py").exists()
-
-        # Verify final code is correct (ruff may change quotes, so check content not exact format)
-        final_code = (git_repo / "output.py").read_text()
-        assert "undefined_var =" in final_code
-        assert "hello" in final_code
-        assert "print(undefined_var)" in final_code
+        _assert_retry_success(
+            git_repo,
+            results,
+            task_slug="retry-task",
+            call_count=call_count,
+            filename="output.py",
+            expected_content="undefined_var",
+        )
 
     def test_settlement_retry_fails_after_second_attempt(self, git_repo, monkeypatch):
         """Worker produces bad code → retry → still bad → task fails."""
@@ -398,58 +576,19 @@ class TestSettlementRetry:
         """Settlement retry emits a 'settlement_retry' event."""
         events = []
 
-        async def _event_tracking_worker(
-            project_root,
-            plan_name,
-            task_slug,
-            pane_slug,
-            worktree_path,
-            task,
-            task_scope,
-            on_exit,
-            on_event=None,
-        ):
-            is_retry = pane_slug.endswith("-retry")
-            # F821: Undefined name - ruff check --fix cannot fix this
-            # Retry attempt fixes it
-            if is_retry:
-                (worktree_path / "out.py").write_text("undefined = 1\nprint(undefined)\n")
-            else:
-                (worktree_path / "out.py").write_text("print(undefined)\n")
-            on_exit(task_slug, pane_slug, 0, "")
+        # Worker writes bad code initially, fixed code on retry
+        initial_code = "print(undefined)\n"  # F821: undefined name
+        retry_code = "undefined = 1\nprint(undefined)\n"
+        worker = _retry_worker(initial_code, retry_code, filename="out.py")
 
-        def _capture_event(project_root, event, pane_slug="", **kwargs):
-            if isinstance(event, str):
-                events.append({"event": event, "pane_slug": pane_slug, **kwargs})
-            else:
-                events.append({
-                    "event": getattr(event, "event_type", ""),
-                    **{
-                        k: getattr(event, k, None)
-                        for k in (
-                            "task_slug",
-                            "error",
-                            "pane",
-                            "failure_class",
-                            "gate_name",
-                            "risk_level",
-                            "python_overlap_detected",
-                        )
-                    },
-                })
-
-        monkeypatch.setattr("dgov.runner.run_headless_worker", _event_tracking_worker)
-        monkeypatch.setattr("dgov.runner.emit_event", _capture_event)
+        monkeypatch.setattr("dgov.runner.run_headless_worker", worker)
+        monkeypatch.setattr("dgov.runner.emit_event", _semantic_event_capture(events))
 
         dag = _dag({"event-test": _task("event-test")})
         runner = EventDagRunner(dag, session_root=str(git_repo))
         asyncio.run(runner.run())
 
-        # Find settlement_retry event
-        retry_events = [e for e in events if e.get("event") == "settlement_retry"]
-        assert len(retry_events) == 1
-        assert retry_events[0]["task_slug"] == "event-test"
-        assert "error" in retry_events[0]
+        _assert_settlement_retry_event(events, task_slug="event-test")
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +600,7 @@ class TestChain:
     def test_sequential_merge(self, git_repo, monkeypatch):
         """a merges first, then b. Both files end up on main."""
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({
             "step-a": _task("step-a"),
@@ -499,7 +638,7 @@ class TestChain:
             on_exit(task_slug, pane_slug, 0, "")
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _worker_with_dependency_visibility)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({
             "step-a": _task("step-a"),
@@ -515,7 +654,7 @@ class TestChain:
     def test_merge_order_respects_deps(self, git_repo, monkeypatch):
         """a's commit appears before b's in git log."""
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({
             "first": _task("first"),
@@ -546,7 +685,7 @@ class TestParallel:
     def test_both_merge(self, git_repo, monkeypatch):
         """Two independent tasks both end up merged."""
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({
             "alpha": _task("alpha"),
@@ -581,7 +720,7 @@ class TestParallel:
                 on_exit(task_slug, pane_slug, 0, "")
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _selective_worker)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({
             "alpha": _task("alpha"),
@@ -609,7 +748,7 @@ class TestDbStateSync:
         from dgov.persistence import get_runtime_artifact
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_fail)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({"db-fail": _task("db-fail")})
         runner = EventDagRunner(dag, session_root=str(git_repo))
@@ -625,7 +764,7 @@ class TestDbStateSync:
         from dgov.persistence import get_runtime_artifact
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({"db-ok": _task("db-ok")})
         runner = EventDagRunner(dag, session_root=str(git_repo))
@@ -639,7 +778,7 @@ class TestDbStateSync:
     def test_downstream_skipped_after_failure_in_db(self, git_repo, monkeypatch):
         """Upstream fails → downstream task is skipped. Snapshot reflects that."""
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_fail)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({
             "upstream": _task("upstream"),
@@ -662,42 +801,17 @@ class TestOrphanAbandon:
 
     def test_orphaned_task_becomes_abandoned_on_rerun(self, git_repo, monkeypatch):
         """After a crash, a bare re-run abandons orphaned tasks."""
-        from dgov.persistence import (
-            WorkerTask,
-            clear_connection_cache,
-            emit_event,
-            record_runtime_artifact,
-        )
-        from dgov.types import TaskState
+        from dgov.persistence import clear_connection_cache
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         slug = "orphan-task"
         dag = _dag({slug: _task(slug)})
         session_root = str(git_repo)
 
         # Simulate a crashed run: add task as ACTIVE + emit dispatched event
-        record = WorkerTask(
-            slug=slug,
-            prompt="do the thing",
-            agent="mock",
-            project_root=session_root,
-            worktree_path=str(git_repo / ".dgov" / "worktrees" / slug),
-            branch_name=f"dgov/{slug}",
-            state=TaskState.ACTIVE,
-            plan_name=dag.name,
-        )
-        record_runtime_artifact(session_root, record)
-        emit_event(
-            session_root,
-            EvtTaskDispatched(
-                pane="pane-crashed",
-                plan_name=dag.name,
-                task_slug=slug,
-                agent="mock",
-            ),
-        )
+        _record_active_orphan(session_root, git_repo, dag, slug, "pane-crashed")
 
         # Re-run bare (no --continue, no --restart)
         clear_connection_cache()
@@ -712,41 +826,16 @@ class TestOrphanAbandon:
     def test_orphan_rerun_kernel_status_is_not_completed(self, git_repo, monkeypatch):
         """kernel.status must be FAILED (not COMPLETED) when all tasks are abandoned."""
         from dgov.kernel import DagState
-        from dgov.persistence import (
-            WorkerTask,
-            clear_connection_cache,
-            emit_event,
-            record_runtime_artifact,
-        )
-        from dgov.types import TaskState
+        from dgov.persistence import clear_connection_cache
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         slug = "status-orphan"
         dag = _dag({slug: _task(slug)})
         session_root = str(git_repo)
 
-        record = WorkerTask(
-            slug=slug,
-            prompt="do the thing",
-            agent="mock",
-            project_root=session_root,
-            worktree_path=str(git_repo / ".dgov" / "worktrees" / slug),
-            branch_name=f"dgov/{slug}",
-            state=TaskState.ACTIVE,
-            plan_name=dag.name,
-        )
-        record_runtime_artifact(session_root, record)
-        emit_event(
-            session_root,
-            EvtTaskDispatched(
-                pane="pane-crashed-2",
-                plan_name=dag.name,
-                task_slug=slug,
-                agent="mock",
-            ),
-        )
+        _record_active_orphan(session_root, git_repo, dag, slug, "pane-crashed-2")
 
         clear_connection_cache()
         runner = EventDagRunner(dag, session_root=session_root)
@@ -766,7 +855,7 @@ class TestSemanticSettlementIntegration:
         from dgov.persistence import read_events
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({"risk-test": _task("risk-test")})
         session_root = str(git_repo)
@@ -791,7 +880,7 @@ class TestSemanticSettlementIntegration:
     def test_merge_succeeds_even_with_risk_detected(self, git_repo, monkeypatch):
         """Shadow mode: merge succeeds regardless of risk level (telemetry only)."""
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
-        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+        monkeypatch.setattr("dgov.settlement_flow.validate_sandbox", _mock_settlement_pass)
 
         # Create a task with files that will change
         task = _task("risky-task")
@@ -858,6 +947,69 @@ class TestSemanticSettlementIntegration:
         assert len(risk_events) == 0
 
 
+# -----------------------------------------------------------------------------
+# Integration Candidate Helpers
+# -----------------------------------------------------------------------------
+
+
+async def _ic_conflict_worker(
+    project_root,
+    plan_name,
+    task_slug,
+    pane_slug,
+    worktree_path,
+    task,
+    task_scope,
+    on_exit,
+    on_event=None,
+):
+    """Worker that writes a file that conflicts with main."""
+    (worktree_path / "new_file.py").write_text("x = 1\n")
+    on_exit(task_slug, pane_slug, 0, "")
+
+
+def _ic_failing_candidate_result(project_root, task_wt, candidate_slug):
+    """Return a failing integration candidate result simulating a conflict."""
+    from dgov.worktree import IntegrationCandidateResult
+
+    return IntegrationCandidateResult(
+        passed=False,
+        error="Simulated: file exists on main causing conflict",
+    )
+
+
+def _ic_conflict_task_dag():
+    """Return a DAG with a task that creates a conflicting file."""
+    return _dag({
+        "conflict-task": DagTaskSpec(
+            slug="conflict-task",
+            summary="Task that creates file",
+            prompt="Create file",
+            commit_message="feat: add file",
+            agent="mock",
+            files=DagFileSpec(create=("new_file.py",)),
+        )
+    })
+
+
+def _assert_ic_task_failed(results, task_slug):
+    """Assert that the task failed due to integration candidate conflict."""
+    assert results[task_slug] == "failed"
+
+
+def _assert_ic_failed_events_for_task(events, task_slug):
+    """Assert that integration_candidate_failed events were emitted for the task."""
+    failed_events = [e for e in events if e["event"] == "integration_candidate_failed"]
+    assert len(failed_events) >= 1  # At least one failure event
+    assert all(e["task_slug"] == task_slug for e in failed_events)
+
+
+def _assert_ic_worktree_preserved(wt_dir, task_slug):
+    """Assert that the conflict task worktree was preserved for inspection."""
+    preserved_wts = list(wt_dir.glob(f"{task_slug}*")) if wt_dir.exists() else []
+    assert len(preserved_wts) >= 1
+
+
 class TestIntegrationCandidate:
     """Integration tests for integration candidate validation with real git."""
 
@@ -910,68 +1062,25 @@ class TestIntegrationCandidate:
         from dgov.persistence import read_events
         from dgov.worktree import _worktrees_dir
 
-        # Create task worktree that creates a file, while main also creates the same file
-        async def _conflict_worker(
-            project_root,
-            plan_name,
-            task_slug,
-            pane_slug,
-            worktree_path,
-            task,
-            task_scope,
-            on_exit,
-            on_event=None,
-        ):
-            # Write a file in the worktree
-            (worktree_path / "new_file.py").write_text("x = 1\n")
-            on_exit(task_slug, pane_slug, 0, "")
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _ic_conflict_worker)
+        monkeypatch.setattr(
+            "dgov.settlement_flow.create_integration_candidate",
+            _ic_failing_candidate_result,
+        )
 
-        monkeypatch.setattr("dgov.runner.run_headless_worker", _conflict_worker)
-
-        # Task claims to create new_file.py
-        dag = _dag({
-            "conflict-task": DagTaskSpec(
-                slug="conflict-task",
-                summary="Task that creates file",
-                prompt="Create file",
-                commit_message="feat: add file",
-                agent="mock",
-                files=DagFileSpec(create=("new_file.py",)),
-            )
-        })
+        dag = _ic_conflict_task_dag()
         session_root = str(git_repo)
-
-        # Create the same file on main AFTER the task worktree is created
-        # But before the integration candidate is validated
-        # We'll simulate this by mocking the integration candidate creation to fail
-        def _failing_candidate(project_root, task_wt, candidate_slug):
-            from dgov.worktree import IntegrationCandidateResult
-
-            return IntegrationCandidateResult(
-                passed=False,
-                error="Simulated: file exists on main causing conflict",
-            )
-
-        monkeypatch.setattr("dgov.runner.create_integration_candidate", _failing_candidate)
 
         runner = EventDagRunner(dag, session_root=session_root)
         results = asyncio.run(runner.run())
 
-        # Task should fail due to integration candidate conflict
-        assert results["conflict-task"] == "failed"
+        _assert_ic_task_failed(results, task_slug="conflict-task")
 
-        # Verify integration_candidate_failed was emitted (may be 2 due to retry)
         events = read_events(session_root, plan_name=dag.name)
-        failed_events = [e for e in events if e["event"] == "integration_candidate_failed"]
-        assert len(failed_events) >= 1  # At least one failure event
-        assert all(e["task_slug"] == "conflict-task" for e in failed_events)
+        _assert_ic_failed_events_for_task(events, task_slug="conflict-task")
 
-        # Verify worktree was preserved for inspection
         wt_dir = _worktrees_dir(session_root)
-        # The worktree should still exist (not cleaned up on failure)
-        # There may be multiple due to settlement retry
-        preserved_wts = list(wt_dir.glob("conflict-task*")) if wt_dir.exists() else []
-        assert len(preserved_wts) >= 1
+        _assert_ic_worktree_preserved(wt_dir, task_slug="conflict-task")
 
     def test_candidate_passed_before_merge_event(self, git_repo, monkeypatch):
         """integration_candidate_passed event precedes merge_completed."""
@@ -1007,76 +1116,18 @@ class TestPythonSemanticGateIntegration:
 
     def test_semantic_gate_rejects_same_symbol_edit(self, git_repo, monkeypatch):
         """Python semantic gate rejects when both sides edit same symbol."""
-        from dgov.semantic_settlement import (
-            FailureClass,
-            SemanticGateVerdict,
-            SymbolOverlap,
-        )
+        from dgov.semantic_settlement import FailureClass
 
         events = []
-
-        async def _worker_with_edit(
-            project_root,
-            plan_name,
-            task_slug,
-            pane_slug,
-            worktree_path,
-            task,
-            task_scope,
-            on_exit,
-            on_event=None,
-        ):
-            # Create valid Python file
-            code = """def process():
+        worker = _semantic_gate_worker("""def process():
     return "task version"
-"""
-            (worktree_path / "module.py").write_text(code)
-            on_exit(task_slug, pane_slug, 0, "")
+""")
 
-        def _capture_event(project_root, event, pane_slug="", **kwargs):
-            if isinstance(event, str):
-                events.append({"event": event, "pane_slug": pane_slug, **kwargs})
-            else:
-                events.append({
-                    "event": getattr(event, "event_type", ""),
-                    **{
-                        k: getattr(event, k, None)
-                        for k in (
-                            "task_slug",
-                            "error",
-                            "pane",
-                            "failure_class",
-                            "gate_name",
-                            "risk_level",
-                            "python_overlap_detected",
-                        )
-                    },
-                })
-
-        # Mock semantic gate to fail with same_symbol_edit
-        def _mock_semantic_gate_fail(*args, **kwargs):
-            return SemanticGateVerdict(
-                task_slug="same-edit-test",
-                gate_name="same_symbol_edit",
-                passed=False,
-                failure_class=FailureClass.SAME_SYMBOL_EDIT,
-                evidence=(
-                    SymbolOverlap(
-                        symbol_name="process",
-                        symbol_type="function",
-                        file_path="module.py",
-                        task_line_range=(1, 2),
-                        target_line_range=(1, 2),
-                    ),
-                ),
-                error_message="Both sides modified 'process'",
-                checked_at=0.0,
-            )
-
-        monkeypatch.setattr("dgov.runner.run_headless_worker", _worker_with_edit)
-        monkeypatch.setattr("dgov.runner.emit_event", _capture_event)
+        monkeypatch.setattr("dgov.runner.run_headless_worker", worker)
+        monkeypatch.setattr("dgov.runner.emit_event", _semantic_event_capture(events))
         monkeypatch.setattr(
-            "dgov.runner.run_python_semantic_gate_in_subprocess", _mock_semantic_gate_fail
+            "dgov.settlement_flow.run_python_semantic_gate_in_subprocess",
+            _same_symbol_edit_verdict,
         )
 
         dag = _dag({
@@ -1089,81 +1140,24 @@ class TestPythonSemanticGateIntegration:
         assert results["same-edit-test"] == "failed"
 
         # Verify semantic_gate_rejected was emitted
-        rejected_events = [e for e in events if e.get("event") == "semantic_gate_rejected"]
+        rejected_events = _semantic_gate_rejections(events)
         assert len(rejected_events) >= 1
         assert rejected_events[0].get("failure_class") == FailureClass.SAME_SYMBOL_EDIT.value
 
     def test_semantic_gate_rejects_signature_drift(self, git_repo, monkeypatch):
         """Python semantic gate rejects when signature drift detected."""
-        from dgov.semantic_settlement import (
-            FailureClass,
-            SemanticGateVerdict,
-            SignatureDrift,
-        )
+        from dgov.semantic_settlement import FailureClass
 
         events = []
-
-        async def _worker_with_drift(
-            project_root,
-            plan_name,
-            task_slug,
-            pane_slug,
-            worktree_path,
-            task,
-            task_scope,
-            on_exit,
-            on_event=None,
-        ):
-            # Create valid Python file
-            code = """def helper(x: int) -> str:
+        worker = _semantic_gate_worker("""def helper(x: int) -> str:
     return str(x)
-"""
-            (worktree_path / "module.py").write_text(code)
-            on_exit(task_slug, pane_slug, 0, "")
+""")
 
-        def _capture_event(project_root, event, pane_slug="", **kwargs):
-            if isinstance(event, str):
-                events.append({"event": event, "pane_slug": pane_slug, **kwargs})
-            else:
-                events.append({
-                    "event": getattr(event, "event_type", ""),
-                    **{
-                        k: getattr(event, k, None)
-                        for k in (
-                            "task_slug",
-                            "error",
-                            "pane",
-                            "failure_class",
-                            "gate_name",
-                            "risk_level",
-                            "python_overlap_detected",
-                        )
-                    },
-                })
-
-        # Mock semantic gate to fail with signature_drift
-        def _mock_semantic_gate_fail(*args, **kwargs):
-            return SemanticGateVerdict(
-                task_slug="drift-test",
-                gate_name="signature_drift",
-                passed=False,
-                failure_class=FailureClass.SIGNATURE_DRIFT,
-                evidence=(
-                    SignatureDrift(
-                        symbol_name="helper",
-                        file_path="module.py",
-                        base_signature="def helper()",
-                        integrated_signature="def helper(x)",
-                    ),
-                ),
-                error_message="Signature changed for 'helper'",
-                checked_at=0.0,
-            )
-
-        monkeypatch.setattr("dgov.runner.run_headless_worker", _worker_with_drift)
-        monkeypatch.setattr("dgov.runner.emit_event", _capture_event)
+        monkeypatch.setattr("dgov.runner.run_headless_worker", worker)
+        monkeypatch.setattr("dgov.runner.emit_event", _semantic_event_capture(events))
         monkeypatch.setattr(
-            "dgov.runner.run_python_semantic_gate_in_subprocess", _mock_semantic_gate_fail
+            "dgov.settlement_flow.run_python_semantic_gate_in_subprocess",
+            _signature_drift_verdict,
         )
 
         dag = _dag({"drift-test": _task("drift-test", commit_message="feat: change signature")})
@@ -1174,7 +1168,7 @@ class TestPythonSemanticGateIntegration:
         assert results["drift-test"] == "failed"
 
         # Verify semantic_gate_rejected was emitted
-        rejected_events = [e for e in events if e.get("event") == "semantic_gate_rejected"]
+        rejected_events = _semantic_gate_rejections(events)
         assert len(rejected_events) >= 1
         assert rejected_events[0].get("failure_class") == FailureClass.SIGNATURE_DRIFT.value
 
@@ -1182,50 +1176,21 @@ class TestPythonSemanticGateIntegration:
         """Python semantic gate passes for clean, valid Python code."""
         events = []
 
-        async def _worker_with_clean_code(
-            project_root,
-            plan_name,
-            task_slug,
-            pane_slug,
-            worktree_path,
-            task,
-            task_scope,
-            on_exit,
-            on_event=None,
-        ):
-            # Create clean, valid Python code
-            clean_code = """class Processor:
+        clean_code = """class Processor:
     def process(self, data: str) -> str:
         return data.upper()
 
 def helper(x: int) -> int:
     return x * 2
 """
-            (worktree_path / "clean.py").write_text(clean_code)
-            on_exit(task_slug, pane_slug, 0, "")
-
-        def _capture_event(project_root, event, pane_slug="", **kwargs):
-            if isinstance(event, str):
-                events.append({"event": event, "pane_slug": pane_slug, **kwargs})
-            else:
-                events.append({
-                    "event": getattr(event, "event_type", ""),
-                    **{
-                        k: getattr(event, k, None)
-                        for k in (
-                            "task_slug",
-                            "error",
-                            "pane",
-                            "failure_class",
-                            "gate_name",
-                            "risk_level",
-                            "python_overlap_detected",
-                        )
-                    },
-                })
-
-        monkeypatch.setattr("dgov.runner.run_headless_worker", _worker_with_clean_code)
-        monkeypatch.setattr("dgov.runner.emit_event", _capture_event)
+        monkeypatch.setattr(
+            "dgov.runner.run_headless_worker",
+            _semantic_gate_worker(clean_code, filename="clean.py"),
+        )
+        monkeypatch.setattr(
+            "dgov.runner.emit_event",
+            _semantic_event_capture(events),
+        )
 
         dag = _dag({"clean-test": _task("clean-test", commit_message="feat: clean code")})
         runner = EventDagRunner(dag, session_root=str(git_repo))
@@ -1235,8 +1200,7 @@ def helper(x: int) -> int:
         assert results["clean-test"] == "merged"
 
         # Verify no semantic_gate_rejected was emitted
-        rejected_events = [e for e in events if e.get("event") == "semantic_gate_rejected"]
-        assert len(rejected_events) == 0
+        assert len(_semantic_gate_rejections(events)) == 0
 
         # Verify file was merged
         assert (git_repo / "clean.py").exists()

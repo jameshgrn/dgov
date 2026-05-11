@@ -6,9 +6,11 @@ Pillar #4: Determinism - Validates all inputs and dependencies before dispatch.
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec, parse_dag_file
@@ -122,48 +124,63 @@ class PlanIssue:
     unit: str | None = None
 
 
+def _resolve_task_prompt(
+    slug: str,
+    task: DagTaskSpec,
+    plan_dir: Path,
+) -> str:
+    """Resolve task prompt from inline text or prompt_file relative to plan_dir."""
+    if task.prompt:
+        return task.prompt
+    if task.prompt_file:
+        prompt_path = plan_dir / task.prompt_file
+        if not prompt_path.exists():
+            raise FileNotFoundError(
+                f"Task '{slug}': prompt_file not found: {task.prompt_file} "
+                f"(resolved: {prompt_path})"
+            )
+        return prompt_path.read_text(encoding="utf-8")
+    return ""
+
+
+def _dag_task_to_plan_unit(
+    slug: str,
+    task: DagTaskSpec,
+    prompt: str,
+) -> PlanUnit:
+    """Convert a DagTaskSpec into a PlanUnit."""
+    return PlanUnit(
+        slug=slug,
+        summary=task.summary,
+        prompt=prompt,
+        commit_message=task.commit_message or "",
+        agent=task.agent,
+        role=task.role,
+        depends_on=task.depends_on,
+        timeout_s=task.timeout_s,
+        iteration_budget=task.iteration_budget,
+        test_cmd=task.test_cmd,
+        prompt_file=task.prompt_file,
+        files=PlanUnitFiles(
+            create=task.files.create,
+            edit=task.files.edit,
+            delete=task.files.delete,
+            read=task.files.read,
+            touch=task.files.touch,
+        ),
+    )
+
+
 def parse_plan_file(path: str) -> PlanSpec:
     """Parse a TOML plan file into a PlanSpec."""
-    from pathlib import Path
-
     dag_def = parse_dag_file(path)
     plan_path = Path(path).resolve()
     plan_dir = plan_path.parent
 
-    units = {}
-    for slug, task in dag_def.tasks.items():
-        # Resolve prompt_file if set
-        prompt = task.prompt or ""
-        prompt_file = task.prompt_file
-        if prompt_file:
-            prompt_path = plan_dir / prompt_file
-            if not prompt_path.exists():
-                raise FileNotFoundError(
-                    f"Task '{slug}': prompt_file not found: {prompt_file} "
-                    f"(resolved: {prompt_path})"
-                )
-            prompt = prompt_path.read_text(encoding="utf-8")
-
-        units[slug] = PlanUnit(
-            slug=slug,
-            summary=task.summary,
-            prompt=prompt,
-            commit_message=task.commit_message or "",
-            agent=task.agent,
-            role=task.role,
-            depends_on=task.depends_on,
-            timeout_s=task.timeout_s,
-            iteration_budget=task.iteration_budget,
-            test_cmd=task.test_cmd,
-            prompt_file=prompt_file,
-            files=PlanUnitFiles(
-                create=task.files.create,
-                edit=task.files.edit,
-                delete=task.files.delete,
-                read=task.files.read,
-                touch=task.files.touch,
-            ),
-        )
+    units = {
+        slug: _dag_task_to_plan_unit(slug, task, _resolve_task_prompt(slug, task, plan_dir))
+        for slug, task in dag_def.tasks.items()
+    }
 
     return PlanSpec(
         name=dag_def.name,
@@ -199,63 +216,89 @@ def compile_plan(
     Raises ConstitutionalViolation if file claims violate department ownership.
     """
     issues = validate_plan(plan, departments=departments)
-
-    # Check for constitutional violations first (department ownership)
-    constitutional_errors = [
-        i
-        for i in issues
-        if i.severity == "error" and i.message.startswith(_CONSTITUTIONAL_VIOLATION_PREFIX)
-    ]
-    if constitutional_errors:
-        raise ConstitutionalViolation(constitutional_errors[0].message)
-
-    errors = [i for i in issues if i.severity == "error"]
-    if errors:
-        raise PlanValidationError(errors)
-
-    tasks: dict[str, DagTaskSpec] = {}
-
-    for slug, unit in plan.units.items():
-        agent = unit.agent or plan.default_agent or project_agent
-        if not agent:
-            raise PlanValidationError([
-                PlanIssue(
-                    severity="error",
-                    message=f"No agent for task '{slug}'"
-                    " — set in task, [plan] default_agent, or project.toml",
-                    unit=slug,
-                )
-            ])
-        timeout_s = unit.timeout_s if unit.timeout_s else plan.default_timeout_s
-
-        dag_files = DagFileSpec(
-            create=unit.files.create,
-            edit=unit.files.edit,
-            delete=unit.files.delete,
-            read=unit.files.read,
-            touch=unit.files.touch,
-        )
-
-        tasks[slug] = DagTaskSpec(
-            slug=slug,
-            summary=unit.summary,
-            prompt=unit.prompt,
-            commit_message=unit.commit_message,
-            agent=agent,
-            role=unit.role,
-            depends_on=unit.depends_on,
-            files=dag_files,
-            timeout_s=timeout_s,
-            iteration_budget=unit.iteration_budget,
-            test_cmd=unit.test_cmd,
-        )
+    _raise_blocking_validation_issues(issues)
 
     return DagDefinition(
         name=plan.name,
         dag_file="compiled-plan",
         project_root=plan.project_root,
         session_root=plan.session_root,
-        tasks=tasks,
+        tasks={
+            slug: _compile_plan_task(slug, unit, plan, project_agent)
+            for slug, unit in plan.units.items()
+        },
+    )
+
+
+def _raise_blocking_validation_issues(issues: list[PlanIssue]) -> None:
+    constitutional_errors = _constitutional_errors(issues)
+    if constitutional_errors:
+        raise ConstitutionalViolation(constitutional_errors[0].message)
+
+    errors = _validation_errors(issues)
+    if errors:
+        raise PlanValidationError(errors)
+
+
+def _constitutional_errors(issues: list[PlanIssue]) -> list[PlanIssue]:
+    return [
+        issue
+        for issue in issues
+        if issue.severity == "error" and issue.message.startswith(_CONSTITUTIONAL_VIOLATION_PREFIX)
+    ]
+
+
+def _validation_errors(issues: list[PlanIssue]) -> list[PlanIssue]:
+    return [issue for issue in issues if issue.severity == "error"]
+
+
+def _compile_plan_task(
+    slug: str,
+    unit: PlanUnit,
+    plan: PlanSpec,
+    project_agent: str,
+) -> DagTaskSpec:
+    return DagTaskSpec(
+        slug=slug,
+        summary=unit.summary,
+        prompt=unit.prompt,
+        commit_message=unit.commit_message,
+        agent=_resolve_task_agent(slug, unit, plan, project_agent),
+        role=unit.role,
+        depends_on=unit.depends_on,
+        files=_compile_plan_files(unit.files),
+        timeout_s=unit.timeout_s if unit.timeout_s else plan.default_timeout_s,
+        iteration_budget=unit.iteration_budget,
+        test_cmd=unit.test_cmd,
+    )
+
+
+def _resolve_task_agent(
+    slug: str,
+    unit: PlanUnit,
+    plan: PlanSpec,
+    project_agent: str,
+) -> str:
+    agent = unit.agent or plan.default_agent or project_agent
+    if agent:
+        return agent
+    raise PlanValidationError([
+        PlanIssue(
+            severity="error",
+            message=f"No agent for task '{slug}'"
+            " — set in task, [plan] default_agent, or project.toml",
+            unit=slug,
+        )
+    ])
+
+
+def _compile_plan_files(files: PlanUnitFiles) -> DagFileSpec:
+    return DagFileSpec(
+        create=files.create,
+        edit=files.edit,
+        delete=files.delete,
+        read=files.read,
+        touch=files.touch,
     )
 
 
@@ -379,108 +422,150 @@ def validate_plan(
     5. Department ownership authorization (if departments config provided)
     """
     issues: list[PlanIssue] = []
+    issues.extend(_check_department_authorizations(plan, departments))
+    issues.extend(_check_file_claim_conflicts(plan))
+    issues.extend(_check_import_graph_conflicts(plan))
+    issues.extend(_check_unclaimed_prompt_refs(plan))
+    issues.extend(_check_verify_only_tasks(plan))
+    issues.extend(_check_missing_task_test_cmds(plan))
+    issues.extend(_check_empty_prompts(plan))
+    issues.extend(_check_task_roles(plan))
+    issues.extend(_check_prompt_structures(plan))
+    return issues
 
-    # Department ownership authorization check
-    if departments:
-        for _slug, unit in plan.units.items():
-            issues.extend(_check_department_authorization(unit, departments))
 
-    # File-claim conflict detection between independent tasks
+def _check_department_authorizations(
+    plan: PlanSpec,
+    departments: dict[str, list[str]] | None,
+) -> list[PlanIssue]:
+    if not departments:
+        return []
+    issues: list[PlanIssue] = []
+    for unit in plan.units.values():
+        issues.extend(_check_department_authorization(unit, departments))
+    return issues
+
+
+def _check_file_claim_conflicts(plan: PlanSpec) -> list[PlanIssue]:
+    issues: list[PlanIssue] = []
     slugs = list(plan.units.keys())
     for i, slug_a in enumerate(slugs):
         touches_a = _all_touches(plan.units[slug_a])
         if not touches_a:
             continue
         for slug_b in slugs[i + 1 :]:
-            touches_b = _all_touches(plan.units[slug_b])
-            if not touches_b:
-                continue
-            if not _are_independent(slug_a, slug_b, plan.units):
-                continue
-            # Check for overlapping paths
-            for pa in touches_a:
-                for pb in touches_b:
-                    if _paths_overlap(pa, pb):
-                        issues.append(
-                            PlanIssue(
-                                severity="error",
-                                message=(
-                                    f"File conflict: '{slug_a}' and '{slug_b}' "
-                                    f"both touch '{pa}' but have no dependency edge"
-                                ),
-                            )
-                        )
+            issues.extend(_file_conflict_issues(slug_a, touches_a, slug_b, plan.units))
+    return issues
 
-    issues.extend(_check_import_graph_conflicts(plan))
 
-    # Unclaimed prompt path reference check
-    # Workers that touch unclaimed files get scope_violation (terminal, no retry).
+def _file_conflict_issues(
+    slug_a: str,
+    touches_a: set[str],
+    slug_b: str,
+    units: dict[str, PlanUnit],
+) -> list[PlanIssue]:
+    touches_b = _all_touches(units[slug_b])
+    if not touches_b or not _are_independent(slug_a, slug_b, units):
+        return []
+    return [
+        PlanIssue(
+            severity="error",
+            message=(
+                f"File conflict: '{slug_a}' and '{slug_b}' "
+                f"both touch '{path_a}' but have no dependency edge"
+            ),
+        )
+        for path_a in touches_a
+        for path_b in touches_b
+        if _paths_overlap(path_a, path_b)
+    ]
+
+
+def _check_unclaimed_prompt_refs(plan: PlanSpec) -> list[PlanIssue]:
+    issues: list[PlanIssue] = []
     for slug, unit in plan.units.items():
-        if not unit.prompt:
-            continue
-        claimed = {
-            _normalize_touch_path(p)
-            for p in (*unit.files.create, *unit.files.edit, *unit.files.touch, *unit.files.read)
-            if p.strip()
-        }
-        seen: set[str] = set()
-        for m in _PROMPT_PATH_RE.finditer(unit.prompt):
-            ref_path = _normalize_touch_path(m.group(1))
-            if ref_path in seen or ref_path in claimed:
-                continue
-            seen.add(ref_path)
-            issues.append(
-                PlanIssue(
-                    severity="warning",
-                    message=(
-                        f"Prompt references '{m.group(1)}' but it is not in the file claim. "
-                        "Workers that touch unclaimed files get scope_violation (terminal, no retry). "
-                        "Add to files.edit or files.read if the task needs this file."
-                    ),
-                    unit=slug,
-                )
-            )
+        issues.extend(_check_unclaimed_prompt_refs_for_unit(slug, unit))
+    return issues
 
-    # Verify-only task check: tasks whose only create targets are non-.py files
-    # should not have .py files in touch/edit (this tempts the worker to modify code).
+
+def _check_unclaimed_prompt_refs_for_unit(slug: str, unit: PlanUnit) -> list[PlanIssue]:
+    if not unit.prompt:
+        return []
+    claimed = _claimed_prompt_paths(unit)
+    seen: set[str] = set()
+    issues: list[PlanIssue] = []
+    for match in _PROMPT_PATH_RE.finditer(unit.prompt):
+        ref_path = _normalize_touch_path(match.group(1))
+        if ref_path in seen or ref_path in claimed:
+            continue
+        seen.add(ref_path)
+        issues.append(
+            PlanIssue(
+                severity="warning",
+                message=(
+                    f"Prompt references '{match.group(1)}' but it is not in the file claim. "
+                    "Workers that touch unclaimed files get scope_violation (terminal, no retry). "
+                    "Add to files.edit or files.read if the task needs this file."
+                ),
+                unit=slug,
+            )
+        )
+    return issues
+
+
+def _claimed_prompt_paths(unit: PlanUnit) -> set[str]:
+    return {
+        _normalize_touch_path(path)
+        for path in (*unit.files.create, *unit.files.edit, *unit.files.touch, *unit.files.read)
+        if path.strip()
+    }
+
+
+def _check_verify_only_tasks(plan: PlanSpec) -> list[PlanIssue]:
+    issues: list[PlanIssue] = []
     for slug, unit in plan.units.items():
         issues.extend(_check_verify_only_task(slug, unit))
+    return issues
 
-    # Verification specificity check: source/test write tasks should make
-    # explicit when project-level auto-targeting is not sufficient.
+
+def _check_missing_task_test_cmds(plan: PlanSpec) -> list[PlanIssue]:
+    issues: list[PlanIssue] = []
     for slug, unit in plan.units.items():
         issues.extend(_check_missing_task_test_cmd(slug, unit))
+    return issues
 
-    # Empty prompt check — catch at compile time, not at dispatch time.
-    # Reviewers are exempt: they get auto-generated prompts from dependency diffs.
-    for slug, unit in plan.units.items():
-        if not (unit.prompt or "").strip() and unit.role != "reviewer":
-            issues.append(
-                PlanIssue(
-                    severity="error",
-                    message=f"Task '{slug}' has an empty prompt.",
-                    unit=slug,
-                )
-            )
 
-    # Task role check
-    for slug, unit in plan.units.items():
-        if unit.role not in _TASK_ROLES:
-            issues.append(
-                PlanIssue(
-                    severity="error",
-                    message=(
-                        f"Unknown task role '{unit.role}' for '{slug}'. "
-                        f"Expected one of: {', '.join(sorted(_TASK_ROLES))}."
-                    ),
-                    unit=slug,
-                )
-            )
+def _check_empty_prompts(plan: PlanSpec) -> list[PlanIssue]:
+    return [
+        PlanIssue(
+            severity="error",
+            message=f"Task '{slug}' has an empty prompt.",
+            unit=slug,
+        )
+        for slug, unit in plan.units.items()
+        if not (unit.prompt or "").strip() and unit.role != "reviewer"
+    ]
 
-    # Prompt structure check: Orient/Edit/Verify headers.
+
+def _check_task_roles(plan: PlanSpec) -> list[PlanIssue]:
+    return [
+        PlanIssue(
+            severity="error",
+            message=(
+                f"Unknown task role '{unit.role}' for '{slug}'. "
+                f"Expected one of: {', '.join(sorted(_TASK_ROLES))}."
+            ),
+            unit=slug,
+        )
+        for slug, unit in plan.units.items()
+        if unit.role not in _TASK_ROLES
+    ]
+
+
+def _check_prompt_structures(plan: PlanSpec) -> list[PlanIssue]:
+    issues: list[PlanIssue] = []
     for slug, unit in plan.units.items():
         issues.extend(_check_prompt_structure(slug, unit))
-
     return issues
 
 
@@ -547,51 +632,55 @@ def _check_department_authorization(
     A unit is authorized to touch files in a department if its summary
     contains the department name (case-insensitive substring match).
     """
-    import fnmatch
-
     issues: list[PlanIssue] = []
+    for norm_path in _modifying_file_paths(unit):
+        issue = _department_authorization_issue(unit, norm_path, departments)
+        if issue is not None:
+            issues.append(issue)
+    return issues
 
-    # touch is write-capable shorthand, so it must be governed like edit/create/delete.
-    modifying_files = [
-        *unit.files.create,
-        *unit.files.edit,
-        *unit.files.delete,
-        *unit.files.touch,
+
+def _modifying_file_paths(unit: PlanUnit) -> list[str]:
+    return [
+        normalized
+        for path in (
+            *unit.files.create,
+            *unit.files.edit,
+            *unit.files.delete,
+            *unit.files.touch,
+        )
+        if (normalized := _normalize_touch_path(path))
     ]
 
-    for file_path in modifying_files:
-        norm_path = _normalize_touch_path(file_path)
-        if not norm_path:
+
+def _department_authorization_issue(
+    unit: PlanUnit,
+    norm_path: str,
+    departments: dict[str, list[str]],
+) -> PlanIssue | None:
+    for dept_name, patterns in departments.items():
+        if not _department_owns_path(norm_path, patterns):
             continue
+        if _unit_authorized_for_department(unit, dept_name):
+            return None
+        return PlanIssue(
+            severity="error",
+            message=(
+                f"Constitutional violation: unit touches '{norm_path}' "
+                f"owned by department '{dept_name}' but summary "
+                f"does not explicitly opt-in. Add '{dept_name}' to summary."
+            ),
+            unit=unit.slug,
+        )
+    return None
 
-        # Check which department owns this path
-        for dept_name, patterns in departments.items():
-            dept_owns = False
-            for pattern in patterns:
-                if fnmatch.fnmatch(norm_path, pattern):
-                    dept_owns = True
-                    break
 
-            if dept_owns:
-                # Check if unit is authorized (summary contains department name)
-                summary_lower = (unit.summary or "").lower()
-                dept_lower = dept_name.lower()
-                if dept_lower not in summary_lower:
-                    issues.append(
-                        PlanIssue(
-                            severity="error",
-                            message=(
-                                f"Constitutional violation: unit touches '{norm_path}' "
-                                f"owned by department '{dept_name}' but summary "
-                                f"does not explicitly opt-in. Add '{dept_name}' to summary."
-                            ),
-                            unit=unit.slug,
-                        )
-                    )
-                # Only report once per file, even if multiple patterns match
-                break
+def _department_owns_path(norm_path: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatch(norm_path, pattern) for pattern in patterns)
 
-    return issues
+
+def _unit_authorized_for_department(unit: PlanUnit, dept_name: str) -> bool:
+    return dept_name.lower() in (unit.summary or "").lower()
 
 
 def _check_prompt_structure(slug: str, unit: PlanUnit) -> list[PlanIssue]:

@@ -435,20 +435,15 @@ class TestSemanticSettlementEvents:
         assert ev["gate_name"] == "same_symbol_edit"
         assert ev["failure_class"] == "same_symbol_edit"
 
-    def test_semantic_settlement_events_filter_by_plan_name(self, tmp_path):
-        """Semantic settlement events can be filtered by plan_name."""
+    def _emit_plan_a_risk_event(self, session_root):
+        """Emit an integration_risk_scored event for plan-a."""
         from dgov.semantic_settlement import (
-            IntegrationCandidateVerdict,
             IntegrationRiskRecord,
             RiskLevel,
-            emit_integration_candidate_passed,
             emit_integration_risk_scored,
         )
 
-        session_root = _session(tmp_path)
-
-        # Emit for plan-a
-        record_a = IntegrationRiskRecord(
+        record = IntegrationRiskRecord(
             task_slug="task-a",
             target_head_sha="abc",
             task_base_sha="def",
@@ -457,10 +452,17 @@ class TestSemanticSettlementEvents:
             claimed_files=(),
             changed_files=(),
         )
-        emit_integration_risk_scored(emit_event, session_root, "plan-a", record_a)
+        emit_integration_risk_scored(emit_event, session_root, "plan-a", record)
 
-        # Emit for plan-b
-        record_b = IntegrationRiskRecord(
+    def _emit_plan_b_risk_event(self, session_root):
+        """Emit an integration_risk_scored event for plan-b."""
+        from dgov.semantic_settlement import (
+            IntegrationRiskRecord,
+            RiskLevel,
+            emit_integration_risk_scored,
+        )
+
+        record = IntegrationRiskRecord(
             task_slug="task-b",
             target_head_sha="abc",
             task_base_sha="def",
@@ -469,25 +471,46 @@ class TestSemanticSettlementEvents:
             claimed_files=(),
             changed_files=(),
         )
-        emit_integration_risk_scored(emit_event, session_root, "plan-b", record_b)
+        emit_integration_risk_scored(emit_event, session_root, "plan-b", record)
 
-        verdict_b = IntegrationCandidateVerdict(
+    def _emit_plan_b_candidate_event(self, session_root):
+        """Emit an integration_candidate_passed event for plan-b."""
+        from dgov.semantic_settlement import (
+            IntegrationCandidateVerdict,
+            emit_integration_candidate_passed,
+        )
+
+        verdict = IntegrationCandidateVerdict(
             task_slug="task-b",
             candidate_sha="candidate",
             target_head_sha="target",
             passed=True,
         )
-        emit_integration_candidate_passed(emit_event, session_root, "plan-b", verdict_b)
+        emit_integration_candidate_passed(emit_event, session_root, "plan-b", verdict)
 
-        # Filter by plan
+    def _assert_plan_a_filtered(self, events):
+        """Assert filtered plan-a events have correct count and fields."""
+        assert len(events) == 1
+        assert events[0]["plan_name"] == "plan-a"
+        assert events[0]["risk_level"] == "low"
+
+    def _assert_plan_b_filtered(self, events):
+        """Assert filtered plan-b events have correct count."""
+        assert len(events) == 2
+
+    def test_semantic_settlement_events_filter_by_plan_name(self, tmp_path):
+        """Semantic settlement events can be filtered by plan_name."""
+        session_root = _session(tmp_path)
+
+        self._emit_plan_a_risk_event(session_root)
+        self._emit_plan_b_risk_event(session_root)
+        self._emit_plan_b_candidate_event(session_root)
+
         plan_a_events = read_events(session_root, plan_name="plan-a")
         plan_b_events = read_events(session_root, plan_name="plan-b")
 
-        assert len(plan_a_events) == 1
-        assert plan_a_events[0]["plan_name"] == "plan-a"
-        assert plan_a_events[0]["risk_level"] == "low"
-
-        assert len(plan_b_events) == 2
+        self._assert_plan_a_filtered(plan_a_events)
+        self._assert_plan_b_filtered(plan_b_events)
 
     def test_semantic_settlement_events_filter_by_task_slug(self, tmp_path):
         """Semantic settlement events can be filtered by task_slug."""
@@ -517,8 +540,68 @@ class TestSemanticSettlementEvents:
         assert task_2_events[0]["candidate_sha"] == "candidate-task-2"
 
 
+# Test constants for settlement phase events
+TEST_PANE = "test-pane"
+TEST_PLAN_NAME = "test-plan"
+TEST_TASK_SLUG = "task-789"
+TEST_PHASE = "candidate_validation"
+TEST_STATUS = "success"
+TEST_DURATION_S = 2.5
+TEST_ERROR = None
+
+
 class TestSettlementPhaseEvents:
     """Tests for settlement phase telemetry events."""
+
+    def _emit_test_started_event(self, session_root):
+        """Emit a SettlementPhaseStarted event with test constants."""
+        from dgov.event_types import SettlementPhaseStarted
+
+        event = SettlementPhaseStarted(
+            pane=TEST_PANE,
+            plan_name=TEST_PLAN_NAME,
+            task_slug=TEST_TASK_SLUG,
+            phase=TEST_PHASE,
+        )
+        self._emit_serialized(session_root, event)
+
+    def _emit_test_completed_event(self, session_root):
+        """Emit a SettlementPhaseCompleted event with test constants."""
+        from dgov.event_types import SettlementPhaseCompleted
+
+        event = SettlementPhaseCompleted(
+            pane=TEST_PANE,
+            plan_name=TEST_PLAN_NAME,
+            task_slug=TEST_TASK_SLUG,
+            phase=TEST_PHASE,
+            status=TEST_STATUS,
+            duration_s=TEST_DURATION_S,
+            error=TEST_ERROR,
+        )
+        self._emit_serialized(session_root, event)
+
+    def _assert_started_event_matches_test_constants(self, event):
+        """Assert a deserialized SettlementPhaseStarted matches test constants."""
+        from dgov.event_types import SettlementPhaseStarted
+
+        assert isinstance(event, SettlementPhaseStarted)
+        assert event.pane == TEST_PANE
+        assert event.plan_name == TEST_PLAN_NAME
+        assert event.task_slug == TEST_TASK_SLUG
+        assert event.phase == TEST_PHASE
+
+    def _assert_completed_event_matches_test_constants(self, event):
+        """Assert a deserialized SettlementPhaseCompleted matches test constants."""
+        from dgov.event_types import SettlementPhaseCompleted
+
+        assert isinstance(event, SettlementPhaseCompleted)
+        assert event.pane == TEST_PANE
+        assert event.plan_name == TEST_PLAN_NAME
+        assert event.task_slug == TEST_TASK_SLUG
+        assert event.phase == TEST_PHASE
+        assert event.status == TEST_STATUS
+        assert event.duration_s == TEST_DURATION_S
+        assert event.error == TEST_ERROR
 
     def test_valid_events_contains_settlement_phase_events(self):
         """VALID_EVENTS should contain settlement phase event types."""
@@ -659,59 +742,50 @@ class TestSettlementPhaseEvents:
         assert len(task_x_events) == 2
         assert len(task_y_events) == 1
 
+    def _emit_serialized(self, session_root, event):
+        """Serialize and emit an event object."""
+        from dgov.event_types import serialize_event
+
+        event_name, pane, kwargs = serialize_event(event)
+        emit_event(session_root, event=event_name, pane=pane, **kwargs)
+
+    def _assert_started_event(self, event, expected):
+        """Assert a deserialized SettlementPhaseStarted has expected fields."""
+        from dgov.event_types import SettlementPhaseStarted
+
+        assert isinstance(event, SettlementPhaseStarted)
+        assert event.pane == expected["pane"]
+        assert event.plan_name == expected["plan_name"]
+        assert event.task_slug == expected["task_slug"]
+        assert event.phase == expected["phase"]
+
+    def _assert_completed_event(self, event, expected):
+        """Assert a deserialized SettlementPhaseCompleted has expected fields."""
+        from dgov.event_types import SettlementPhaseCompleted
+
+        assert isinstance(event, SettlementPhaseCompleted)
+        assert event.pane == expected["pane"]
+        assert event.plan_name == expected["plan_name"]
+        assert event.task_slug == expected["task_slug"]
+        assert event.phase == expected["phase"]
+        assert event.status == expected["status"]
+        assert event.duration_s == expected["duration_s"]
+        assert event.error == expected["error"]
+
     def test_settlement_phase_events_typed_deserialization(self, tmp_path):
         """Settlement phase events deserialize correctly via deserialize_event."""
-        from dgov.event_types import (
-            SettlementPhaseCompleted,
-            SettlementPhaseStarted,
-            deserialize_event,
-            serialize_event,
-        )
+        from dgov.event_types import deserialize_event
 
         session_root = _session(tmp_path)
 
-        # Emit started event
-        started = SettlementPhaseStarted(
-            pane="test-pane",
-            plan_name="test-plan",
-            task_slug="task-789",
-            phase="candidate_validation",
-        )
-        event_name, pane, kwargs = serialize_event(started)
-        emit_event(session_root, event=event_name, pane=pane, **kwargs)
-
-        # Emit completed event
-        completed = SettlementPhaseCompleted(
-            pane="test-pane",
-            plan_name="test-plan",
-            task_slug="task-789",
-            phase="candidate_validation",
-            status="success",
-            duration_s=2.5,
-            error=None,
-        )
-        event_name, pane, kwargs = serialize_event(completed)
-        emit_event(session_root, event=event_name, pane=pane, **kwargs)
+        # Emit phase events using test constants
+        self._emit_test_started_event(session_root)
+        self._emit_test_completed_event(session_root)
 
         # Read back and deserialize
         events = read_events(session_root)
         assert len(events) == 2
 
-        # First event should deserialize to SettlementPhaseStarted
-        deserialized_start = deserialize_event(events[0])
-        assert isinstance(deserialized_start, SettlementPhaseStarted)
-        assert deserialized_start.pane == "test-pane"
-        assert deserialized_start.plan_name == "test-plan"
-        assert deserialized_start.task_slug == "task-789"
-        assert deserialized_start.phase == "candidate_validation"
-
-        # Second event should deserialize to SettlementPhaseCompleted
-        deserialized_complete = deserialize_event(events[1])
-        assert isinstance(deserialized_complete, SettlementPhaseCompleted)
-        assert deserialized_complete.pane == "test-pane"
-        assert deserialized_complete.plan_name == "test-plan"
-        assert deserialized_complete.task_slug == "task-789"
-        assert deserialized_complete.phase == "candidate_validation"
-        assert deserialized_complete.status == "success"
-        assert deserialized_complete.duration_s == 2.5
-        assert deserialized_complete.error is None
+        # Verify deserialized events match test constants
+        self._assert_started_event_matches_test_constants(deserialize_event(events[0]))
+        self._assert_completed_event_matches_test_constants(deserialize_event(events[1]))

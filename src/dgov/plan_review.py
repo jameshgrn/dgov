@@ -18,9 +18,10 @@ import logging
 import re
 import subprocess
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from dgov.deploy_log import read as read_deploy_log
 from dgov.event_types import (
@@ -55,6 +56,32 @@ from dgov.repo_snapshot import format_structural_offender_report
 
 _log = logging.getLogger(__name__)
 _ITERATION_EXHAUSTED_RE = re.compile(r"Exceeded max iterations \((?P<budget>\d+)\)", re.IGNORECASE)
+_RUNS_LOG_HEADER_RE = re.compile(r"^\[([^\]]+)\]\s+(\S+)")
+_RUNS_LOG_STATUS_RE = re.compile(r"^\[[^\]]+\]\s+\S+\s+\([^)]+\)\s+—\s+(\w+)")
+_RUNS_LOG_SENTRUX_RE = re.compile(r"sentrux:\s*(\d+)\s*->\s*(\d+|None)")
+_RUNS_LOG_STATUS_ALIASES = {
+    "ok": "complete",
+    "warn": "degraded",
+    "fail": "failed",
+}
+_RUNS_LOG_RUN_STATUSES = frozenset({"complete", "degraded", "failed", "partial"})
+_RUNS_LOG_FIELD_KEYS = {
+    "branch_verification_status": "branch_verification_status",
+    "branch_verification_error": "branch_verification_error",
+    "sentrux_error": "sentrux_error",
+    "sentrux_offenders": "sentrux_offender_summary",
+}
+_VERDICT_HINTS = {
+    "empty_diff": (
+        "worker produced no changes — Orient/Edit/Verify is probably unclear, "
+        "or the edit target is already in the desired state"
+    ),
+    "lint_fail": "autofix couldn't fix — lint/format failure needs manual intervention",
+    "format_fail": "autofix couldn't fix — lint/format failure needs manual intervention",
+    "test_fail": "tests failed after the edit — check Verify commands against the plan",
+    "review_hook_fail": "a project review_hook rejected the commit — see error for which hook",
+}
+_WorkerLogHandler = Callable[[object, dict], None]
 
 
 @dataclass(frozen=True)
@@ -233,6 +260,13 @@ def synthesize_hint(
     nothing useful can be said so the formatter can fall back silently.
     """
     _ = iterations  # Legacy tool-call count; not a model-turn budget signal.
+    exhausted_hint = _iteration_exhaustion_hint(error, iteration_budget)
+    if exhausted_hint is not None:
+        return exhausted_hint
+    return _verdict_hint(verdict, error)
+
+
+def _iteration_exhaustion_hint(error: str | None, iteration_budget: int | None) -> str | None:
     if error:
         match = _ITERATION_EXHAUSTED_RE.search(error)
         if match:
@@ -246,30 +280,22 @@ def synthesize_hint(
                 f"worker hit the {iteration_budget}-iteration model-turn budget — task is "
                 "probably too large; split it or clarify the Edit section"
             )
+    return None
 
+
+def _verdict_hint(verdict: str | None, error: str | None) -> str | None:
     if verdict is None:
         return None
-
     v = verdict.lower()
     if v == "scope_violation":
-        # Error text often contains the offending path(s); surface a concrete action.
-        if error and ":" in error:
-            return (
-                "worker touched unclaimed files — add them to files.edit OR split into a new task"
-            )
-        return "worker touched unclaimed files — add them to files.edit"
-    if v == "empty_diff":
-        return (
-            "worker produced no changes — Orient/Edit/Verify is probably unclear, "
-            "or the edit target is already in the desired state"
-        )
-    if v in ("lint_fail", "format_fail"):
-        return "autofix couldn't fix — lint/format failure needs manual intervention"
-    if v == "test_fail":
-        return "tests failed after the edit — check Verify commands against the plan"
-    if v == "review_hook_fail":
-        return "a project review_hook rejected the commit — see error for which hook"
-    return None
+        return _scope_violation_hint(error)
+    return _VERDICT_HINTS.get(v)
+
+
+def _scope_violation_hint(error: str | None) -> str:
+    if error and ":" in error:
+        return "worker touched unclaimed files — add them to files.edit OR split into a new task"
+    return "worker touched unclaimed files — add them to files.edit"
 
 
 # ---------------------------------------------------------------------------
@@ -487,42 +513,53 @@ def _extract_path_mentions(text: str) -> tuple[str, ...]:
     """
     seen: set[str] = set()
     paths: list[str] = []
-    tokens = [t.strip() for t in _PATH_TOKEN_SPLIT_RE.split(text) if t.strip()]
+    tokens = _path_mention_tokens(text)
 
-    for i, raw in enumerate(tokens):
-        path = raw.strip().strip(".").strip("*_`<>")
-        if path.startswith("./"):
-            path = path[2:]
-        if not path or "." not in path:
-            continue
-        suffix = path.rsplit(".", 1)[1].lower()
-        if "/" not in path and suffix not in _ROOT_FILE_SUFFIXES:
+    for index, raw in enumerate(tokens):
+        path = _normalize_path_mention(raw)
+        if not _path_mention_is_candidate(path):
             continue
         if path in seen:
             continue
-
-        # Check for change-claim context in the preceding window.
-        start_idx = max(0, i - _CHANGE_CONTEXT_WINDOW)
-        preceding_tokens = tokens[start_idx:i]
-
-        # Check if any token is a change verb (case-insensitive).
-        has_change_verb = any(t.lower() in _CHANGE_VERBS for t in preceding_tokens)
-
-        # Check if the immediate context suggests non-change usage.
-        # If the token right before the path is a non-change word, suppress the change claim.
-        has_non_change_context = False
-        if preceding_tokens:
-            # Check the token immediately before the path.
-            immediate_prev = preceding_tokens[-1].lower()
-            if immediate_prev in _NON_CHANGE_CONTEXT_WORDS:
-                has_non_change_context = True
-
-        # Only include the path if it has a change verb and no non-change context override.
-        if has_change_verb and not has_non_change_context:
+        if _path_mention_has_change_context(tokens, index):
             seen.add(path)
             paths.append(path)
 
     return tuple(paths)
+
+
+def _path_mention_tokens(text: str) -> list[str]:
+    return [token.strip() for token in _PATH_TOKEN_SPLIT_RE.split(text) if token.strip()]
+
+
+def _normalize_path_mention(raw: str) -> str:
+    path = raw.strip().strip(".").strip("*_`<>")
+    return path[2:] if path.startswith("./") else path
+
+
+def _path_mention_is_candidate(path: str) -> bool:
+    if not path or "." not in path:
+        return False
+    suffix = path.rsplit(".", 1)[1].lower()
+    return "/" in path or suffix in _ROOT_FILE_SUFFIXES
+
+
+def _path_mention_has_change_context(tokens: list[str], index: int) -> bool:
+    preceding_tokens = _preceding_path_mention_tokens(tokens, index)
+    return _has_change_verb(preceding_tokens) and not _has_non_change_context(preceding_tokens)
+
+
+def _preceding_path_mention_tokens(tokens: list[str], index: int) -> list[str]:
+    start_idx = max(0, index - _CHANGE_CONTEXT_WINDOW)
+    return tokens[start_idx:index]
+
+
+def _has_change_verb(tokens: list[str]) -> bool:
+    return any(token.lower() in _CHANGE_VERBS for token in tokens)
+
+
+def _has_non_change_context(tokens: list[str]) -> bool:
+    return bool(tokens) and tokens[-1].lower() in _NON_CHANGE_CONTEXT_WORDS
 
 
 def _worker_note_mismatches(
@@ -647,52 +684,82 @@ def _apply_lifecycle_event(ev: _EventWithId, state: dict) -> None:
         return
 
 
+def _record_worker_thought(content: object, state: dict) -> None:
+    if isinstance(content, str):
+        state["thoughts"].append(content)
+
+
+def _record_worker_call(content: object, state: dict) -> None:
+    if isinstance(content, dict):
+        state["tool_calls"] = state["tool_calls"] + 1
+        state["activity"].append(content)
+
+
+def _record_worker_result(content: object, state: dict) -> None:
+    if isinstance(content, dict) and cast("dict[str, object]", content).get("status") == "failed":
+        state["failed_tool_calls"] = state["failed_tool_calls"] + 1
+
+
+def _record_worker_done(content: object, state: dict) -> None:
+    if isinstance(content, str):
+        state["done_summary"] = content
+
+
+def _record_worker_error(content: object, state: dict) -> None:
+    if isinstance(content, str) and state["error"] is None:
+        state["error"] = content
+
+
+_WORKER_LOG_HANDLERS: dict[str, _WorkerLogHandler] = {
+    "thought": _record_worker_thought,
+    "call": _record_worker_call,
+    "result": _record_worker_result,
+    "done": _record_worker_done,
+    "error": _record_worker_error,
+}
+
+
 def _apply_worker_log_event(ev: _EventWithId, state: dict) -> None:
     """Handle worker_log events: thoughts, calls, results, done, error."""
     if not isinstance(ev.event, WorkerLog):
         return
-    log_type = ev.event.log_type
-    content = ev.event.content
-    if log_type == "thought" and isinstance(content, str):
-        state["thoughts"].append(content)
-    elif log_type == "call" and isinstance(content, dict):
-        state["tool_calls"] = state["tool_calls"] + 1
-        state["activity"].append(content)
-    elif log_type == "result" and isinstance(content, dict):
-        if content.get("status") == "failed":
-            state["failed_tool_calls"] = state["failed_tool_calls"] + 1
-    elif log_type == "done" and isinstance(content, str):
-        state["done_summary"] = content
-    elif log_type == "error" and isinstance(content, str) and state["error"] is None:
-        state["error"] = content
+    handler = _WORKER_LOG_HANDLERS.get(ev.event.log_type)
+    if handler is not None:
+        handler(ev.event.content, state)
+
+
+def _apply_integration_risk_scored(event: IntegrationRiskScored, state: dict) -> None:
+    risk_level = event.risk_level
+    if isinstance(risk_level, str):
+        state["integration_risk_level"] = risk_level
+    if event.python_overlap_detected is True:
+        state["integration_risk_detected"] = True
+    if event.overlap_evidence and len(event.overlap_evidence) > 0:
+        state["integration_risk_detected"] = True
+
+
+def _apply_integration_failure(
+    event: IntegrationCandidateFailed | SemanticGateRejected,
+    state: dict,
+) -> None:
+    state["integration_candidate_passed"] = False
+    failure_class = event.failure_class
+    if isinstance(failure_class, str):
+        state["integration_failure_class"] = failure_class
 
 
 def _apply_semantic_settlement_event(ev: _EventWithId, state: dict) -> None:
     """Handle semantic settlement events: risk scoring, candidate validation, gates."""
     if isinstance(ev.event, IntegrationRiskScored):
-        # Capture risk level and overlap detection
-        risk_level = ev.event.risk_level
-        if isinstance(risk_level, str):
-            state["integration_risk_level"] = risk_level
-        # python_overlap_detected is boolean in payload
-        if ev.event.python_overlap_detected is True:
-            state["integration_risk_detected"] = True
-        # Also check for any overlap_evidence in the payload
-        overlap_evidence = ev.event.overlap_evidence
-        if overlap_evidence and len(overlap_evidence) > 0:
-            state["integration_risk_detected"] = True
+        _apply_integration_risk_scored(ev.event, state)
     elif isinstance(ev.event, IntegrationCandidatePassed):
         state["integration_candidate_passed"] = True
     elif isinstance(ev.event, (IntegrationCandidateFailed, SemanticGateRejected)):
-        state["integration_candidate_passed"] = False
-        fc = ev.event.failure_class
-        if isinstance(fc, str):
-            state["integration_failure_class"] = fc
+        _apply_integration_failure(ev.event, state)
 
 
-def _rollup_unit_events(unit_events: list[dict]) -> dict:
-    """Collapse a unit's events into a rollup dict used by _build_unit_review."""
-    state: dict = {
+def _initial_unit_rollup_state() -> dict:
+    return {
         "thoughts": [],
         "activity": [],
         "tool_calls": 0,
@@ -719,30 +786,29 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "phase_timings": [],
     }
 
-    typed_events = _convert_events(unit_events)
-    for ev in typed_events:
-        if isinstance(ev.event, WorkerLog):
-            _apply_worker_log_event(ev, state)
-        else:
-            _apply_lifecycle_event(ev, state)
-            _apply_semantic_settlement_event(ev, state)
 
-    duration_s: float | None = None
+def _apply_unit_event(ev: _EventWithId, state: dict) -> None:
+    if isinstance(ev.event, WorkerLog):
+        _apply_worker_log_event(ev, state)
+        return
+    _apply_lifecycle_event(ev, state)
+    _apply_semantic_settlement_event(ev, state)
+
+
+def _unit_duration(state: dict) -> float | None:
     dispatched_ts = state["dispatched_ts"]
     terminal_ts = state["terminal_ts"]
     if dispatched_ts and terminal_ts:
         start = _iso_to_epoch(dispatched_ts)
         end = _iso_to_epoch(terminal_ts)
         if start is not None and end is not None:
-            duration_s = max(0.0, end - start)
+            return max(0.0, end - start)
+    return None
 
-    # "ran_in_run" is True if the unit had any task activity in the current
-    # run window (dispatched, called tools, or reached a terminal event).
-    # Used by _build_unit_review to distinguish current-run outcomes from
-    # stale deploy-log records.
+
+def _unit_rollup_dict(state: dict, unit_events: list[dict]) -> dict:
     ran_in_run = bool(unit_events)
     tool_calls = state["tool_calls"]
-
     return {
         "thoughts": state["thoughts"],
         "activity": state["activity"],
@@ -753,7 +819,7 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "error": state["error"],
         "reject_verdict": state["reject_verdict"],
         "settlement_retries": state["settlement_retries"],
-        "duration_s": duration_s,
+        "duration_s": _unit_duration(state),
         "merge_sha": state["merge_sha"],
         "merged_in_run": state["merged_in_run"],
         "failed_in_run": state["failed_in_run"],
@@ -773,6 +839,14 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "phase": state["phase"],
         "phase_timings": tuple(state["phase_timings"]),
     }
+
+
+def _rollup_unit_events(unit_events: list[dict]) -> dict:
+    """Collapse a unit's events into a rollup dict used by _build_unit_review."""
+    state = _initial_unit_rollup_state()
+    for ev in _convert_events(unit_events):
+        _apply_unit_event(ev, state)
+    return _unit_rollup_dict(state, unit_events)
 
 
 # ---------------------------------------------------------------------------
@@ -882,6 +956,202 @@ def _compute_last_thought(thoughts: list[str], status: UnitStatus) -> str | None
     return None
 
 
+def _unit_commit_info(
+    status: UnitStatus,
+    deploy_record,
+    project_root: str,
+    done_summary: str | None,
+    include_full_diff: bool,
+) -> dict:
+    if status == "deployed" and deploy_record is not None:
+        return _fetch_deployed_commit_info(
+            project_root,
+            deploy_record,
+            done_summary,
+            include_full_diff,
+        )
+    return _empty_commit_info()
+
+
+def _failed_unit_hint(
+    status: UnitStatus,
+    task_data: dict,
+    rollup: dict,
+    iteration_budget: int | None,
+) -> str | None:
+    if status != "failed":
+        return None
+    unit_iteration_budget = task_data.get("iteration_budget", iteration_budget)
+    return synthesize_hint(
+        rollup["reject_verdict"],
+        rollup["error"],
+        rollup["iterations"],
+        unit_iteration_budget,
+    )
+
+
+def _derived_review_metrics(
+    task_data: dict,
+    unit_events: list[dict],
+    rollup: dict,
+    status: UnitStatus,
+    iteration_budget: int | None,
+) -> dict[str, Any]:
+    return {
+        "attempts": _compute_attempts(unit_events, rollup["settlement_retries"]),
+        "settlement": _settlement_result(
+            status,
+            rollup["settlement_retries"],
+            rollup["reject_verdict"],
+        ),
+        "self_corrections": _compute_self_corrections(rollup["failed_tool_calls"], status),
+        "last_thought": _compute_last_thought(rollup["thoughts"], status),
+        "hint": _failed_unit_hint(status, task_data, rollup, iteration_budget),
+    }
+
+
+def _compute_derived_review_state(
+    unit_id: str,
+    task_data: dict,
+    deploy_record,
+    unit_events: list[dict],
+    project_root: str,
+    include_full_diff: bool,
+    iteration_budget: int | None,
+) -> dict[str, Any]:
+    """Compute all derived review state from unit events and metadata.
+
+    Returns a dict containing: rollup, status, commit_info, attempts,
+    settlement, self_corrections, last_thought, hint.
+    """
+    rollup = _rollup_unit_events(unit_events)
+    status = _compute_unit_status(
+        ran_in_run=rollup["ran_in_run"],
+        merged_in_run=rollup["merged_in_run"],
+        failed_in_run=rollup["failed_in_run"],
+        has_error=bool(rollup["error"]),
+        has_reject_verdict=bool(rollup["reject_verdict"]),
+        deploy_record=deploy_record,
+    )
+    commit_info = _unit_commit_info(
+        status,
+        deploy_record,
+        project_root,
+        rollup["done_summary"],
+        include_full_diff,
+    )
+
+    return {
+        "rollup": rollup,
+        "status": status,
+        "commit_info": commit_info,
+        **_derived_review_metrics(
+            task_data,
+            unit_events,
+            rollup,
+            status,
+            iteration_budget,
+        ),
+    }
+
+
+def _build_core_review_fields(
+    unit_id: str, task_data: dict, rollup: dict, status: str
+) -> dict[str, Any]:
+    """Build core UnitReview fields from task data and rollup."""
+    return {
+        "unit": unit_id,
+        "summary": task_data.get("summary", ""),
+        "status": status,
+        "phase": rollup["phase"] if status == "active" else None,
+        "phase_timings": rollup["phase_timings"],
+        "agent": task_data.get("agent", ""),
+        "duration_s": rollup["duration_s"],
+        "iterations": rollup["iterations"],
+        "tool_calls": rollup["tool_calls"],
+        "done_summary": rollup["done_summary"],
+        "thoughts": tuple(rollup["thoughts"]),
+        "activity": tuple(rollup["activity"]),
+        "prompt_tokens": rollup["prompt_tokens"],
+        "completion_tokens": rollup["completion_tokens"],
+        "fork_depth": rollup["fork_depth"],
+        "self_review_outcome": rollup["self_review_outcome"],
+    }
+
+
+def _build_commit_fields(commit_info: dict) -> dict[str, Any]:
+    """Build commit-related UnitReview fields from commit_info."""
+    return {
+        "commit_sha": commit_info["commit_sha"],
+        "commit_message": commit_info["commit_message"],
+        "commit_ts": commit_info["commit_ts"],
+        "diff_stat": commit_info["diff_stat"],
+        "landed_files": commit_info["landed_files"],
+        "full_diff": commit_info["full_diff"],
+        "worker_note_mismatches": commit_info["worker_note_mismatches"],
+    }
+
+
+def _build_failure_fields(
+    rollup: dict, last_thought: str | None, hint: str | None
+) -> dict[str, Any]:
+    """Build failure-related UnitReview fields."""
+    return {
+        "reject_verdict": rollup["reject_verdict"],
+        "error": rollup["error"],
+        "last_thought": last_thought,
+        "hint": hint,
+    }
+
+
+def _build_integration_fields(rollup: dict) -> dict[str, Any]:
+    """Build integration risk-related UnitReview fields."""
+    return {
+        "integration_risk_level": rollup["integration_risk_level"],
+        "integration_risk_detected": rollup["integration_risk_detected"],
+        "integration_candidate_passed": rollup["integration_candidate_passed"],
+        "integration_failure_class": rollup["integration_failure_class"],
+    }
+
+
+def _build_unit_review_kwargs(
+    unit_id: str,
+    task_data: dict,
+    deploy_record,
+    unit_events: list[dict],
+    project_root: str,
+    include_full_diff: bool,
+    iteration_budget: int | None,
+) -> dict[str, Any]:
+    """Build kwargs dict for UnitReview constructor from unit events and metadata.
+
+    Pure data builder: computes all derived values (status, commit info, attempts,
+    settlement, etc.) and returns them as a dict for UnitReview construction.
+    """
+    derived = _compute_derived_review_state(
+        unit_id,
+        task_data,
+        deploy_record,
+        unit_events,
+        project_root,
+        include_full_diff,
+        iteration_budget,
+    )
+    rollup = derived["rollup"]
+    status = derived["status"]
+    commit_info = derived["commit_info"]
+
+    return {
+        **_build_core_review_fields(unit_id, task_data, rollup, status),
+        **_build_commit_fields(commit_info),
+        "attempts": derived["attempts"],
+        "settlement": derived["settlement"],
+        "self_corrections": derived["self_corrections"],
+        **_build_failure_fields(rollup, derived["last_thought"], derived["hint"]),
+        **_build_integration_fields(rollup),
+    }
+
+
 def _build_unit_review(
     unit_id: str,
     task_data: dict,
@@ -891,79 +1161,17 @@ def _build_unit_review(
     include_full_diff: bool,
     iteration_budget: int | None,
 ) -> UnitReview:
-    rollup = _rollup_unit_events(unit_events)
-
-    # Determine unit status from rollup state and historical deploy record
-    status = _compute_unit_status(
-        ran_in_run=rollup["ran_in_run"],
-        merged_in_run=rollup["merged_in_run"],
-        failed_in_run=rollup["failed_in_run"],
-        has_error=bool(rollup["error"]),
-        has_reject_verdict=bool(rollup["reject_verdict"]),
-        deploy_record=deploy_record,
+    """Build a UnitReview from unit events and metadata."""
+    kwargs = _build_unit_review_kwargs(
+        unit_id,
+        task_data,
+        deploy_record,
+        unit_events,
+        project_root,
+        include_full_diff,
+        iteration_budget,
     )
-
-    # Fetch commit info for deployed units, or use empty placeholders
-    if status == "deployed" and deploy_record is not None:
-        commit_info = _fetch_deployed_commit_info(
-            project_root, deploy_record, rollup["done_summary"], include_full_diff
-        )
-    else:
-        commit_info = _empty_commit_info()
-
-    # Compute derived metrics
-    attempts = _compute_attempts(unit_events, rollup["settlement_retries"])
-    settlement = _settlement_result(status, rollup["settlement_retries"], rollup["reject_verdict"])
-    self_corrections = _compute_self_corrections(rollup["failed_tool_calls"], status)
-    last_thought = _compute_last_thought(rollup["thoughts"], status)
-
-    # Synthesize hint only for failed units
-    hint = None
-    if status == "failed":
-        unit_iteration_budget = task_data.get("iteration_budget", iteration_budget)
-        hint = synthesize_hint(
-            rollup["reject_verdict"],
-            rollup["error"],
-            rollup["iterations"],
-            unit_iteration_budget,
-        )
-
-    return UnitReview(
-        unit=unit_id,
-        summary=task_data.get("summary", ""),
-        status=status,
-        phase=rollup["phase"] if status == "active" else None,
-        phase_timings=rollup["phase_timings"],
-        agent=task_data.get("agent", ""),
-        commit_sha=commit_info["commit_sha"],
-        commit_message=commit_info["commit_message"],
-        commit_ts=commit_info["commit_ts"],
-        diff_stat=commit_info["diff_stat"],
-        landed_files=commit_info["landed_files"],
-        full_diff=commit_info["full_diff"],
-        duration_s=rollup["duration_s"],
-        iterations=rollup["iterations"],
-        tool_calls=rollup["tool_calls"],
-        attempts=attempts,
-        settlement=settlement,
-        done_summary=rollup["done_summary"],
-        worker_note_mismatches=commit_info["worker_note_mismatches"],
-        thoughts=tuple(rollup["thoughts"]),
-        activity=tuple(rollup["activity"]),
-        self_corrections=self_corrections,
-        prompt_tokens=rollup["prompt_tokens"],
-        completion_tokens=rollup["completion_tokens"],
-        fork_depth=rollup["fork_depth"],
-        self_review_outcome=rollup["self_review_outcome"],
-        reject_verdict=rollup["reject_verdict"],
-        error=rollup["error"],
-        last_thought=last_thought,
-        hint=hint,
-        integration_risk_level=rollup["integration_risk_level"],
-        integration_risk_detected=rollup["integration_risk_detected"],
-        integration_candidate_passed=rollup["integration_candidate_passed"],
-        integration_failure_class=rollup["integration_failure_class"],
-    )
+    return UnitReview(**kwargs)
 
 
 def _fetch_worker_events_for_unit(
@@ -1036,6 +1244,45 @@ def _format_structural_offenders(offenders: object) -> str | None:
     return ", ".join(f"{key}: {value}" for key, value in normalized.items())
 
 
+def _latest_run_completed_event(
+    typed_events: list[_EventWithId],
+    run_start_id: int,
+) -> RunCompleted | None:
+    latest: _EventWithId | None = None
+    for ev in typed_events:
+        if (
+            isinstance(ev.event, RunCompleted)
+            and ev.id > run_start_id
+            and (latest is None or ev.id > latest.id)
+        ):
+            latest = ev
+    return latest.event if latest is not None and isinstance(latest.event, RunCompleted) else None
+
+
+def _run_completed_sentrux_payload(event: RunCompleted) -> dict[str, Any]:
+    sentrux_raw = event.sentrux
+    if isinstance(sentrux_raw, dict):
+        return sentrux_raw
+    if isinstance(sentrux_raw, str):
+        with contextlib.suppress(json.JSONDecodeError):
+            payload = json.loads(sentrux_raw)
+            return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def _branch_verification_fields(sentrux: dict[str, Any]) -> dict[str, Any]:
+    branch = sentrux.get("branch_verification")
+    if not isinstance(branch, dict):
+        return {
+            "branch_verification_status": None,
+            "branch_verification_error": None,
+        }
+    return {
+        "branch_verification_status": branch.get("status"),
+        "branch_verification_error": branch.get("error"),
+    }
+
+
 def _extract_run_completed_fields(
     typed_events: list[_EventWithId], run_start_id: int
 ) -> dict[str, Any]:
@@ -1044,49 +1291,22 @@ def _extract_run_completed_fields(
     Returns a dict with keys: run_status, sentrux_degradation, sentrux_quality_before,
     sentrux_quality_after, sentrux_error, sentrux_offender_summary.
     """
-    # Find the latest run_completed event with id > run_start_id
-    latest_run_completed: _EventWithId | None = None
-    for ev in typed_events:
-        if (
-            isinstance(ev.event, RunCompleted)
-            and ev.id > run_start_id
-            and (latest_run_completed is None or ev.id > latest_run_completed.id)
-        ):
-            latest_run_completed = ev
-
-    if latest_run_completed is None:
+    event = _latest_run_completed_event(typed_events, run_start_id)
+    if event is None:
         return {}
 
-    # Type narrowing: we only add RunCompleted events to latest_run_completed
-    event = latest_run_completed.event
-    assert isinstance(event, RunCompleted), "Expected RunCompleted event"
-    # sentrux may be a JSON string or already a dict (from raw events)
-    sentrux_raw = event.sentrux
-    sentrux: dict[str, Any] = {}
-    if isinstance(sentrux_raw, dict):
-        sentrux = sentrux_raw
-    elif isinstance(sentrux_raw, str):
-        with contextlib.suppress(json.JSONDecodeError):
-            sentrux = json.loads(sentrux_raw)
-    offenders = sentrux.get("structural_offenders") if isinstance(sentrux, dict) else None
+    sentrux = _run_completed_sentrux_payload(event)
+    offenders = sentrux.get("structural_offenders")
     offender_summary = _format_structural_offenders(offenders)
-    branch = sentrux.get("branch_verification") if isinstance(sentrux, dict) else None
-    branch_status = branch.get("status") if isinstance(branch, dict) else None
-    branch_error = branch.get("error") if isinstance(branch, dict) else None
 
     return {
         "run_status": event.run_status,
-        "sentrux_degradation": sentrux.get("degradation") if isinstance(sentrux, dict) else None,
-        "sentrux_quality_before": sentrux.get("quality_before")
-        if isinstance(sentrux, dict)
-        else None,
-        "sentrux_quality_after": sentrux.get("quality_after")
-        if isinstance(sentrux, dict)
-        else None,
-        "sentrux_error": sentrux.get("error") if isinstance(sentrux, dict) else None,
+        "sentrux_degradation": sentrux.get("degradation"),
+        "sentrux_quality_before": sentrux.get("quality_before"),
+        "sentrux_quality_after": sentrux.get("quality_after"),
+        "sentrux_error": sentrux.get("error"),
         "sentrux_offender_summary": offender_summary,
-        "branch_verification_status": branch_status,
-        "branch_verification_error": branch_error,
+        **_branch_verification_fields(sentrux),
     }
 
 
@@ -1099,78 +1319,84 @@ def _parse_runs_log_block(log_text: str, plan_name: str) -> dict[str, Any]:
     - sentrux_error: error messages
     - sentrux_offenders: offender summary string
     """
-    lines = log_text.splitlines()
-    # Find the latest block header matching this plan name
-    block_start = -1
-    for i, line in enumerate(lines):
-        match = re.match(r"^\[([^\]]+)\]\s+(\S+)", line)
-        if match and match.group(2) == plan_name:
-            block_start = i
-
-    if block_start == -1:
+    block_lines = _latest_runs_log_block(log_text.splitlines(), plan_name)
+    if not block_lines:
         return {}
 
-    # Collect all lines in this block (until next block or EOF)
-    block_lines: list[str] = []
-    for i in range(block_start, len(lines)):
-        line = lines[i]
-        # Next block starts with timestamp in brackets at line start
-        if i > block_start and re.match(r"^\[([^\]]+)\]\s+(\S+)", line):
-            break
-        block_lines.append(line)
-
-    result: dict[str, object] = {}
-    header_match = re.match(r"^\[[^\]]+\]\s+\S+\s+\([^)]+\)\s+—\s+(\w+)", block_lines[0])
-    if header_match:
-        header_status = header_match.group(1)
-        if header_status == "ok":
-            result["run_status"] = "complete"
-        elif header_status == "warn":
-            result["run_status"] = "degraded"
-        elif header_status == "fail":
-            result["run_status"] = "failed"
-        elif header_status in {"complete", "degraded", "failed", "partial"}:
-            result["run_status"] = header_status
-    offenders_str: str | None = None
-
-    for line in block_lines:
-        # Parse "sentrux: X -> Y" for quality values
-        sentrux_match = re.search(r"sentrux:\s*(\d+)\s*->\s*(\d+|None)", line)
-        if sentrux_match:
-            try:
-                result["sentrux_quality_before"] = int(sentrux_match.group(1))
-                after_str = sentrux_match.group(2)
-                if after_str != "None":
-                    result["sentrux_quality_after"] = int(after_str)
-            except (ValueError, TypeError):
-                pass
-
-        # Parse "sentrux_status: degradation"
-        if "sentrux_status: degradation" in line:
-            result["sentrux_degradation"] = True
-
-        branch_status_match = re.match(r"\s+branch_verification_status:\s*(.+)", line)
-        if branch_status_match:
-            result["branch_verification_status"] = branch_status_match.group(1).strip()
-
-        branch_error_match = re.match(r"\s+branch_verification_error:\s*(.+)", line)
-        if branch_error_match:
-            result["branch_verification_error"] = branch_error_match.group(1).strip()
-
-        # Parse "sentrux_error: ..."
-        error_match = re.match(r"\s+sentrux_error:\s*(.+)", line)
-        if error_match:
-            result["sentrux_error"] = error_match.group(1).strip()
-
-        # Parse "sentrux_offenders: ..."
-        offenders_match = re.match(r"\s+sentrux_offenders:\s*(.+)", line)
-        if offenders_match:
-            offenders_str = offenders_match.group(1).strip()
-
-    if offenders_str:
-        result["sentrux_offender_summary"] = offenders_str
-
+    result = _parse_runs_log_header(block_lines[0])
+    for line in block_lines[1:]:
+        result.update(_parse_runs_log_field(line))
     return result
+
+
+def _latest_runs_log_block(lines: list[str], plan_name: str) -> list[str]:
+    start = _latest_runs_log_block_start(lines, plan_name)
+    if start is None:
+        return []
+    end = _runs_log_block_end(lines, start)
+    return lines[start:end]
+
+
+def _latest_runs_log_block_start(lines: list[str], plan_name: str) -> int | None:
+    block_start: int | None = None
+    for index, line in enumerate(lines):
+        if _runs_log_header_plan(line) == plan_name:
+            block_start = index
+    return block_start
+
+
+def _runs_log_header_plan(line: str) -> str | None:
+    match = _RUNS_LOG_HEADER_RE.match(line)
+    return match.group(2) if match else None
+
+
+def _runs_log_block_end(lines: list[str], start: int) -> int:
+    for index in range(start + 1, len(lines)):
+        if _runs_log_header_plan(lines[index]) is not None:
+            return index
+    return len(lines)
+
+
+def _parse_runs_log_header(line: str) -> dict[str, Any]:
+    match = _RUNS_LOG_STATUS_RE.match(line)
+    if not match:
+        return {}
+    status = _normalize_runs_log_status(match.group(1))
+    return {"run_status": status} if status else {}
+
+
+def _normalize_runs_log_status(status: str) -> str | None:
+    normalized = _RUNS_LOG_STATUS_ALIASES.get(status, status)
+    if normalized in _RUNS_LOG_RUN_STATUSES:
+        return normalized
+    return None
+
+
+def _parse_runs_log_field(line: str) -> dict[str, Any]:
+    result = _parse_sentrux_quality_line(line)
+    if "sentrux_status: degradation" in line:
+        result["sentrux_degradation"] = True
+    for source_key, result_key in _RUNS_LOG_FIELD_KEYS.items():
+        value = _parse_indented_runs_log_value(line, source_key)
+        if value is not None:
+            result[result_key] = value
+    return result
+
+
+def _parse_sentrux_quality_line(line: str) -> dict[str, Any]:
+    match = _RUNS_LOG_SENTRUX_RE.search(line)
+    if not match:
+        return {}
+    result: dict[str, Any] = {"sentrux_quality_before": int(match.group(1))}
+    after_value = match.group(2)
+    if after_value != "None":
+        result["sentrux_quality_after"] = int(after_value)
+    return result
+
+
+def _parse_indented_runs_log_value(line: str, key: str) -> str | None:
+    match = re.match(rf"\s+{re.escape(key)}:\s*(.+)", line)
+    return match.group(1).strip() if match else None
 
 
 def _load_runs_log_fields(project_root: str, plan_name: str) -> dict[str, Any]:
@@ -1183,6 +1409,103 @@ def _load_runs_log_fields(project_root: str, plan_name: str) -> dict[str, Any]:
         return _parse_runs_log_block(log_text, plan_name)
     except (OSError, UnicodeDecodeError):
         return {}
+
+
+def _unknown_plan_review(plan_dir: Path | None) -> PlanReview:
+    return PlanReview(
+        plan_name="(unknown)",
+        source_dir=plan_dir,
+        last_run_ts=None,
+        last_run_duration_s=None,
+    )
+
+
+def _filtered_plan_units(compiled_path: Path, only: str | None) -> dict[str, dict]:
+    tasks = _load_plan_units(compiled_path)
+    if only is None:
+        return tasks
+    return {uid: data for uid, data in tasks.items() if uid == only}
+
+
+def _events_after_run_start(plan_events: list[dict], run_start_id: int) -> list[dict]:
+    return [ev for ev in plan_events if ev.get("id", 0) > run_start_id]
+
+
+def _unit_lifecycle_events(scoped_plan_events: list[dict], unit_id: str) -> list[dict]:
+    return [
+        ev
+        for ev in scoped_plan_events
+        if ev.get("task_slug") == unit_id and ev.get("event") != "worker_log"
+    ]
+
+
+def _build_unit_reviews_for_plan(
+    *,
+    project_root: str,
+    plan_name: str,
+    tasks: dict[str, dict],
+    scoped_plan_events: list[dict],
+    run_start_id: int,
+    include_full_diff: bool,
+    iteration_budget: int | None,
+) -> list[UnitReview]:
+    deploy_records = {r.unit: r for r in read_deploy_log(project_root, plan_name)}
+    unit_reviews: list[UnitReview] = []
+    for unit_id in sorted(tasks):
+        lifecycle = _unit_lifecycle_events(scoped_plan_events, unit_id)
+        worker_events = _fetch_worker_events_for_unit(
+            project_root, plan_name, unit_id, lifecycle, run_start_id
+        )
+        unit_reviews.append(
+            _build_unit_review(
+                unit_id=unit_id,
+                task_data=tasks[unit_id],
+                deploy_record=deploy_records.get(unit_id),
+                unit_events=_combine_unit_events(lifecycle, worker_events),
+                project_root=project_root,
+                include_full_diff=include_full_diff,
+                iteration_budget=iteration_budget,
+            )
+        )
+    return unit_reviews
+
+
+def _load_review_run_fields(
+    project_root: str,
+    plan_name: str,
+    typed_plan_events: list[_EventWithId],
+    run_start_id: int,
+) -> dict[str, Any]:
+    run_fields = _extract_run_completed_fields(typed_plan_events, run_start_id)
+    if run_fields:
+        return run_fields
+    return _load_runs_log_fields(project_root, plan_name)
+
+
+def _plan_review_from_fields(
+    *,
+    plan_name: str,
+    plan_dir: Path | None,
+    last_run_ts: str | None,
+    run_duration: float | None,
+    unit_reviews: list[UnitReview],
+    run_fields: dict[str, Any],
+) -> PlanReview:
+    return PlanReview(
+        plan_name=plan_name,
+        source_dir=plan_dir,
+        last_run_ts=last_run_ts,
+        last_run_duration_s=run_duration,
+        units=unit_reviews,
+        run_status=run_fields.get("run_status"),
+        sentrux_degradation=run_fields.get("sentrux_degradation"),
+        sentrux_quality_before=run_fields.get("sentrux_quality_before"),
+        sentrux_quality_after=run_fields.get("sentrux_quality_after"),
+        sentrux_error=run_fields.get("sentrux_error"),
+        sentrux_offender_summary=run_fields.get("sentrux_offender_summary"),
+        branch_verification_status=run_fields.get("branch_verification_status"),
+        branch_verification_error=run_fields.get("branch_verification_error"),
+    )
 
 
 def load_review(
@@ -1202,77 +1525,31 @@ def load_review(
     """
     plan_name = _plan_name_from_compiled(compiled_path)
     if plan_name is None:
-        return PlanReview(
-            plan_name="(unknown)",
-            source_dir=plan_dir,
-            last_run_ts=None,
-            last_run_duration_s=None,
-        )
+        return _unknown_plan_review(plan_dir)
 
-    tasks = _load_plan_units(compiled_path)
-    if only is not None:
-        tasks = {uid: data for uid, data in tasks.items() if uid == only}
-
-    # Pull all events for this plan in one shot, then split per unit in-memory.
-    # Worker_log events do not carry plan_name, so we fetch those per task_slug.
+    tasks = _filtered_plan_units(compiled_path, only)
     plan_events = read_events(project_root, plan_name=plan_name)
     typed_plan_events = _convert_events(plan_events)
     run_start_id = _find_run_start_id(typed_plan_events, plan_name)
-
-    # Lifecycle events scoped to this run only.
-    scoped_plan_events = [ev for ev in plan_events if ev.get("id", 0) > run_start_id]
-
-    deploy_records = {r.unit: r for r in read_deploy_log(project_root, plan_name)}
-
-    unit_reviews: list[UnitReview] = []
-    for uid in sorted(tasks):
-        # Build lifecycle events for this unit from plan-scoped events.
-        lifecycle = [
-            ev
-            for ev in scoped_plan_events
-            if ev.get("task_slug") == uid and ev.get("event") != "worker_log"
-        ]
-        # Fetch and combine with worker log events.
-        worker_events = _fetch_worker_events_for_unit(
-            project_root, plan_name, uid, lifecycle, run_start_id
-        )
-        unit_events = _combine_unit_events(lifecycle, worker_events)
-
-        unit_reviews.append(
-            _build_unit_review(
-                unit_id=uid,
-                task_data=tasks[uid],
-                deploy_record=deploy_records.get(uid),
-                unit_events=unit_events,
-                project_root=project_root,
-                include_full_diff=include_full_diff,
-                iteration_budget=iteration_budget,
-            )
-        )
-
-    # Last-run envelope: extract timestamp and aggregate unit durations.
+    unit_reviews = _build_unit_reviews_for_plan(
+        project_root=project_root,
+        plan_name=plan_name,
+        tasks=tasks,
+        scoped_plan_events=_events_after_run_start(plan_events, run_start_id),
+        run_start_id=run_start_id,
+        include_full_diff=include_full_diff,
+        iteration_budget=iteration_budget,
+    )
     last_run_ts = _extract_run_start_ts(typed_plan_events, run_start_id)
     run_duration = _compute_run_duration(unit_reviews)
-
-    # Extract run-level fields from structured events (preferred) or runs.log fallback
-    run_fields = _extract_run_completed_fields(typed_plan_events, run_start_id)
-    if not run_fields:
-        run_fields = _load_runs_log_fields(project_root, plan_name)
-
-    return PlanReview(
+    run_fields = _load_review_run_fields(project_root, plan_name, typed_plan_events, run_start_id)
+    return _plan_review_from_fields(
         plan_name=plan_name,
-        source_dir=plan_dir,
+        plan_dir=plan_dir,
         last_run_ts=last_run_ts,
-        last_run_duration_s=run_duration,
-        units=unit_reviews,
-        run_status=run_fields.get("run_status"),
-        sentrux_degradation=run_fields.get("sentrux_degradation"),
-        sentrux_quality_before=run_fields.get("sentrux_quality_before"),
-        sentrux_quality_after=run_fields.get("sentrux_quality_after"),
-        sentrux_error=run_fields.get("sentrux_error"),
-        sentrux_offender_summary=run_fields.get("sentrux_offender_summary"),
-        branch_verification_status=run_fields.get("branch_verification_status"),
-        branch_verification_error=run_fields.get("branch_verification_error"),
+        run_duration=run_duration,
+        unit_reviews=unit_reviews,
+        run_fields=run_fields,
     )
 
 

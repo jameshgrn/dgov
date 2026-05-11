@@ -7,6 +7,7 @@ Pillar #7: Zero Ambient Authority - Sandboxed execution in worktree.
 from __future__ import annotations
 
 import ast
+import copy
 import fnmatch
 import re
 import shlex
@@ -43,26 +44,46 @@ def _wrapped_verify_tool(tokens: list[str]) -> str | None:
     _, core = _unwrap_shell_command(tokens)
     if not core:
         return None
+    return _pytest_verify_tool(core) or _ruff_verify_tool(core) or _ty_verify_tool(core)
 
+
+def _pytest_verify_tool(core: list[str]) -> str | None:
     if core[0] == "pytest":
         return "pytest"
-    if core[:3] in (["python", "-m", "pytest"], ["python3", "-m", "pytest"]):
+    if _python_module_command(core, "pytest"):
         return "pytest"
+    return None
+
+
+def _ruff_verify_tool(core: list[str]) -> str | None:
     if len(core) >= 2 and core[0] == "ruff" and core[1] == "check":
         if "--fix" in core:
             return "ruff_check_fix"
         return "ruff_check"
     if len(core) >= 2 and core[0] == "ruff" and core[1] == "format":
         return "ruff_format"
+    return None
+
+
+def _ty_verify_tool(core: list[str]) -> str | None:
     if len(core) >= 2 and core[0] == "ty" and core[1] == "check":
         return "ty_check"
-    if (
-        core[:3] in (["python", "-m", "ty"], ["python3", "-m", "ty"])
-        and len(core) >= 4
-        and core[3] == "check"
-    ):
+    if _python_module_command(core, "ty") and len(core) >= 4 and core[3] == "check":
         return "ty_check"
     return None
+
+
+def _python_module_command(core: list[str], module: str) -> bool:
+    return core[:3] in (["python", "-m", module], ["python3", "-m", module])
+
+
+_VERIFY_TOOL_REJECTION_MESSAGES = {
+    "pytest": "Error: run_bash policy requires run_tests() for pytest invocations.",
+    "ruff_check_fix": "Error: run_bash policy requires lint_fix() for 'ruff check --fix'.",
+    "ruff_check": "Error: run_bash policy requires lint_check() for 'ruff check'.",
+    "ruff_format": "Error: run_bash policy requires format_file() for 'ruff format'.",
+    "ty_check": "Error: run_bash policy requires type_check() for 'ty check'.",
+}
 
 
 def _tool_bin_dirs(names: tuple[str, ...]) -> list[str]:
@@ -179,30 +200,32 @@ class AtomicTools:
             return None
 
         normalized = cmd.strip()
-        lowered = normalized.lower()
-        for denied in policy.deny_shell_commands:
-            if lowered.startswith(denied.lower()):
-                return (
-                    f"Error: run_bash policy rejected '{cmd}'. "
-                    f"Denied shell command prefix: {denied!r}."
-                )
+        static_error = self._reject_static_shell_policy(cmd, normalized)
+        if static_error is not None:
+            return static_error
+        tokens, parse_error = self._shell_tokens(normalized)
+        if parse_error is not None:
+            return parse_error
+        return self._reject_parsed_shell_command(tokens)
 
-        if policy.deny_shell_file_mutations:
-            if re.search(r"(^|[;&|]\s*)(rm|mv|cp|touch|mkdir)\b", normalized):
-                return (
-                    "Error: run_bash policy rejected file mutation shell command. "
-                    "Use write_file/edit_file/apply_patch/revert_file instead."
-                )
-            if re.search(r"(>?>|<<|tee\b)", normalized):
-                return (
-                    "Error: run_bash policy rejected shell redirection into repo files. "
-                    "Use write_file/edit_file/apply_patch instead."
-                )
+    def _reject_static_shell_policy(self, cmd: str, normalized: str) -> str | None:
+        prefix_error = self._reject_denied_shell_prefix(cmd, normalized)
+        if prefix_error is not None:
+            return prefix_error
 
+        if self.config.tool_policy.deny_shell_file_mutations:
+            mutation_error = self._reject_file_mutating_shell(normalized)
+            if mutation_error is not None:
+                return mutation_error
+        return None
+
+    def _shell_tokens(self, normalized: str) -> tuple[list[str], str | None]:
         try:
-            tokens = shlex.split(normalized)
+            return shlex.split(normalized), None
         except ValueError as exc:
-            return f"Error: Invalid shell command: {exc}"
+            return [], f"Error: Invalid shell command: {exc}"
+
+    def _reject_parsed_shell_command(self, tokens: list[str]) -> str | None:
         if not tokens:
             return "Error: Empty shell command."
 
@@ -211,28 +234,51 @@ class AtomicTools:
             return "Error: Invalid 'uv run' command with no subcommand."
 
         tool = core[0]
-
+        policy = self.config.tool_policy
         if policy.require_wrapped_verify_tools:
-            verify_tool = _wrapped_verify_tool(tokens)
-            if verify_tool == "pytest":
-                return "Error: run_bash policy requires run_tests() for pytest invocations."
-            if verify_tool == "ruff_check_fix":
-                return "Error: run_bash policy requires lint_fix() for 'ruff check --fix'."
-            if verify_tool == "ruff_check":
-                return "Error: run_bash policy requires lint_check() for 'ruff check'."
-            if verify_tool == "ruff_format":
-                return "Error: run_bash policy requires format_file() for 'ruff format'."
-            if verify_tool == "ty_check":
-                return "Error: run_bash policy requires type_check() for 'ty check'."
+            verify_error = self._reject_wrapped_verify_tool(tokens)
+            if verify_error is not None:
+                return verify_error
 
-        if (
-            policy.require_uv_run
-            and tool in {"python", "python3", "pytest", "ruff", "ty"}
-            and not uv_wrapped
-        ):
-            return f"Error: run_bash policy requires 'uv run' for Python command '{tool}'."
+        if policy.require_uv_run and self._requires_uv_run(tool, uv_wrapped):
+            return self._uv_run_required_error(tool)
 
         return None
+
+    def _reject_denied_shell_prefix(self, cmd: str, normalized: str) -> str | None:
+        lowered = normalized.lower()
+        for denied in self.config.tool_policy.deny_shell_commands:
+            if lowered.startswith(denied.lower()):
+                return (
+                    f"Error: run_bash policy rejected '{cmd}'. "
+                    f"Denied shell command prefix: {denied!r}."
+                )
+        return None
+
+    def _reject_file_mutating_shell(self, normalized: str) -> str | None:
+        if re.search(r"(^|[;&|]\s*)(rm|mv|cp|touch|mkdir)\b", normalized):
+            return (
+                "Error: run_bash policy rejected file mutation shell command. "
+                "Use write_file/edit_file/apply_patch/revert_file instead."
+            )
+        if re.search(r"(>?>|<<|tee\b)", normalized):
+            return (
+                "Error: run_bash policy rejected shell redirection into repo files. "
+                "Use write_file/edit_file/apply_patch instead."
+            )
+        return None
+
+    def _reject_wrapped_verify_tool(self, tokens: list[str]) -> str | None:
+        verify_tool = _wrapped_verify_tool(tokens)
+        if verify_tool is None:
+            return None
+        return _VERIFY_TOOL_REJECTION_MESSAGES[verify_tool]
+
+    def _requires_uv_run(self, tool: str, uv_wrapped: bool) -> bool:
+        return tool in {"python", "python3", "pytest", "ruff", "ty"} and not uv_wrapped
+
+    def _uv_run_required_error(self, tool: str) -> str:
+        return f"Error: run_bash policy requires 'uv run' for Python command '{tool}'."
 
     # -- Core tools --
 
@@ -293,40 +339,61 @@ class AtomicTools:
             return f"Error: {path} does not exist."
 
         original = target.read_text().splitlines(keepends=True)
-        result: list[str] = []
-        orig_idx = 0
-
-        for line in patch.splitlines(keepends=True):
-            # Skip diff headers
-            if line.startswith(("---", "+++", "diff ")):
-                continue
-            if line.startswith("@@"):
-                # Parse hunk header: @@ -start,count +start,count @@
-                m = re.match(r"@@ -(\d+)", line)
-                if not m:
-                    return f"Error: Malformed hunk header: {line.rstrip()}"
-                hunk_start = int(m.group(1)) - 1  # 0-indexed
-                # Copy lines before this hunk
-                result.extend(original[orig_idx:hunk_start])
-                orig_idx = hunk_start
-                continue
-            if line.startswith("-"):
-                # Remove line — advance past it in original
-                if orig_idx < len(original):
-                    orig_idx += 1
-            elif line.startswith("+"):
-                # Add line
-                result.append(line[1:])
-            elif line.startswith(" ") and orig_idx < len(original):
-                # Context line — copy and advance
-                result.append(original[orig_idx])
-                orig_idx += 1
-
-        # Copy remaining original lines after last hunk
-        result.extend(original[orig_idx:])
-        target.write_text("".join(result))
+        patched, error = self._patched_file_content(original, patch)
+        if error is not None:
+            return error
+        target.write_text(patched)
         self._record_activity("apply_patch", path, mode="patch")
         return f"Successfully patched {path}"
+
+    def _patched_file_content(
+        self,
+        original: list[str],
+        patch: str,
+    ) -> tuple[str, str | None]:
+        result: list[str] = []
+        orig_idx = 0
+        for line in patch.splitlines(keepends=True):
+            orig_idx, error = self._apply_patch_line(original, result, orig_idx, line)
+            if error is not None:
+                return "", error
+        result.extend(original[orig_idx:])
+        return "".join(result), None
+
+    def _apply_patch_line(
+        self,
+        original: list[str],
+        result: list[str],
+        orig_idx: int,
+        line: str,
+    ) -> tuple[int, str | None]:
+        if line.startswith(("---", "+++", "diff ")):
+            return orig_idx, None
+        if line.startswith("@@"):
+            return self._apply_patch_hunk_header(original, result, orig_idx, line)
+        if line.startswith("-"):
+            return (orig_idx + 1 if orig_idx < len(original) else orig_idx), None
+        if line.startswith("+"):
+            result.append(line[1:])
+            return orig_idx, None
+        if line.startswith(" ") and orig_idx < len(original):
+            result.append(original[orig_idx])
+            return orig_idx + 1, None
+        return orig_idx, None
+
+    def _apply_patch_hunk_header(
+        self,
+        original: list[str],
+        result: list[str],
+        orig_idx: int,
+        line: str,
+    ) -> tuple[int, str | None]:
+        match = re.match(r"@@ -(\d+)", line)
+        if not match:
+            return orig_idx, f"Error: Malformed hunk header: {line.rstrip()}"
+        hunk_start = int(match.group(1)) - 1
+        result.extend(original[orig_idx:hunk_start])
+        return hunk_start, None
 
     def _execute_shell(self, cmd: str, *, enforce_policy: bool) -> str:
         """Run a shell command inside the sandbox, optionally enforcing run_bash policy."""
@@ -367,26 +434,35 @@ class AtomicTools:
             return f"Error: Invalid regex: {e}"
 
         results: list[str] = []
-        search_root = target if target.is_dir() else target.parent
-        files = [target] if target.is_file() else sorted(search_root.rglob("*"))
-
-        for f in files:
-            if not f.is_file() or f.suffix in (".pyc", ".pyo", ".so", ".dylib"):
-                continue
-            rel = str(f.relative_to(self.worktree))
-            if any(part.startswith(".") for part in f.parts):
-                continue
-            try:
-                for i, line in enumerate(f.read_text().splitlines(), 1):
-                    if regex.search(line):
-                        results.append(f"{rel}:{i}: {line}")
-                        if len(results) >= 100:
-                            results.append("... (truncated at 100 matches)")
-                            return "\n".join(results)
-            except (UnicodeDecodeError, PermissionError):
-                continue
-
+        for file_path in self._grep_files(target):
+            results.extend(self._grep_file_matches(file_path, regex))
+            if len(results) >= 100:
+                return "\n".join([*results[:100], "... (truncated at 100 matches)"])
         return "\n".join(results) if results else "No matches found."
+
+    def _grep_files(self, target: Path) -> list[Path]:
+        if target.is_file():
+            return [target]
+        search_root = target if target.is_dir() else target.parent
+        return sorted(search_root.rglob("*"))
+
+    def _grep_file_matches(self, file_path: Path, regex: re.Pattern[str]) -> list[str]:
+        if not self._grep_file_is_searchable(file_path):
+            return []
+        rel = str(file_path.relative_to(self.worktree))
+        try:
+            return [
+                f"{rel}:{index}: {line}"
+                for index, line in enumerate(file_path.read_text().splitlines(), 1)
+                if regex.search(line)
+            ]
+        except (UnicodeDecodeError, PermissionError):
+            return []
+
+    def _grep_file_is_searchable(self, file_path: Path) -> bool:
+        if not file_path.is_file() or file_path.suffix in (".pyc", ".pyo", ".so", ".dylib"):
+            return False
+        return not any(part.startswith(".") for part in file_path.parts)
 
     def glob(self, pattern: str) -> str:
         """Find files matching a glob pattern. Returns newline-separated relative paths."""
@@ -546,8 +622,12 @@ class AtomicTools:
             cmd.extend(["--lang", lang])
         cmd.append(rel)
 
+        result = self._run_ast_grep(cmd)
+        return result if isinstance(result, str) else self._format_ast_grep_result(result)
+
+    def _run_ast_grep(self, cmd: list[str]) -> subprocess.CompletedProcess[str] | str:
         try:
-            res = subprocess.run(
+            return subprocess.run(
                 cmd,
                 cwd=self.worktree,
                 env=self._sandbox_env(),
@@ -559,6 +639,7 @@ class AtomicTools:
         except subprocess.TimeoutExpired:
             return "Error: ast-grep timed out after 30s."
 
+    def _format_ast_grep_result(self, res: subprocess.CompletedProcess[str]) -> str:
         output = (res.stdout or "") + (res.stderr or "")
         if res.returncode == 0:
             stripped = output.strip()
@@ -584,23 +665,39 @@ class AtomicTools:
         except SyntaxError as e:
             return f"Error: SyntaxError in {path}: {e}"
 
-        symbols: list[str] = []
-        for node in ast.iter_child_nodes(tree):
-            if isinstance(node, ast.ClassDef):
-                symbols.append(f"  class {node.name}:{node.lineno}")
-                for item in ast.iter_child_nodes(node):
-                    if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef):
-                        symbols.append(f"    def {node.name}.{item.name}:{item.lineno}")
-            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                symbols.append(f"  def {node.name}:{node.lineno}")
-            elif isinstance(node, ast.Assign):
-                for t in node.targets:
-                    if isinstance(t, ast.Name):
-                        symbols.append(f"  {t.id} = ...:{node.lineno}")
-
+        symbols = self._python_symbol_lines(tree)
         if not symbols:
             return f"No symbols found in {path}."
         return f"{path}:\n" + "\n".join(symbols)
+
+    def _python_symbol_lines(self, tree: ast.Module) -> list[str]:
+        symbols: list[str] = []
+        for node in ast.iter_child_nodes(tree):
+            symbols.extend(self._top_level_symbol_lines(node))
+        return symbols
+
+    def _top_level_symbol_lines(self, node: ast.AST) -> list[str]:
+        if isinstance(node, ast.ClassDef):
+            return self._class_symbol_lines(node)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return [f"  def {node.name}:{node.lineno}"]
+        if isinstance(node, ast.Assign):
+            return self._assignment_symbol_lines(node)
+        return []
+
+    def _class_symbol_lines(self, node: ast.ClassDef) -> list[str]:
+        lines = [f"  class {node.name}:{node.lineno}"]
+        for item in ast.iter_child_nodes(node):
+            if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef):
+                lines.append(f"    def {node.name}.{item.name}:{item.lineno}")
+        return lines
+
+    def _assignment_symbol_lines(self, node: ast.Assign) -> list[str]:
+        return [
+            f"  {target.id} = ...:{node.lineno}"
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        ]
 
     def check_syntax(self, path: str) -> str:
         """Quick syntax check via compile(). Faster than full linter."""
@@ -628,41 +725,61 @@ class AtomicTools:
         rel = str(target.relative_to(self.worktree))
         # Determine the module path for this file
         module_name = self._path_to_module(rel)
+        imports_from = self._imports_from_python_file(target, path)
+        imported_by = self._python_files_importing_module(target, module_name)
+        return self._format_related_files(rel, imports_from, imported_by)
 
-        imports_from: list[str] = []  # what this file imports
-        imported_by: list[str] = []  # what imports this file
-
-        # Parse this file's imports
+    def _imports_from_python_file(self, path: Path, filename: str) -> list[str]:
         try:
-            tree = ast.parse(target.read_text(), filename=path)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and node.module:
-                    imports_from.append(node.module)
+            tree = ast.parse(path.read_text(), filename=filename)
         except SyntaxError:
-            pass
+            return []
+        return [
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        ]
 
-        # Scan all .py files for imports of this module
+    def _python_files_importing_module(self, target: Path, module_name: str) -> list[str]:
+        imported_by: list[str] = []
         for py_file in sorted(self.worktree.rglob("*.py")):
-            if py_file == target:
-                continue
-            py_rel = str(py_file.relative_to(self.worktree))
-            if any(part.startswith(".") for part in py_file.relative_to(self.worktree).parts):
-                continue
-            try:
-                file_tree = ast.parse(py_file.read_text(), filename=py_rel)
-                for node in ast.walk(file_tree):
-                    if (
-                        isinstance(node, ast.ImportFrom)
-                        and node.module
-                        and (
-                            node.module == module_name or node.module.startswith(module_name + ".")
-                        )
-                    ):
-                        imported_by.append(py_rel)
-                        break
-            except (SyntaxError, UnicodeDecodeError):
-                continue
+            rel = self._importing_python_file(py_file, target, module_name)
+            if rel is not None:
+                imported_by.append(rel)
+        return imported_by
 
+    def _importing_python_file(self, py_file: Path, target: Path, module_name: str) -> str | None:
+        if py_file == target or self._is_hidden_path(py_file):
+            return None
+        rel = str(py_file.relative_to(self.worktree))
+        try:
+            file_tree = ast.parse(py_file.read_text(), filename=rel)
+        except (SyntaxError, UnicodeDecodeError):
+            return None
+        if self._tree_imports_module(file_tree, module_name):
+            return rel
+        return None
+
+    def _is_hidden_path(self, path: Path) -> bool:
+        return any(part.startswith(".") for part in path.relative_to(self.worktree).parts)
+
+    def _tree_imports_module(self, tree: ast.Module, module_name: str) -> bool:
+        return any(
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and self._module_matches(node.module, module_name)
+            for node in ast.walk(tree)
+        )
+
+    def _module_matches(self, candidate: str, module_name: str) -> bool:
+        return candidate == module_name or candidate.startswith(module_name + ".")
+
+    def _format_related_files(
+        self,
+        rel: str,
+        imports_from: list[str],
+        imported_by: list[str],
+    ) -> str:
         lines: list[str] = [f"== {rel} =="]
         if imports_from:
             lines.append(f"\nImports from ({len(imports_from)}):")
@@ -670,8 +787,8 @@ class AtomicTools:
                 lines.append(f"  {mod}")
         if imported_by:
             lines.append(f"\nImported by ({len(imported_by)}):")
-            for f in imported_by:
-                lines.append(f"  {f}")
+            for path in imported_by:
+                lines.append(f"  {path}")
         if not imports_from and not imported_by:
             lines.append("  (no import relationships found)")
         return "\n".join(lines)
@@ -689,24 +806,34 @@ class AtomicTools:
             return f"Error: Invalid symbol name: {symbol}"
 
         for test_file in sorted(test_dir.rglob("test_*.py")):
-            rel = str(test_file.relative_to(self.worktree))
-            try:
-                content = test_file.read_text()
-                hit_lines: list[str] = []
-                for i, line in enumerate(content.splitlines(), 1):
-                    if pattern.search(line):
-                        hit_lines.append(f"    {i}: {line.strip()}")
-                if hit_lines:
-                    matches.append(f"  {rel}:")
-                    matches.extend(hit_lines[:5])
-                    if len(hit_lines) > 5:
-                        matches.append(f"    ... +{len(hit_lines) - 5} more")
-            except (UnicodeDecodeError, PermissionError):
-                continue
+            matches.extend(self._test_reference_lines(test_file, pattern))
 
         if not matches:
             return f"No test files reference '{symbol}'."
         return f"Tests referencing '{symbol}':\n" + "\n".join(matches)
+
+    def _test_reference_lines(self, test_file: Path, pattern: re.Pattern[str]) -> list[str]:
+        try:
+            content = test_file.read_text()
+        except (UnicodeDecodeError, PermissionError):
+            return []
+
+        hit_lines = self._matching_test_lines(content, pattern)
+        if not hit_lines:
+            return []
+
+        rel = str(test_file.relative_to(self.worktree))
+        lines = [f"  {rel}:", *hit_lines[:5]]
+        if len(hit_lines) > 5:
+            lines.append(f"    ... +{len(hit_lines) - 5} more")
+        return lines
+
+    def _matching_test_lines(self, content: str, pattern: re.Pattern[str]) -> list[str]:
+        return [
+            f"    {line_no}: {line.strip()}"
+            for line_no, line in enumerate(content.splitlines(), 1)
+            if pattern.search(line)
+        ]
 
     def _path_to_module(self, rel_path: str) -> str:
         """Convert a relative file path to a Python module name."""
@@ -807,61 +934,18 @@ class AtomicTools:
 
     def run_tests(self, file: str = "") -> str:
         """Run tests using the project's declared scoped test command."""
-        if not self.config.test_cmd:
-            return "Error: run_tests() is unavailable because test_cmd is not configured."
-        if "{test_dir}" not in self.config.test_cmd:
-            return (
-                "Error: run_tests() requires project test_cmd to contain '{test_dir}' "
-                "for scoped verification."
-            )
-
+        config_error = self._run_tests_config_error()
+        if config_error is not None:
+            return config_error
         allowed_targets = self._verify_test_targets()
         if not allowed_targets:
             return (
                 "Error: run_tests() requires in-scope test targets. "
                 "Claim relevant tests via files.read/files.edit/files.create first."
             )
-
-        requested = file.strip()
-        if not requested:
-            if len(allowed_targets) != 1:
-                allowed = ", ".join(allowed_targets)
-                return (
-                    "Error: run_tests() requires an explicit in-scope target for this task. "
-                    f"Allowed targets: {allowed}."
-                )
-            requested_targets = [allowed_targets[0]]
-        else:
-            requested_literal = self._normalize_scope_path(requested)
-            if requested_literal and any(
-                self._requested_test_target_allowed(requested_literal, allowed)
-                for allowed in allowed_targets
-            ):
-                requested_targets = [requested_literal]
-            else:
-                try:
-                    requested_targets = [
-                        self._normalize_scope_path(p) for p in shlex.split(requested)
-                    ]
-                except ValueError as exc:
-                    return f"Error: Invalid run_tests() target: {exc}"
-            if not requested_targets:
-                return "Error: run_tests() target is empty."
-            disallowed = [
-                target
-                for target in requested_targets
-                if not any(
-                    self._requested_test_target_allowed(target, allowed)
-                    for allowed in allowed_targets
-                )
-            ]
-            if disallowed:
-                allowed = ", ".join(allowed_targets)
-                return (
-                    "Error: run_tests() target is outside this task's verification scope. "
-                    f"Requested: {', '.join(disallowed)}. Allowed targets: {allowed}."
-                )
-
+        requested_targets, target_error = self._run_test_targets(file, allowed_targets)
+        if target_error is not None:
+            return target_error
         cmd = self.config.test_cmd.replace(
             "{test_dir}", " ".join(shlex.quote(target) for target in requested_targets)
         )
@@ -869,6 +953,86 @@ class AtomicTools:
         if result.splitlines()[-1:] == ["EXIT:0"]:
             self._successful_test_verification = True
         return result
+
+    def _run_tests_config_error(self) -> str | None:
+        if not self.config.test_cmd:
+            return "Error: run_tests() is unavailable because test_cmd is not configured."
+        if "{test_dir}" not in self.config.test_cmd:
+            return (
+                "Error: run_tests() requires project test_cmd to contain '{test_dir}' "
+                "for scoped verification."
+            )
+        return None
+
+    def _run_test_targets(
+        self,
+        file: str,
+        allowed_targets: tuple[str, ...],
+    ) -> tuple[list[str], str | None]:
+        requested = file.strip()
+        if not requested:
+            return self._default_run_test_targets(allowed_targets)
+        requested_targets, error = self._explicit_run_test_targets(requested, allowed_targets)
+        if error is not None:
+            return [], error
+        disallowed = self._disallowed_run_test_targets(requested_targets, allowed_targets)
+        if disallowed:
+            allowed = ", ".join(allowed_targets)
+            return [], (
+                "Error: run_tests() target is outside this task's verification scope. "
+                f"Requested: {', '.join(disallowed)}. Allowed targets: {allowed}."
+            )
+        return requested_targets, None
+
+    def _default_run_test_targets(
+        self,
+        allowed_targets: tuple[str, ...],
+    ) -> tuple[list[str], str | None]:
+        if len(allowed_targets) == 1:
+            return [allowed_targets[0]], None
+        allowed = ", ".join(allowed_targets)
+        return [], (
+            "Error: run_tests() requires an explicit in-scope target for this task. "
+            f"Allowed targets: {allowed}."
+        )
+
+    def _explicit_run_test_targets(
+        self,
+        requested: str,
+        allowed_targets: tuple[str, ...],
+    ) -> tuple[list[str], str | None]:
+        requested_literal = self._normalize_scope_path(requested)
+        if requested_literal and self._run_test_target_is_allowed(
+            requested_literal, allowed_targets
+        ):
+            return [requested_literal], None
+        try:
+            requested_targets = [self._normalize_scope_path(p) for p in shlex.split(requested)]
+        except ValueError as exc:
+            return [], f"Error: Invalid run_tests() target: {exc}"
+        if not requested_targets:
+            return [], "Error: run_tests() target is empty."
+        return requested_targets, None
+
+    def _run_test_target_is_allowed(
+        self,
+        requested: str,
+        allowed_targets: tuple[str, ...],
+    ) -> bool:
+        return any(
+            self._requested_test_target_allowed(requested, allowed) for allowed in allowed_targets
+        )
+
+    def _disallowed_run_test_targets(
+        self,
+        requested_targets: list[str],
+        allowed_targets: tuple[str, ...],
+    ) -> list[str]:
+        return [
+            target
+            for target in requested_targets
+            if not self._run_test_target_is_allowed(target, allowed_targets)
+        ]
 
     def lint_check(self, file: str = "") -> str:
         """Run lint using the project's declared lint command."""
@@ -1038,573 +1202,578 @@ def _tool_name(spec: dict[str, Any]) -> str:
     return name
 
 
+_WORKER_TOOL_SPECS: tuple[dict[str, Any], ...] = (
+    # Core tools
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": (
+                "Read a file's contents. Use relative paths (e.g. 'src/foo.py'). "
+                "Optionally pass start_line and end_line (1-indexed, inclusive) to "
+                "read a specific range and save tokens on large files."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "start_line": {
+                        "type": "integer",
+                        "description": "First line to read (1-indexed). 0 = read whole file.",
+                        "default": 0,
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "Last line to read (inclusive). 0 = to end of file.",
+                        "default": 0,
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": (
+                "Write content to a file (full replacement). Creates parent dirs. "
+                "Prefer edit_file for modifying existing files."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": (
+                "Replace old_text with new_text in a file. Only the matched section "
+                "changes — all other content is preserved byte-for-byte. Fails if "
+                "old_text is not found or matches multiple locations (be more specific). "
+                "ALWAYS prefer this over write_file when modifying existing files."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_text": {
+                        "type": "string",
+                        "description": "Exact text to find (must match uniquely)",
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "Replacement text",
+                    },
+                },
+                "required": ["path", "old_text", "new_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "apply_patch",
+            "description": (
+                "Apply a unified diff patch to a file. Use when edit_file fails "
+                "due to ambiguity, or when making multi-hunk changes. Format: "
+                "standard unified diff (@@ -start,count +start,count @@, "
+                "lines prefixed with -, +, or space)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "patch": {
+                        "type": "string",
+                        "description": ("Unified diff content (hunks with @@, -, +, space lines)"),
+                    },
+                },
+                "required": ["path", "patch"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_bash",
+            "description": "Run a shell command in the worktree. 60s timeout.",
+            "parameters": {
+                "type": "object",
+                "properties": {"cmd": {"type": "string"}},
+                "required": ["cmd"],
+            },
+        },
+    },
+    # Navigation tools
+    {
+        "type": "function",
+        "function": {
+            "name": "grep",
+            "description": "Search file contents by regex. Returns file:line: matches.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Regex pattern"},
+                    "path": {
+                        "type": "string",
+                        "description": "File or directory to search (default: '.')",
+                        "default": ".",
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "glob",
+            "description": "Find files matching a pattern (e.g. '*.py', 'tests/test_*.py').",
+            "parameters": {
+                "type": "object",
+                "properties": {"pattern": {"type": "string"}},
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_dir",
+            "description": "List directory contents with sizes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Directory to list (default: '.')",
+                        "default": ".",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_diff",
+            "description": (
+                "Show your uncommitted changes so far. Use to review your work "
+                "before calling done."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recent_changes",
+            "description": (
+                "Show recent git commits that touched a file. Gives context "
+                "about recent modifications and intent before you edit."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "assert_file_unchanged",
+            "description": (
+                "Verify that a file has NOT been modified from HEAD. Use as a "
+                "self-check to confirm you only touched the files you intended to."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "revert_file",
+            "description": (
+                "Undo ALL uncommitted changes to a file. Use if you made a mistake "
+                "and want to start over from the file's original state."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    },
+    # Code intelligence tools
+    {
+        "type": "function",
+        "function": {
+            "name": "find_references",
+            "description": (
+                "Find lexical occurrences of a symbol across the codebase. "
+                "Use this for quick name hits. Prefer ast_grep for structural search."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "exclude_tests": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Skip test directory in results",
+                    },
+                },
+                "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ast_grep",
+            "description": (
+                "Structural code search via ast-grep. Use this for syntax-aware matches "
+                "like function defs, imports, calls, or class declarations."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "ast-grep pattern such as 'def $A(): $$$'",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "File or dir to search (default: '.')",
+                        "default": ".",
+                    },
+                    "lang": {
+                        "type": "string",
+                        "description": "Optional ast-grep language override, e.g. 'python'",
+                        "default": "",
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "file_symbols",
+            "description": (
+                "List all functions, classes, and top-level assignments in a "
+                "Python file with line numbers. Use to quickly find where a "
+                "symbol is defined without reading the whole file."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_syntax",
+            "description": (
+                "Quick syntax check (compile()) without running the full linter. "
+                "Use right after writing/editing to catch parse errors fast."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "related_files",
+            "description": (
+                "Heuristic import neighborhood for a Python file: what it imports "
+                "from and what imports it. Use as a fallback, not as a semantic truth source."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_tests_for",
+            "description": (
+                "Find test files that reference a given function, class, or "
+                "module name. Returns matching test files with line numbers. "
+                "Use to find which tests to run after modifying code."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Function, class, or module name to search for",
+                    },
+                },
+                "required": ["symbol"],
+            },
+        },
+    },
+    # Power tools (CLI wrappers)
+    {
+        "type": "function",
+        "function": {
+            "name": "ripgrep",
+            "description": (
+                "Fast regex search via rg. Much faster than grep on large "
+                "codebases. Supports flags: -i (case insensitive), -l (files "
+                "only), -C3 (context), --type py (file type filter), -w (word)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "path": {
+                        "type": "string",
+                        "description": "File or dir to search (default: '.')",
+                        "default": ".",
+                    },
+                    "flags": {
+                        "type": "string",
+                        "description": "rg flags e.g. '-i -C3 --type py'",
+                        "default": "",
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "jq",
+            "description": (
+                "Query and transform JSON files with jq expressions. "
+                "Examples: '.key', '.[] | .name', 'keys', 'length'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expr": {
+                        "type": "string",
+                        "description": "jq filter expression",
+                    },
+                    "path": {"type": "string"},
+                },
+                "required": ["expr", "path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "tree",
+            "description": (
+                "Show directory structure as a tree. Excludes __pycache__, "
+                ".git, node_modules. Great for understanding project layout."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "default": ".",
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Max directory depth (default: 3)",
+                        "default": 3,
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "word_count",
+            "description": (
+                "Count lines in a file or all .py files in a directory. "
+                "Use to gauge file size before reading."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "head",
+            "description": "Show first N lines of a file with line numbers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "n": {
+                        "type": "integer",
+                        "description": "Number of lines (default: 20)",
+                        "default": 20,
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "tail",
+            "description": "Show last N lines of a file with line numbers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "n": {
+                        "type": "integer",
+                        "description": "Number of lines (default: 20)",
+                        "default": 20,
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    # SOP tools
+    {
+        "type": "function",
+        "function": {
+            "name": "run_tests",
+            "description": (
+                "Run the project's scoped test command. "
+                "You must stay within this task's in-scope test targets."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": (
+                            "Specific in-scope test file or directory. "
+                            "Omit only when exactly one target is in scope."
+                        ),
+                        "default": "",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lint_check",
+            "description": "Run the project's linter. Optionally target a specific file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "Specific file to lint (default: all source)",
+                        "default": "",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lint_fix",
+            "description": (
+                "Auto-fix lint issues including unused variables and imports. "
+                "Run this after editing to clean up trivial issues automatically."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "Specific file to fix (default: all source)",
+                        "default": "",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "format_file",
+            "description": "Format a file using the project's formatter.",
+            "parameters": {
+                "type": "object",
+                "properties": {"file": {"type": "string"}},
+                "required": ["file"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "type_check",
+            "description": (
+                "Run the project's type checker (e.g. ty check). "
+                "Returns checker output. Use after edits to verify type correctness."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    # Exit
+    {
+        "type": "function",
+        "function": {
+            "name": "done",
+            "description": "Signal that the task is complete.",
+            "parameters": {
+                "type": "object",
+                "properties": {"summary": {"type": "string"}},
+                "required": ["summary"],
+            },
+        },
+    },
+)
+
+
+def _fresh_worker_tool_specs() -> list[dict[str, Any]]:
+    return list(copy.deepcopy(_WORKER_TOOL_SPECS))
+
+
 def get_tool_spec(
     role: Literal["worker", "researcher", "planner"] = "worker",
     interactive: bool = False,
-) -> list[Any]:
-    specs = [
-        # Core tools
-        {
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "description": (
-                    "Read a file's contents. Use relative paths (e.g. 'src/foo.py'). "
-                    "Optionally pass start_line and end_line (1-indexed, inclusive) to "
-                    "read a specific range and save tokens on large files."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "start_line": {
-                            "type": "integer",
-                            "description": "First line to read (1-indexed). 0 = read whole file.",
-                            "default": 0,
-                        },
-                        "end_line": {
-                            "type": "integer",
-                            "description": "Last line to read (inclusive). 0 = to end of file.",
-                            "default": 0,
-                        },
-                    },
-                    "required": ["path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "write_file",
-                "description": (
-                    "Write content to a file (full replacement). Creates parent dirs. "
-                    "Prefer edit_file for modifying existing files."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
-                    "required": ["path", "content"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "edit_file",
-                "description": (
-                    "Replace old_text with new_text in a file. Only the matched section "
-                    "changes — all other content is preserved byte-for-byte. Fails if "
-                    "old_text is not found or matches multiple locations (be more specific). "
-                    "ALWAYS prefer this over write_file when modifying existing files."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "old_text": {
-                            "type": "string",
-                            "description": "Exact text to find (must match uniquely)",
-                        },
-                        "new_text": {
-                            "type": "string",
-                            "description": "Replacement text",
-                        },
-                    },
-                    "required": ["path", "old_text", "new_text"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "apply_patch",
-                "description": (
-                    "Apply a unified diff patch to a file. Use when edit_file fails "
-                    "due to ambiguity, or when making multi-hunk changes. Format: "
-                    "standard unified diff (@@ -start,count +start,count @@, "
-                    "lines prefixed with -, +, or space)."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "patch": {
-                            "type": "string",
-                            "description": (
-                                "Unified diff content (hunks with @@, -, +, space lines)"
-                            ),
-                        },
-                    },
-                    "required": ["path", "patch"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "run_bash",
-                "description": "Run a shell command in the worktree. 60s timeout.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"cmd": {"type": "string"}},
-                    "required": ["cmd"],
-                },
-            },
-        },
-        # Navigation tools
-        {
-            "type": "function",
-            "function": {
-                "name": "grep",
-                "description": "Search file contents by regex. Returns file:line: matches.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {"type": "string", "description": "Regex pattern"},
-                        "path": {
-                            "type": "string",
-                            "description": "File or directory to search (default: '.')",
-                            "default": ".",
-                        },
-                    },
-                    "required": ["pattern"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "glob",
-                "description": "Find files matching a pattern (e.g. '*.py', 'tests/test_*.py').",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"pattern": {"type": "string"}},
-                    "required": ["pattern"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "list_dir",
-                "description": "List directory contents with sizes.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Directory to list (default: '.')",
-                            "default": ".",
-                        },
-                    },
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "git_diff",
-                "description": (
-                    "Show your uncommitted changes so far. Use to review your work "
-                    "before calling done."
-                ),
-                "parameters": {"type": "object", "properties": {}},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "recent_changes",
-                "description": (
-                    "Show recent git commits that touched a file. Gives context "
-                    "about recent modifications and intent before you edit."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "assert_file_unchanged",
-                "description": (
-                    "Verify that a file has NOT been modified from HEAD. Use as a "
-                    "self-check to confirm you only touched the files you intended to."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "revert_file",
-                "description": (
-                    "Undo ALL uncommitted changes to a file. Use if you made a mistake "
-                    "and want to start over from the file's original state."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                },
-            },
-        },
-        # Code intelligence tools
-        {
-            "type": "function",
-            "function": {
-                "name": "find_references",
-                "description": (
-                    "Find lexical occurrences of a symbol across the codebase. "
-                    "Use this for quick name hits. Prefer ast_grep for structural search."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "symbol": {"type": "string"},
-                        "exclude_tests": {
-                            "type": "boolean",
-                            "default": False,
-                            "description": "Skip test directory in results",
-                        },
-                    },
-                    "required": ["symbol"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ast_grep",
-                "description": (
-                    "Structural code search via ast-grep. Use this for syntax-aware matches "
-                    "like function defs, imports, calls, or class declarations."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "ast-grep pattern such as 'def $A(): $$$'",
-                        },
-                        "path": {
-                            "type": "string",
-                            "description": "File or dir to search (default: '.')",
-                            "default": ".",
-                        },
-                        "lang": {
-                            "type": "string",
-                            "description": "Optional ast-grep language override, e.g. 'python'",
-                            "default": "",
-                        },
-                    },
-                    "required": ["pattern"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "file_symbols",
-                "description": (
-                    "List all functions, classes, and top-level assignments in a "
-                    "Python file with line numbers. Use to quickly find where a "
-                    "symbol is defined without reading the whole file."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "check_syntax",
-                "description": (
-                    "Quick syntax check (compile()) without running the full linter. "
-                    "Use right after writing/editing to catch parse errors fast."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "related_files",
-                "description": (
-                    "Heuristic import neighborhood for a Python file: what it imports "
-                    "from and what imports it. Use as a fallback, not as a semantic truth source."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_tests_for",
-                "description": (
-                    "Find test files that reference a given function, class, or "
-                    "module name. Returns matching test files with line numbers. "
-                    "Use to find which tests to run after modifying code."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "symbol": {
-                            "type": "string",
-                            "description": "Function, class, or module name to search for",
-                        },
-                    },
-                    "required": ["symbol"],
-                },
-            },
-        },
-        # Power tools (CLI wrappers)
-        {
-            "type": "function",
-            "function": {
-                "name": "ripgrep",
-                "description": (
-                    "Fast regex search via rg. Much faster than grep on large "
-                    "codebases. Supports flags: -i (case insensitive), -l (files "
-                    "only), -C3 (context), --type py (file type filter), -w (word)."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {"type": "string"},
-                        "path": {
-                            "type": "string",
-                            "description": "File or dir to search (default: '.')",
-                            "default": ".",
-                        },
-                        "flags": {
-                            "type": "string",
-                            "description": "rg flags e.g. '-i -C3 --type py'",
-                            "default": "",
-                        },
-                    },
-                    "required": ["pattern"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "jq",
-                "description": (
-                    "Query and transform JSON files with jq expressions. "
-                    "Examples: '.key', '.[] | .name', 'keys', 'length'."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "expr": {
-                            "type": "string",
-                            "description": "jq filter expression",
-                        },
-                        "path": {"type": "string"},
-                    },
-                    "required": ["expr", "path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "tree",
-                "description": (
-                    "Show directory structure as a tree. Excludes __pycache__, "
-                    ".git, node_modules. Great for understanding project layout."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "default": ".",
-                        },
-                        "max_depth": {
-                            "type": "integer",
-                            "description": "Max directory depth (default: 3)",
-                            "default": 3,
-                        },
-                    },
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "word_count",
-                "description": (
-                    "Count lines in a file or all .py files in a directory. "
-                    "Use to gauge file size before reading."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "head",
-                "description": "Show first N lines of a file with line numbers.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "n": {
-                            "type": "integer",
-                            "description": "Number of lines (default: 20)",
-                            "default": 20,
-                        },
-                    },
-                    "required": ["path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "tail",
-                "description": "Show last N lines of a file with line numbers.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "n": {
-                            "type": "integer",
-                            "description": "Number of lines (default: 20)",
-                            "default": 20,
-                        },
-                    },
-                    "required": ["path"],
-                },
-            },
-        },
-        # SOP tools
-        {
-            "type": "function",
-            "function": {
-                "name": "run_tests",
-                "description": (
-                    "Run the project's scoped test command. "
-                    "You must stay within this task's in-scope test targets."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file": {
-                            "type": "string",
-                            "description": (
-                                "Specific in-scope test file or directory. "
-                                "Omit only when exactly one target is in scope."
-                            ),
-                            "default": "",
-                        },
-                    },
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "lint_check",
-                "description": "Run the project's linter. Optionally target a specific file.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file": {
-                            "type": "string",
-                            "description": "Specific file to lint (default: all source)",
-                            "default": "",
-                        },
-                    },
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "lint_fix",
-                "description": (
-                    "Auto-fix lint issues including unused variables and imports. "
-                    "Run this after editing to clean up trivial issues automatically."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file": {
-                            "type": "string",
-                            "description": "Specific file to fix (default: all source)",
-                            "default": "",
-                        },
-                    },
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "format_file",
-                "description": "Format a file using the project's formatter.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"file": {"type": "string"}},
-                    "required": ["file"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "type_check",
-                "description": (
-                    "Run the project's type checker (e.g. ty check). "
-                    "Returns checker output. Use after edits to verify type correctness."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                },
-            },
-        },
-        # Exit
-        {
-            "type": "function",
-            "function": {
-                "name": "done",
-                "description": "Signal that the task is complete.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"summary": {"type": "string"}},
-                    "required": ["summary"],
-                },
-            },
-        },
-    ]
+) -> list[dict[str, Any]]:
+    specs = _fresh_worker_tool_specs()
 
     if role == "worker":
         return specs

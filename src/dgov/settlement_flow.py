@@ -600,6 +600,69 @@ class SettlementFlow:
             pane=action.pane_slug,
         )
 
+    def _resolve_validate_and_finalize_deps(
+        self,
+        *,
+        validate_fn: Any,
+        failed_emit_fn: Any,
+        passed_emit_fn: Any,
+    ) -> tuple[Any, Any, Any]:
+        """Resolve default validation and emit dependencies."""
+        return (
+            validate_fn if validate_fn is not None else validate_sandbox,
+            failed_emit_fn if failed_emit_fn is not None else emit_integration_candidate_failed,
+            passed_emit_fn if passed_emit_fn is not None else emit_integration_candidate_passed,
+        )
+
+    async def _run_candidate_validation(
+        self,
+        *,
+        candidate_path: Path,
+        candidate_sha: str | None,
+        project_config: ProjectConfig,
+        task_test_cmd: str | None,
+        validate_fn: Any,
+    ) -> Any:
+        """Run candidate validation via asyncio.to_thread."""
+        return await asyncio.to_thread(
+            validate_fn,
+            candidate_path,
+            candidate_sha,
+            self.session_root,
+            project_config,
+            task_test_cmd=task_test_cmd,
+        )
+
+    async def _finalize_candidate_gate_result(
+        self,
+        *,
+        gate_result: Any,
+        action: MergeTask,
+        candidate_result: IntegrationCandidateResult,
+        emit_event_fn: Callable[[str, DgovEvent], None],
+        remove_candidate_fn: Any,
+        passed_emit_fn: Any,
+        failed_emit_fn: Any,
+    ) -> str | None:
+        """Finalize a candidate validation gate result: cleanup on pass, reject on fail."""
+        if gate_result.passed:
+            await self.cleanup_passed_candidate(
+                action=action,
+                candidate_result=candidate_result,
+                emit_event_fn=emit_event_fn,
+                remove_candidate_fn=remove_candidate_fn,
+                passed_emit_fn=passed_emit_fn,
+            )
+            return None
+        return await self._reject_failed_candidate_validation(
+            action=action,
+            candidate_result=candidate_result,
+            gate_error=gate_result.error,
+            emit_event_fn=emit_event_fn,
+            remove_candidate_fn=remove_candidate_fn,
+            failed_emit_fn=failed_emit_fn,
+        )
+
     async def validate_and_finalize_candidate(
         self,
         *,
@@ -614,39 +677,30 @@ class SettlementFlow:
         passed_emit_fn: Any = None,
     ) -> str | None:
         """Validate the integrated candidate with the same gates as isolated validation."""
-        if validate_fn is None:
-            validate_fn = validate_sandbox
-        if failed_emit_fn is None:
-            failed_emit_fn = emit_integration_candidate_failed
-        if passed_emit_fn is None:
-            passed_emit_fn = emit_integration_candidate_passed
+        validate_fn, failed_emit_fn, passed_emit_fn = self._resolve_validate_and_finalize_deps(
+            validate_fn=validate_fn,
+            failed_emit_fn=failed_emit_fn,
+            passed_emit_fn=passed_emit_fn,
+        )
+
         if candidate_result.candidate_path is None:
             return None
 
-        gate_result = await asyncio.to_thread(
-            validate_fn,
-            candidate_result.candidate_path,
-            candidate_result.candidate_sha,
-            self.session_root,
-            project_config,
+        gate_result = await self._run_candidate_validation(
+            candidate_path=candidate_result.candidate_path,
+            candidate_sha=candidate_result.candidate_sha,
+            project_config=project_config,
             task_test_cmd=task_test_cmd,
+            validate_fn=validate_fn,
         )
-        if gate_result.passed:
-            await self.cleanup_passed_candidate(
-                action=action,
-                candidate_result=candidate_result,
-                emit_event_fn=emit_event_fn,
-                remove_candidate_fn=remove_candidate_fn,
-                passed_emit_fn=passed_emit_fn,
-            )
-            return None
 
-        return await self._reject_failed_candidate_validation(
+        return await self._finalize_candidate_gate_result(
+            gate_result=gate_result,
             action=action,
             candidate_result=candidate_result,
-            gate_error=gate_result.error,
             emit_event_fn=emit_event_fn,
             remove_candidate_fn=remove_candidate_fn,
+            passed_emit_fn=passed_emit_fn,
             failed_emit_fn=failed_emit_fn,
         )
 

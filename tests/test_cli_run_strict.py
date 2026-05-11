@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import click
 import pytest
 from click.testing import CliRunner
 
 from dgov.cli import cli
+from dgov.event_types import RunCompleted
 
 pytestmark = pytest.mark.unit
 
@@ -50,6 +53,171 @@ def _write_compiled(plan_dir: Path, name: str = "compiled") -> Path:
         'commit_message = "a"\n'
     )
     return compiled
+
+
+def _git_head(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def _init_committed_repo(repo: Path) -> str:
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=repo, check=True)
+    (repo / "README.md").write_text("init\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return _git_head(repo)
+
+
+def _fake_event_runner(
+    results: dict[str, str],
+    *,
+    task_errors: dict[str, str] | None = None,
+    task_durations: dict[str, float] | None = None,
+) -> type[object]:
+    run_results = dict(results)
+    run_errors = dict(task_errors or {})
+    run_durations = dict(task_durations or {})
+
+    class _Runner:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        @property
+        def task_errors(self) -> dict[str, str]:
+            return run_errors
+
+        @property
+        def task_durations(self) -> dict[str, float]:
+            return run_durations
+
+        async def run(self) -> dict[str, str]:
+            return run_results
+
+    return _Runner
+
+
+def _degraded_sentrux_result(baseline_quality: int | None) -> dict[str, object]:
+    return {
+        "degradation": True,
+        "quality_before": baseline_quality,
+        "quality_after": 90,
+    }
+
+
+def _structural_offender_degraded_sentrux_result(
+    baseline_quality: int | None,
+) -> dict[str, object]:
+    """Return a degraded sentrux result payload with structural offenders."""
+    result = _degraded_sentrux_result(baseline_quality)
+    result["structural_offenders"] = {
+        "commit_sha": "abc123",
+        "complex_functions": [
+            {
+                "path": "src/dgov/runner.py",
+                "qualname": "_merge",
+                "lineno": 100,
+                "cyclomatic": 12,
+            }
+        ],
+        "cog_complex_functions": [],
+        "long_functions": [],
+    }
+    return result
+
+
+def _mock_sentrux_baseline_writer(
+    project_root: Path,
+    *,
+    quality_signal: float | None = None,
+) -> Callable[..., subprocess.CompletedProcess[str]]:
+    """Return a mock run_sentrux that writes a baseline file with quality 100 or quality_signal."""
+
+    def _mock_run_sentrux(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert args == ["gate", "--save", str(project_root)]
+        sentrux_dir = project_root / ".sentrux"
+        sentrux_dir.mkdir(parents=True, exist_ok=True)
+        if quality_signal is not None:
+            (sentrux_dir / "baseline.json").write_text(f'{{"quality_signal": {quality_signal}}}\n')
+            stdout = f"Quality: {quality_signal}\n"
+        else:
+            (sentrux_dir / "baseline.json").write_text('{"quality": 100}\n')
+            stdout = "Quality: 100\n"
+        return subprocess.CompletedProcess(
+            ["sentrux", *args],
+            0,
+            stdout=stdout,
+            stderr="",
+        )
+
+    return _mock_run_sentrux
+
+
+def _install_degraded_successful_run_patches(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    captured_events: list[object],
+    baseline_quality: int = 100,
+) -> None:
+    """Install monkeypatches for a successful but degraded dgov run."""
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
+    monkeypatch.setattr(
+        "dgov.cli.run.EventDagRunner",
+        _fake_event_runner({"a": "merged"}, task_durations={"a": 0.1}),
+    )
+    monkeypatch.setattr(
+        "dgov.cli.run._require_sentrux_baseline",
+        lambda project_root: baseline_quality,
+    )
+    monkeypatch.setattr(
+        "dgov.cli.run._sentrux_compare",
+        lambda project_root, baseline_quality: _degraded_sentrux_result(baseline_quality),
+    )
+    monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
+
+    def _capture_fn(session_root: str, event: object, pane: str = "", **kwargs: object) -> None:
+        captured_events.append(event)
+
+    monkeypatch.setattr("dgov.cli.run.emit_event", _capture_fn)
+    monkeypatch.chdir(tmp_path)
+
+
+def _assert_degraded_run_completed_event(
+    captured_events: list[object],
+    expected_plan_name: str,
+    expected_branch: str,
+    expected_baseline_quality: int = 100,
+) -> None:
+    """Find and assert the run_completed event payload for a degraded run."""
+    run_completed_events = [
+        e for e in captured_events if getattr(e, "event_type", None) == "run_completed"
+    ]
+    assert len(run_completed_events) == 1
+
+    run_completed = cast(RunCompleted, run_completed_events[0])
+    assert run_completed.pane == expected_plan_name
+    assert run_completed.plan_name == expected_plan_name
+    assert run_completed.run_status == "degraded"
+    assert isinstance(run_completed.duration_s, float)
+
+    sentrux = json.loads(run_completed.sentrux)
+    assert sentrux == {
+        "degradation": True,
+        "quality_before": expected_baseline_quality,
+        "quality_after": 90,
+        "branch_verification": {
+            "status": "clean",
+            "base": expected_branch,
+            "head": expected_branch,
+            "changed_files": 0,
+        },
+    }
 
 
 def test_run_rejects_compiled_file_input(runner: CliRunner, tmp_path: Path) -> None:
@@ -133,30 +301,16 @@ def test_run_compiled_plan_rejects_department_violation(
         )
 
 
-def test_run_auto_bootstraps_dgov_only_repo(
-    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def _install_successful_run_patches(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    plan_dir = _write_plan_tree(tmp_path, "bootstrap")
-    _write_compiled(plan_dir, "compiled")
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-
-    class _Runner:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        @property
-        def task_errors(self):
-            return {}
-
-        @property
-        def task_durations(self):
-            return {}
-
-        async def run(self) -> dict[str, str]:
-            return {"a": "merged"}
-
+    """Install monkeypatches for a successful dgov run with no degradation."""
     monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
-    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
+    monkeypatch.setattr(
+        "dgov.cli.run.EventDagRunner",
+        _fake_event_runner({"a": "merged"}, task_durations={"a": 0.1}),
+    )
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
@@ -168,6 +322,17 @@ def test_run_auto_bootstraps_dgov_only_repo(
     )
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
     monkeypatch.chdir(tmp_path)
+
+
+def test_run_auto_bootstraps_dgov_only_repo(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Auto-bootstrap creates a commit when repo has no HEAD (dgov-only repo)."""
+    plan_dir = _write_plan_tree(tmp_path, "bootstrap")
+    _write_compiled(plan_dir, "compiled")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    _install_successful_run_patches(monkeypatch, tmp_path)
 
     result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
 
@@ -183,36 +348,25 @@ def test_run_auto_bootstraps_dgov_only_repo(
     assert head.returncode == 0
 
 
+def _fake_failed_event_runner() -> type[object]:
+    """Return a runner class that simulates task failure with errors."""
+    return _fake_event_runner(
+        {"a": "failed"},
+        task_errors={"a": "boom"},
+        task_durations={"a": 0.1},
+    )
+
+
 def test_run_returns_nonzero_on_failed_plan(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Run exits with code 1 and reports task errors when a plan task fails."""
     plan_dir = _write_plan_tree(tmp_path, "compiled")
     _write_compiled(plan_dir, "compiled")
-
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=tmp_path, check=True)
-    (tmp_path / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
-
-    class _Runner:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        @property
-        def task_errors(self):
-            return {"a": "boom"}
-
-        @property
-        def task_durations(self):
-            return {"a": 0.1}
-
-        async def run(self) -> dict[str, str]:
-            return {"a": "failed"}
+    _init_committed_repo(tmp_path)
 
     monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
-    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
+    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _fake_failed_event_runner())
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
@@ -240,38 +394,14 @@ def test_run_auto_creates_bootstrap_commit_in_headless(
     (tmp_path / "README.md").write_text("hello\n")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
 
-    class _Runner:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        @property
-        def task_errors(self):
-            return {}
-
-        @property
-        def task_durations(self):
-            return {"a": 0.1}
-
-        async def run(self) -> dict[str, str]:
-            return {"a": "merged"}
-
-    def _mock_run_sentrux(args: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
-        assert args == ["gate", "--save", str(tmp_path)]
-        sentrux_dir = tmp_path / ".sentrux"
-        sentrux_dir.mkdir(parents=True, exist_ok=True)
-        (sentrux_dir / "baseline.json").write_text('{"quality": 100}\n')
-        return subprocess.CompletedProcess(
-            ["sentrux", *args],
-            0,
-            stdout="Quality: 100\n",
-            stderr="",
-        )
-
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run.sentrux_available", lambda: True)
-    monkeypatch.setattr("dgov.cli.run.run_sentrux", _mock_run_sentrux)
-    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
+    monkeypatch.setattr("dgov.cli.run.run_sentrux", _mock_sentrux_baseline_writer(tmp_path))
+    monkeypatch.setattr(
+        "dgov.cli.run.EventDagRunner",
+        _fake_event_runner(results={"a": "merged"}, task_durations={"a": 0.1}),
+    )
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
         lambda project_root, baseline_quality: {
@@ -301,45 +431,18 @@ def test_run_bootstraps_missing_sentrux_baseline(
 ) -> None:
     plan_dir = _write_plan_tree(tmp_path, "compiled")
     _write_compiled(plan_dir, "compiled")
-
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=tmp_path, check=True)
-    (tmp_path / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
-
-    class _Runner:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        @property
-        def task_errors(self):
-            return {}
-
-        @property
-        def task_durations(self):
-            return {"a": 0.1}
-
-        async def run(self) -> dict[str, str]:
-            return {"a": "merged"}
-
-    def _mock_run_sentrux(args: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
-        assert args == ["gate", "--save", str(tmp_path)]
-        sentrux_dir = tmp_path / ".sentrux"
-        sentrux_dir.mkdir(parents=True, exist_ok=True)
-        (sentrux_dir / "baseline.json").write_text('{"quality_signal": 0.91}\n')
-        return subprocess.CompletedProcess(
-            ["sentrux", *args],
-            0,
-            stdout="Quality: 0.91\n",
-            stderr="",
-        )
+    _init_committed_repo(tmp_path)
 
     monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run.sentrux_available", lambda: True)
-    monkeypatch.setattr("dgov.cli.run.run_sentrux", _mock_run_sentrux)
-    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
+    monkeypatch.setattr(
+        "dgov.cli.run.run_sentrux",
+        _mock_sentrux_baseline_writer(tmp_path, quality_signal=0.91),
+    )
+    monkeypatch.setattr(
+        "dgov.cli.run.EventDagRunner",
+        _fake_event_runner({"a": "merged"}, task_durations={"a": 0.1}),
+    )
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
         lambda project_root, baseline_quality: {
@@ -393,11 +496,7 @@ def test_run_reports_degraded_when_final_sentrux_compare_degrades(
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
-        lambda project_root, baseline_quality: {
-            "degradation": True,
-            "quality_before": baseline_quality,
-            "quality_after": 90,
-        },
+        lambda project_root, baseline_quality: _degraded_sentrux_result(baseline_quality),
     )
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
     monkeypatch.chdir(tmp_path)
@@ -415,87 +514,23 @@ def test_run_emits_run_completed_event_with_degraded_status(
     """Verify that dgov run emits run_completed event with final status and sentrux payload."""
     plan_dir = _write_plan_tree(tmp_path, "compiled")
     _write_compiled(plan_dir, "compiled")
+    head = _init_committed_repo(tmp_path)
+    captured_events: list[object] = []
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=tmp_path, check=True)
-    (tmp_path / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
-
-    class _Runner:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        @property
-        def task_errors(self):
-            return {}
-
-        @property
-        def task_durations(self):
-            return {"a": 0.1}
-
-        async def run(self) -> dict[str, str]:
-            return {"a": "merged"}
-
-    captured_events: list = []
-
-    def _capture_emit_event(session_root, event, pane="", **kwargs):
-        captured_events.append(event)
-
-    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
-    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
-    monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
-    monkeypatch.setattr(
-        "dgov.cli.run._sentrux_compare",
-        lambda project_root, baseline_quality: {
-            "degradation": True,
-            "quality_before": baseline_quality,
-            "quality_after": 90,
-        },
-    )
-    monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
-    monkeypatch.setattr("dgov.cli.run.emit_event", _capture_emit_event)
-    monkeypatch.chdir(tmp_path)
+    _install_degraded_successful_run_patches(monkeypatch, tmp_path, captured_events)
 
     result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
 
     assert result.exit_code == 0
+    _assert_degraded_run_completed_event(captured_events, "compiled", head)
 
-    # Find run_completed event
-    run_completed_events = [
-        e for e in captured_events if getattr(e, "event_type", None) == "run_completed"
-    ]
-    assert len(run_completed_events) == 1
 
-    run_completed = run_completed_events[0]
-    assert run_completed.pane == "compiled"
-    assert run_completed.plan_name == "compiled"
-    assert run_completed.run_status == "degraded"
-    assert isinstance(run_completed.duration_s, float)
-    sentrux = json.loads(run_completed.sentrux)
-    assert sentrux == {
-        "degradation": True,
-        "quality_before": 100,
-        "quality_after": 90,
-        "branch_verification": {
-            "status": "clean",
-            "base": subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=tmp_path,
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip(),
-            "head": subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=tmp_path,
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip(),
-            "changed_files": 0,
-        },
+def _mock_branch_verification_failure(project_root: str, config: object) -> dict[str, object]:
+    """Return a failed branch verification result for monkeypatching."""
+    return {
+        "status": "failed",
+        "changed_files": 2,
+        "error": "Type check failure",
     }
 
 
@@ -504,31 +539,13 @@ def test_run_returns_nonzero_on_branch_verification_failure(
 ) -> None:
     plan_dir = _write_plan_tree(tmp_path, "compiled")
     _write_compiled(plan_dir, "compiled")
-
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=tmp_path, check=True)
-    (tmp_path / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
-
-    class _Runner:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        @property
-        def task_errors(self):
-            return {}
-
-        @property
-        def task_durations(self):
-            return {"a": 0.1}
-
-        async def run(self) -> dict[str, str]:
-            return {"a": "merged"}
+    _init_committed_repo(tmp_path)
 
     monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
-    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
+    monkeypatch.setattr(
+        "dgov.cli.run.EventDagRunner",
+        _fake_event_runner(results={"a": "merged"}, task_durations={"a": 0.1}),
+    )
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
@@ -540,11 +557,7 @@ def test_run_returns_nonzero_on_branch_verification_failure(
     )
     monkeypatch.setattr(
         "dgov.cli.run._branch_verification_gate",
-        lambda project_root, config: {
-            "status": "failed",
-            "changed_files": 2,
-            "error": "Type check failure",
-        },
+        _mock_branch_verification_failure,
     )
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
     monkeypatch.chdir(tmp_path)
@@ -561,52 +574,19 @@ def test_run_reports_structural_offenders_when_sentrux_degrades(
 ) -> None:
     plan_dir = _write_plan_tree(tmp_path, "compiled")
     _write_compiled(plan_dir, "compiled")
-
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=tmp_path, check=True)
-    (tmp_path / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
-
-    class _Runner:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        @property
-        def task_errors(self):
-            return {}
-
-        @property
-        def task_durations(self):
-            return {"a": 0.1}
-
-        async def run(self) -> dict[str, str]:
-            return {"a": "merged"}
+    _init_committed_repo(tmp_path)
 
     monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
-    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
+    monkeypatch.setattr(
+        "dgov.cli.run.EventDagRunner",
+        _fake_event_runner({"a": "merged"}, task_durations={"a": 0.1}),
+    )
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
-        lambda project_root, baseline_quality: {
-            "degradation": True,
-            "quality_before": baseline_quality,
-            "quality_after": 90,
-            "structural_offenders": {
-                "commit_sha": "abc123",
-                "complex_functions": [
-                    {
-                        "path": "src/dgov/runner.py",
-                        "qualname": "_merge",
-                        "lineno": 100,
-                        "cyclomatic": 12,
-                    }
-                ],
-                "cog_complex_functions": [],
-                "long_functions": [],
-            },
-        },
+        lambda project_root, baseline_quality: _structural_offender_degraded_sentrux_result(
+            baseline_quality
+        ),
     )
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
     monkeypatch.chdir(tmp_path)

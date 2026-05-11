@@ -24,6 +24,7 @@ from dgov.worker import _build_system_prompt, run_worker  # noqa: E402
 from dgov.workers.atomic import AtomicTools, get_tool_spec  # noqa: E402
 from dgov.workers.config import AtomicConfig  # noqa: E402
 from dgov.workers.runtime import (  # noqa: E402
+    _validate_plan,
     clip_tool_result,
     diff_stat_for_error,
     execute_tool_call,
@@ -317,6 +318,59 @@ def test_clip_tool_result_truncates_large_payload() -> None:
     assert len(result) <= 120 + len("\n... [tool output truncated for prompt budget]")
 
 
+def _valid_emit_plan_task(slug: str = "task-a") -> dict[str, object]:
+    return {
+        "slug": slug,
+        "prompt": "Orient:\nRead.\n\nEdit:\n1. Change.\n\nVerify:\n- Check.",
+        "commit_message": "Change task",
+        "files": {"edit": ["src/example.py"]},
+    }
+
+
+def test_validate_plan_accepts_worker_task() -> None:
+    assert _validate_plan({"tasks": [_valid_emit_plan_task()]}) is None
+
+
+def test_validate_plan_rejects_worker_without_file_claim() -> None:
+    task = _valid_emit_plan_task()
+    task["files"] = {"read": ["src/example.py"]}
+
+    error = _validate_plan({"tasks": [task]})
+
+    assert error is not None
+    assert "must claim at least one file" in error
+
+
+def test_validate_plan_rejects_unknown_dependency() -> None:
+    task = _valid_emit_plan_task()
+    task["depends_on"] = ["missing"]
+
+    error = _validate_plan({"tasks": [task]})
+
+    assert error == "Error: Task 'task-a' depends on unknown slug 'missing'."
+
+
+def test_validate_plan_rejects_invalid_dependency_shape() -> None:
+    task = _valid_emit_plan_task()
+    task["depends_on"] = "task-b"
+
+    error = _validate_plan({"tasks": [task]})
+
+    assert error == "Error: Task 'task-a' has invalid depends_on. Must be a list."
+
+
+def test_validate_plan_rejects_dependency_cycle() -> None:
+    task_a = _valid_emit_plan_task("task-a")
+    task_b = _valid_emit_plan_task("task-b")
+    task_a["depends_on"] = ["task-b"]
+    task_b["depends_on"] = ["task-a"]
+
+    error = _validate_plan({"tasks": [task_a, task_b]})
+
+    assert error is not None
+    assert "Dependency cycle detected" in error
+
+
 def _tool_call(name: str, args: dict[str, object], call_id: str = "call-1") -> SimpleNamespace:
     return SimpleNamespace(
         id=call_id,
@@ -582,6 +636,64 @@ def test_run_worker_uses_configured_iteration_budget(
     assert str(events[-1][1]).startswith("Exceeded max iterations (2)")
 
 
+def _make_fake_message(tool_calls: list[SimpleNamespace] | None = None) -> SimpleNamespace:
+    """Build a fake message response with optional tool calls."""
+    data: dict[str, object] = {"role": "assistant"}
+    if tool_calls:
+        data["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.function.name,
+                    "arguments": call.function.arguments,
+                },
+            }
+            for call in tool_calls
+        ]
+    return SimpleNamespace(content=None, tool_calls=tool_calls or [], model_dump=lambda **_: data)
+
+
+def _make_fake_provider(
+    tool_choices: list[object],
+    events: list[tuple[str, object]],
+    done_summary: str = "Reached finalization handoff.",
+) -> type:
+    """Build a fake provider class that captures tool choices and emits done on forced choice."""
+
+    class _FakeProvider:
+        def create_chat_completion(self, **kwargs):
+            tool_choice = kwargs["tool_choice"]
+            tool_choices.append(tool_choice)
+            tool_calls: list[SimpleNamespace] = []
+            if isinstance(tool_choice, dict):
+                tool_calls = [
+                    SimpleNamespace(
+                        id="call-1",
+                        function=SimpleNamespace(
+                            name="done",
+                            arguments=json.dumps({"summary": done_summary}),
+                        ),
+                    )
+                ]
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(message=_make_fake_message(tool_calls), finish_reason="length")
+                ],
+                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+            )
+
+    return _FakeProvider
+
+
+def _capture_events(monkeypatch: pytest.MonkeyPatch, events: list[tuple[str, object]]) -> None:
+    """Monkeypatch WorkerEvent.emit to capture events for assertion."""
+    monkeypatch.setattr(
+        "dgov.workers.runtime.WorkerEvent.emit",
+        lambda self: events.append((self.type, self.content)),
+    )
+
+
 def test_run_worker_forces_done_near_iteration_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -589,55 +701,9 @@ def test_run_worker_forces_done_near_iteration_limit(
     events: list[tuple[str, object]] = []
     tool_choices: list[object] = []
 
-    class _FakeMessage:
-        content = None
-
-        def __init__(self, tool_calls=None) -> None:
-            self.tool_calls = tool_calls or []
-
-        def model_dump(self, exclude_none: bool = True):
-            data: dict[str, object] = {"role": "assistant"}
-            if self.tool_calls:
-                data["tool_calls"] = [
-                    {
-                        "id": call.id,
-                        "type": "function",
-                        "function": {
-                            "name": call.function.name,
-                            "arguments": call.function.arguments,
-                        },
-                    }
-                    for call in self.tool_calls
-                ]
-            return data
-
-    class _FakeProvider:
-        def create_chat_completion(self, **kwargs):
-            tool_choice = kwargs["tool_choice"]
-            tool_choices.append(tool_choice)
-            tool_calls = []
-            if isinstance(tool_choice, dict):
-                tool_calls = [
-                    SimpleNamespace(
-                        id="call-1",
-                        function=SimpleNamespace(
-                            name="done",
-                            arguments=json.dumps({"summary": "Reached finalization handoff."}),
-                        ),
-                    )
-                ]
-            return SimpleNamespace(
-                choices=[
-                    SimpleNamespace(message=_FakeMessage(tool_calls), finish_reason="length")
-                ],
-                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
-            )
-
+    _FakeProvider = _make_fake_provider(tool_choices, events)
     monkeypatch.setattr("dgov.worker.create_provider", lambda **_kwargs: _FakeProvider())
-    monkeypatch.setattr(
-        "dgov.workers.runtime.WorkerEvent.emit",
-        lambda self: events.append((self.type, self.content)),
-    )
+    _capture_events(monkeypatch, events)
 
     with pytest.raises(SystemExit) as excinfo:
         run_worker(

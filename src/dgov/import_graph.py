@@ -138,27 +138,34 @@ def _resolve_relative_from(
     return {resolved} if resolved is not None else set()
 
 
+def _imports_from_import(project_root: Path, node: ast.Import) -> set[str]:
+    imports: set[str] = set()
+    for alias in node.names:
+        resolved = _resolve_module(project_root, alias.name)
+        if resolved is not None:
+            imports.add(resolved)
+    return imports
+
+
+def _imports_from_import_from(project_root: Path, importer: str, node: ast.ImportFrom) -> set[str]:
+    if node.level:
+        return _resolve_relative_from(
+            project_root,
+            importer,
+            node.module,
+            node.names,
+            node.level,
+        )
+    return _resolve_absolute_from(project_root, node.module, node.names)
+
+
 def _extract_imports(project_root: Path, importer: str, tree: ast.AST) -> set[str]:
     imports: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            for alias in node.names:
-                resolved = _resolve_module(project_root, alias.name)
-                if resolved is not None:
-                    imports.add(resolved)
+            imports.update(_imports_from_import(project_root, node))
         elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                imports.update(
-                    _resolve_relative_from(
-                        project_root,
-                        importer,
-                        node.module,
-                        node.names,
-                        node.level,
-                    )
-                )
-            else:
-                imports.update(_resolve_absolute_from(project_root, node.module, node.names))
+            imports.update(_imports_from_import_from(project_root, importer, node))
     return imports
 
 

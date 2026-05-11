@@ -276,6 +276,40 @@ def _coverage_worktree(tmp_path: Path, baseline_percent: float) -> tuple[Path, P
     return project_root, worktree_path
 
 
+def _retry_worktree_with_claimed(tmp_path: Path) -> Path:
+    """Create a retry worktree with claimed.py tracked and modified."""
+    worktree = tmp_path / "worktree_retry"
+    worktree.mkdir()
+    _init_repo(worktree)
+    _add_tracked_file(worktree, "claimed.py", "x = 1\n")
+    _modify_tracked(worktree, "claimed.py", "x = 2\n")
+    return worktree
+
+
+def _emit_worker_result_activity(
+    session_root: Path,
+    pane_slug: str,
+    task_slug: str,
+    tool: str,
+    path: str,
+    mode: str,
+) -> None:
+    """Emit a worker_log event with a single activity entry."""
+    emit_event(
+        str(session_root),
+        "worker_log",
+        pane_slug,
+        plan_name="plan",
+        task_slug=task_slug,
+        log_type="result",
+        content={
+            "tool": tool,
+            "status": "success",
+            "activity": [{"kind": tool, "path": path, "mode": mode}],
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # review_sandbox
 # ---------------------------------------------------------------------------
@@ -398,18 +432,8 @@ class TestReviewSandbox:
         _modify_tracked(worktree, "claimed.py", "x = 2\n")
 
         session_root = tmp_path / "session"
-        emit_event(
-            str(session_root),
-            "worker_log",
-            "pane-1",
-            plan_name="plan",
-            task_slug="task-1",
-            log_type="result",
-            content={
-                "tool": "write_file",
-                "status": "success",
-                "activity": [{"kind": "write_file", "path": "scratch.py", "mode": "create"}],
-            },
+        _emit_worker_result_activity(
+            session_root, "pane-1", "task-1", "write_file", "scratch.py", "create"
         )
 
         result = review_sandbox(
@@ -430,18 +454,8 @@ class TestReviewSandbox:
         _modify_tracked(worktree, "claimed.py", "x = 2\n")
 
         session_root = tmp_path / "session"
-        emit_event(
-            str(session_root),
-            "worker_log",
-            "pane-1",
-            plan_name="plan",
-            task_slug="task-1",
-            log_type="result",
-            content={
-                "tool": "edit_file",
-                "status": "success",
-                "activity": [{"kind": "edit_file", "path": "claimed.py", "mode": "edit"}],
-            },
+        _emit_worker_result_activity(
+            session_root, "pane-1", "task-1", "edit_file", "claimed.py", "edit"
         )
 
         result = review_sandbox(
@@ -460,31 +474,13 @@ class TestReviewSandbox:
         _modify_tracked(worktree, "claimed.py", "x = 2\n")
 
         session_root = tmp_path / "session"
-        emit_event(
-            str(session_root),
-            "worker_log",
-            "pane-old",
-            plan_name="plan",
-            task_slug="task-1",
-            log_type="result",
-            content={
-                "tool": "write_file",
-                "status": "success",
-                "activity": [{"kind": "write_file", "path": "scratch.py", "mode": "create"}],
-            },
+        # Old pane: unclaimed write (should fail closed)
+        _emit_worker_result_activity(
+            session_root, "pane-old", "task-1", "write_file", "scratch.py", "create"
         )
-        emit_event(
-            str(session_root),
-            "worker_log",
-            "pane-current",
-            plan_name="plan",
-            task_slug="task-1",
-            log_type="result",
-            content={
-                "tool": "edit_file",
-                "status": "success",
-                "activity": [{"kind": "edit_file", "path": "claimed.py", "mode": "edit"}],
-            },
+        # Current pane: claimed edit
+        _emit_worker_result_activity(
+            session_root, "pane-current", "task-1", "edit_file", "claimed.py", "edit"
         )
 
         result = review_sandbox(
@@ -502,49 +498,19 @@ class TestReviewSandbox:
         assert "scratch.py" in (result.error or "")
 
     def test_transient_scope_fail_closed_across_retries(self, tmp_path: Path):
-        """Unclaimed writes from earlier panes fail review even if current pane is clean.
-
-        This tests the fail-closed retry semantics: an unclaimed tool write from any
-        attempt in the active run must cause review rejection, even if a later retry
-        cleans the worktree and succeeds.
-        """
-        worktree_retry = tmp_path / "worktree_retry"
-        worktree_retry.mkdir()
-        _init_repo(worktree_retry)
-        _add_tracked_file(worktree_retry, "claimed.py", "x = 1\n")
-        _modify_tracked(worktree_retry, "claimed.py", "x = 2\n")
-
+        """Unclaimed writes from earlier panes fail review even if current pane is clean."""
+        worktree_retry = _retry_worktree_with_claimed(tmp_path)
         session_root = tmp_path / "session"
+
         # First attempt (pane-1): wrote unclaimed debug file
-        emit_event(
-            str(session_root),
-            "worker_log",
-            "pane-1",
-            plan_name="plan",
-            task_slug="task-1",
-            log_type="result",
-            content={
-                "tool": "write_file",
-                "status": "success",
-                "activity": [{"kind": "write_file", "path": "debug_1.py", "mode": "create"}],
-            },
+        _emit_worker_result_activity(
+            session_root, "pane-1", "task-1", "write_file", "debug_1.py", "create"
         )
         # Second attempt (pane-2): only touches claimed file
-        emit_event(
-            str(session_root),
-            "worker_log",
-            "pane-2",
-            plan_name="plan",
-            task_slug="task-1",
-            log_type="result",
-            content={
-                "tool": "edit_file",
-                "status": "success",
-                "activity": [{"kind": "edit_file", "path": "claimed.py", "mode": "edit"}],
-            },
+        _emit_worker_result_activity(
+            session_root, "pane-2", "task-1", "edit_file", "claimed.py", "edit"
         )
 
-        # Review on the second pane (retry) should still fail due to pane-1's unclaimed write
         result = review_sandbox(
             worktree_retry,
             claimed_files=["claimed.py"],
@@ -558,43 +524,18 @@ class TestReviewSandbox:
 
     def test_transient_scope_claimed_writes_across_retries_pass(self, tmp_path: Path):
         """Claimed writes from all panes pass review - no scope violation."""
-        worktree_retry = tmp_path / "worktree_retry"
-        worktree_retry.mkdir()
-        _init_repo(worktree_retry)
-        _add_tracked_file(worktree_retry, "claimed.py", "x = 1\n")
-        _modify_tracked(worktree_retry, "claimed.py", "x = 2\n")
-
+        worktree_retry = _retry_worktree_with_claimed(tmp_path)
         session_root = tmp_path / "session"
+
         # First attempt wrote claimed file
-        emit_event(
-            str(session_root),
-            "worker_log",
-            "pane-1",
-            plan_name="plan",
-            task_slug="task-1",
-            log_type="result",
-            content={
-                "tool": "write_file",
-                "status": "success",
-                "activity": [{"kind": "write_file", "path": "claimed.py", "mode": "edit"}],
-            },
+        _emit_worker_result_activity(
+            session_root, "pane-1", "task-1", "write_file", "claimed.py", "edit"
         )
         # Second attempt also wrote claimed file
-        emit_event(
-            str(session_root),
-            "worker_log",
-            "pane-2",
-            plan_name="plan",
-            task_slug="task-1",
-            log_type="result",
-            content={
-                "tool": "edit_file",
-                "status": "success",
-                "activity": [{"kind": "edit_file", "path": "claimed.py", "mode": "edit"}],
-            },
+        _emit_worker_result_activity(
+            session_root, "pane-2", "task-1", "edit_file", "claimed.py", "edit"
         )
 
-        # Should pass - all writes were within claimed scope
         result = review_sandbox(
             worktree_retry,
             claimed_files=["claimed.py"],

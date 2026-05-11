@@ -104,6 +104,66 @@ def _allocate_fix_plan_dir(
     return plan_name, plan_dir
 
 
+def _create_fix_plan(
+    plan_dir: Path,
+    plan_name: str,
+    prompt: str,
+    files: tuple[str, ...],
+    commit_message: str,
+) -> None:
+    plan_dir.mkdir(parents=True)
+    fix_section_dir = plan_dir / "fix"
+    fix_section_dir.mkdir()
+
+    root_toml = f'''[plan]
+name = "{plan_name}"
+summary = "Apply requested fix"
+sections = ["fix"]
+'''
+    (plan_dir / "_root.toml").write_text(root_toml)
+    main_toml = _render_fix_plan_toml(prompt, list(files), commit_message)
+    (fix_section_dir / "main.toml").write_text(main_toml)
+
+
+def _compile_fix_plan(plan_dir: Path) -> None:
+    try:
+        compile_plan_dir(plan_dir, dry_run=False, recompile_sops=False, graph=False)
+    except click.exceptions.Exit:
+        click.echo(f"Retained unresolved fix plan at {plan_dir}", err=True)
+        raise
+    except Exception as exc:
+        click.echo(f"Compile failed: {exc}", err=True)
+        click.echo(f"Retained unresolved fix plan at {plan_dir}", err=True)
+        raise click.exceptions.Exit(code=1) from exc
+
+
+def _run_fix_plan(plan_dir: Path, project_root: Path) -> str:
+    compiled_path = plan_dir / "_compiled.toml"
+    try:
+        return run_compiled_plan(
+            str(compiled_path),
+            str(project_root),
+            restart=False,
+            continue_failed=False,
+            only=None,
+            plan_dir=plan_dir,
+        )
+    except click.exceptions.Exit:
+        click.echo(f"Retained unresolved fix plan at {plan_dir}", err=True)
+        raise
+    except Exception as exc:
+        click.echo(f"Run failed: {exc}", err=True)
+        click.echo(f"Retained unresolved fix plan at {plan_dir}", err=True)
+        raise click.exceptions.Exit(code=1) from exc
+
+
+def _finish_fix_plan(plan_dir: Path, run_status: str) -> None:
+    if run_status == "complete":
+        _archive_if_exists(plan_dir)
+    else:
+        click.echo(f"Retained unresolved fix plan at {plan_dir}")
+
+
 @cli.command(name="fix")
 @click.argument("prompt")
 @click.option(
@@ -144,57 +204,7 @@ def fix_cmd(
         explicit_name=name,
     )
 
-    # Create plan directory structure
-    plan_dir.mkdir(parents=True)
-    fix_section_dir = plan_dir / "fix"
-    fix_section_dir.mkdir()
-
-    # Write _root.toml
-    root_toml = f'''[plan]
-name = "{plan_name}"
-summary = "Apply requested fix"
-sections = ["fix"]
-'''
-    (plan_dir / "_root.toml").write_text(root_toml)
-
-    # Write fix/main.toml
-    files_list = list(file)
-    main_toml = _render_fix_plan_toml(prompt, files_list, commit_message)
-    (fix_section_dir / "main.toml").write_text(main_toml)
-
+    _create_fix_plan(plan_dir, plan_name, prompt, file, commit_message)
     click.echo(f"Created plan '{plan_name}' at {plan_dir}")
-
-    # Compile the plan
-    try:
-        compile_plan_dir(plan_dir, dry_run=False, recompile_sops=False, graph=False)
-    except click.exceptions.Exit:
-        click.echo(f"Retained unresolved fix plan at {plan_dir}", err=True)
-        raise
-    except Exception as exc:
-        click.echo(f"Compile failed: {exc}", err=True)
-        click.echo(f"Retained unresolved fix plan at {plan_dir}", err=True)
-        raise click.exceptions.Exit(code=1) from exc
-
-    # Run the compiled plan
-    compiled_path = plan_dir / "_compiled.toml"
-    try:
-        run_status = run_compiled_plan(
-            str(compiled_path),
-            str(project_root),
-            restart=False,
-            continue_failed=False,
-            only=None,
-            plan_dir=plan_dir,
-        )
-    except click.exceptions.Exit:
-        click.echo(f"Retained unresolved fix plan at {plan_dir}", err=True)
-        raise
-    except Exception as exc:
-        click.echo(f"Run failed: {exc}", err=True)
-        click.echo(f"Retained unresolved fix plan at {plan_dir}", err=True)
-        raise click.exceptions.Exit(code=1) from exc
-
-    if run_status == "complete":
-        _archive_if_exists(plan_dir)
-    else:
-        click.echo(f"Retained unresolved fix plan at {plan_dir}")
+    _compile_fix_plan(plan_dir)
+    _finish_fix_plan(plan_dir, _run_fix_plan(plan_dir, project_root))

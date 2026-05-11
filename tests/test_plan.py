@@ -1363,7 +1363,10 @@ create = ["src/c.py"]
 
 
 class TestPlanIntegration:
-    def test_round_trip_parse_compile(self, tmp_path):
+    """Integration tests for parse → compile round-trip."""
+
+    def _write_integration_plan(self, tmp_path) -> str:
+        """Write integration plan TOML and return the file path."""
         plan_file = tmp_path / "integration.toml"
         plan_content = """
 [plan]
@@ -1393,21 +1396,41 @@ edit = ["src/main.py"]
 create = ["src/helper.py"]
 """
         plan_file.write_text(plan_content)
+        return str(plan_file)
 
-        spec = parse_plan_file(str(plan_file))
-
+    def _assert_parsed_spec_shape(self, spec) -> None:
+        """Assert the parsed PlanSpec has expected integration shape."""
         assert spec.name == "integration-plan"
         assert spec.project_root == "/project"
         assert len(spec.units) == 2
+        assert "setup" in spec.units
+        assert "main" in spec.units
 
-        dag = compile_plan(spec)
-
+    def _assert_compiled_dag_shape(self, dag) -> None:
+        """Assert the compiled DagDefinition has expected integration shape."""
         assert dag.name == "integration-plan"
         assert len(dag.tasks) == 2
+        assert "setup" in dag.tasks
+        assert "main" in dag.tasks
 
-        setup_task = dag.tasks["setup"]
+    def _assert_setup_task(self, setup_task) -> None:
+        """Assert the setup task has expected attributes."""
         assert setup_task.agent == "setup-agent"
         assert setup_task.timeout_s == 300
 
-        main_task = dag.tasks["main"]
+    def _assert_main_task(self, main_task) -> None:
+        """Assert the main task has expected attributes."""
         assert main_task.depends_on == ("setup",)
+
+    def test_round_trip_parse_compile(self, tmp_path):
+        """Parse TOML plan and compile to DAG, verifying round-trip integrity."""
+        plan_path = self._write_integration_plan(tmp_path)
+
+        spec = parse_plan_file(plan_path)
+        self._assert_parsed_spec_shape(spec)
+
+        dag = compile_plan(spec)
+        self._assert_compiled_dag_shape(dag)
+
+        self._assert_setup_task(dag.tasks["setup"])
+        self._assert_main_task(dag.tasks["main"])
