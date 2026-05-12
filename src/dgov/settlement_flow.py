@@ -33,6 +33,7 @@ from dgov.semantic_settlement import (
     SemanticGateVerdict,
     SignatureDrift,
     SymbolOverlap,
+    SyntaxConflict,
     TextConflict,
     collect_python_overlap_evidence,
     emit_integration_candidate_failed,
@@ -41,6 +42,7 @@ from dgov.semantic_settlement import (
     emit_integration_risk_scored,
     emit_semantic_gate_rejected,
     parse_semantic_gate_verdict,
+    summarize_evidence,
 )
 from dgov.settlement import autofix_sandbox, validate_sandbox
 from dgov.types import Worktree
@@ -53,6 +55,14 @@ from dgov.worktree import (
 )
 
 logger = logging.getLogger(__name__)
+
+_RISK_LEVEL_RANK = {
+    RiskLevel.NONE: 0,
+    RiskLevel.LOW: 1,
+    RiskLevel.MEDIUM: 2,
+    RiskLevel.HIGH: 3,
+    RiskLevel.CRITICAL: 4,
+}
 
 _SEMANTIC_GATE_SUBPROCESS = """
 import json
@@ -98,6 +108,29 @@ def _candidate_text_conflicts(
             )
         )
     return tuple(evidence)
+
+
+def _is_public_symbol(symbol_name: str) -> bool:
+    if not symbol_name:
+        return True
+    leaf_name = symbol_name.rsplit(".", 1)[-1]
+    return not leaf_name.startswith("_")
+
+
+def _max_risk_level(levels: tuple[RiskLevel, ...]) -> RiskLevel:
+    if not levels:
+        return RiskLevel.NONE
+    return max(levels, key=lambda level: _RISK_LEVEL_RANK[level])
+
+
+def _evidence_risk_level(evidence: OverlapEvidence) -> RiskLevel:
+    if isinstance(evidence, TextConflict | SyntaxConflict):
+        return RiskLevel.CRITICAL
+    if isinstance(evidence, SignatureDrift):
+        return RiskLevel.HIGH if _is_public_symbol(evidence.symbol_name) else RiskLevel.LOW
+    if isinstance(evidence, SymbolOverlap | DuplicateDefinition):
+        return RiskLevel.HIGH if _is_public_symbol(evidence.symbol_name) else RiskLevel.MEDIUM
+    return RiskLevel.MEDIUM
 
 
 def _semantic_gate_payload(
@@ -229,19 +262,7 @@ class SettlementFlow:
     def _risk_level_from_evidence(
         self, overlap_evidence: tuple[OverlapEvidence, ...]
     ) -> RiskLevel:
-        if not overlap_evidence:
-            return RiskLevel.NONE
-
-        evidence_types = {type(evidence) for evidence in overlap_evidence}
-        if len(evidence_types) > 1 or len(overlap_evidence) > 3:
-            return RiskLevel.CRITICAL
-        if any(isinstance(evidence, DuplicateDefinition) for evidence in overlap_evidence):
-            return RiskLevel.HIGH
-        if any(isinstance(evidence, SymbolOverlap) for evidence in overlap_evidence):
-            return RiskLevel.MEDIUM
-        if all(isinstance(evidence, SignatureDrift) for evidence in overlap_evidence):
-            return RiskLevel.LOW
-        return RiskLevel.MEDIUM
+        return _max_risk_level(tuple(_evidence_risk_level(item) for item in overlap_evidence))
 
     def _collect_overlap_evidence(
         self,
@@ -456,6 +477,17 @@ class SettlementFlow:
             validated_at=time.time(),
         )
 
+    def integration_candidate_failure_message(
+        self,
+        candidate_result: IntegrationCandidateResult,
+    ) -> str:
+        """Build worker-facing evidence for a failed shadow integration replay."""
+        message = candidate_result.error or "Integration candidate replay failed"
+        evidence = _candidate_text_conflicts(candidate_result)
+        if not evidence:
+            return message
+        return f"{message}\n\nSettlement evidence:\n{summarize_evidence(evidence)}"
+
     def _passed_candidate_verdict(
         self,
         *,
@@ -500,9 +532,19 @@ class SettlementFlow:
             verdict,
             pane=action.pane_slug,
         )
-        return semantic_verdict.error_message or (
-            f"Semantic gate '{semantic_verdict.gate_name}' rejected"
-        )
+        return self.semantic_gate_rejection_message(verdict)
+
+    def semantic_gate_rejection_message(self, verdict: SemanticGateVerdict) -> str:
+        """Build worker-facing evidence for a semantic gate rejection."""
+        header = f"Semantic gate '{verdict.gate_name}' rejected"
+        if verdict.failure_class is not None:
+            header = f"{header}: {verdict.failure_class.value}"
+        parts = [header]
+        if verdict.error_message:
+            parts.append(verdict.error_message)
+        if verdict.evidence:
+            parts.append(f"Settlement evidence:\n{summarize_evidence(verdict.evidence)}")
+        return "\n\n".join(parts)
 
     async def run_semantic_gate_on_candidate(
         self,

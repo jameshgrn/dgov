@@ -68,6 +68,7 @@ from dgov.persistence import (
 )
 from dgov.persistence.schema import TaskState, WorkerTask
 from dgov.prompt_builder import PromptBuilder, build_baseline_diag_note, load_review_sop_blocks
+from dgov.semantic_settlement import summarize_evidence
 from dgov.settlement import ReviewResult, review_sandbox
 from dgov.settlement_flow import (
     IntegrationRiskRecord,
@@ -124,20 +125,7 @@ def _test_failure_command(error: str) -> str | None:
 
 
 def _summarize_evidence(risk_record: IntegrationRiskRecord) -> str:
-    evidence = risk_record.overlap_evidence
-    if not evidence:
-        return "no semantic evidence"
-
-    parts: list[str] = []
-    for item in evidence:
-        kind = item.__class__.__name__
-        symbol = getattr(item, "symbol_name", "")
-        file_path = getattr(item, "file_path", "")
-        file_paths = getattr(item, "file_paths", ())
-        location = file_path or ", ".join(str(path) for path in file_paths)
-        detail = ": ".join(part for part in (symbol, location) if part)
-        parts.append(f"{kind}({detail})" if detail else kind)
-    return "; ".join(parts)
+    return summarize_evidence(risk_record.overlap_evidence)
 
 
 @dataclass
@@ -1951,7 +1939,7 @@ class EventDagRunner:
         )
         duration = time.monotonic() - start_ts
         if not candidate_result.passed:
-            error = candidate_result.error or "Integration candidate replay failed"
+            error = self._settlement_flow.integration_candidate_failure_message(candidate_result)
             self._emit_settlement_phase_completed(action, phase, "failed", duration, error)
             return error, candidate_result
         self._emit_settlement_phase_completed(action, phase, "passed", duration)

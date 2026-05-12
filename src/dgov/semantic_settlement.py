@@ -17,7 +17,7 @@ from __future__ import annotations
 import ast
 import logging
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -263,17 +263,103 @@ def _serialize_evidence(evidence: OverlapEvidence) -> dict[str, Any]:
 
 def _deserialize_evidence(data: dict[str, Any]) -> OverlapEvidence:
     """Reconstruct an evidence dataclass from a JSON-deserialized dict."""
-    kind = data.pop("_kind", None)
+    kind = data.get("_kind")
     if kind not in _EVIDENCE_TYPES:
         raise ValueError(f"Unknown evidence kind: {kind}")
     # Convert lists back to tuples where needed
-    converted = {k: _to_tuple(v, k) for k, v in data.items()}
+    converted = {k: _to_tuple(v, k) for k, v in data.items() if k != "_kind"}
     return _EVIDENCE_TYPES[kind](**converted)
 
 
 def evidence_payload(evidence: tuple[OverlapEvidence, ...]) -> list[dict[str, Any]]:
     """Convert evidence tuple to serialized list for payloads."""
     return [_serialize_evidence(e) for e in evidence]
+
+
+def parse_evidence_payload(payload: Iterable[dict[str, Any]]) -> tuple[OverlapEvidence, ...]:
+    """Parse serialized evidence payloads into typed evidence records."""
+    return tuple(_deserialize_evidence(dict(item)) for item in payload)
+
+
+def _line_range_text(line_range: tuple[int, int] | None) -> str:
+    if line_range is None:
+        return ""
+    start, end = line_range
+    return f"line {start}" if start == end else f"lines {start}-{end}"
+
+
+def _line_location(path: str, line_range: tuple[int, int] | None) -> str:
+    line_text = _line_range_text(line_range)
+    return f"{path}:{line_text}" if line_text else path
+
+
+def _plural(noun: str, count: int) -> str:
+    return noun if count == 1 else f"{noun}s"
+
+
+def _duplicate_definition_locations(evidence: DuplicateDefinition) -> str:
+    locations: list[str] = []
+    for index, path in enumerate(evidence.file_paths):
+        line_range = (
+            evidence.line_numbers[index]
+            if evidence.line_numbers is not None and index < len(evidence.line_numbers)
+            else None
+        )
+        locations.append(_line_location(path, line_range))
+    return ", ".join(locations)
+
+
+def describe_evidence(evidence: OverlapEvidence) -> str:
+    """Return a concise human-readable description of one settlement evidence item."""
+    if isinstance(evidence, SymbolOverlap):
+        locations = []
+        task_range = _line_range_text(evidence.task_line_range)
+        target_range = _line_range_text(evidence.target_line_range)
+        if task_range:
+            locations.append(f"task {task_range}")
+        if target_range:
+            locations.append(f"target {target_range}")
+        suffix = f" ({'; '.join(locations)})" if locations else ""
+        return (
+            f"same-symbol edit: {evidence.symbol_type} {evidence.symbol_name} "
+            f"in {evidence.file_path}{suffix}"
+        )
+    if isinstance(evidence, DuplicateDefinition):
+        paths = _duplicate_definition_locations(evidence)
+        return f"duplicate definition: {evidence.symbol_type} {evidence.symbol_name} in {paths}"
+    if isinstance(evidence, SignatureDrift):
+        return (
+            f"signature drift: {evidence.symbol_name} in {evidence.file_path} changed "
+            f"from {evidence.base_signature} to {evidence.integrated_signature}"
+        )
+    if isinstance(evidence, SyntaxConflict):
+        location = evidence.file_path
+        if evidence.line_number is not None:
+            location += f":{evidence.line_number}"
+            if evidence.column is not None:
+                location += f":{evidence.column}"
+        detail = f": {evidence.error_message}" if evidence.error_message else ""
+        return f"syntax conflict: {location}{detail}"
+    marker_label = _plural("conflict marker block", evidence.conflict_markers)
+    return f"text conflict: {evidence.file_path} has {evidence.conflict_markers} {marker_label}"
+
+
+def describe_evidence_payload(payload: Iterable[dict[str, Any]]) -> tuple[str, ...]:
+    """Describe serialized evidence payloads without exposing parser failures to UIs."""
+    descriptions: list[str] = []
+    for item in payload:
+        try:
+            descriptions.append(describe_evidence(_deserialize_evidence(dict(item))))
+        except (TypeError, ValueError) as exc:
+            kind = item.get("_kind", "unknown") if isinstance(item, dict) else "unknown"
+            descriptions.append(f"unrecognized evidence {kind}: {exc}")
+    return tuple(descriptions)
+
+
+def summarize_evidence(evidence: Iterable[OverlapEvidence]) -> str:
+    """Join settlement evidence descriptions into a single sentence."""
+    descriptions = tuple(describe_evidence(item) for item in evidence)
+    return "; ".join(descriptions) if descriptions else "no semantic evidence"
 
 
 def _fc_value(fc: FailureClass | None) -> str | None:
@@ -465,6 +551,9 @@ class _SymbolInfo:
     signature: str | None = None  # For functions/methods: "def name(arg: int) -> str"
 
 
+_SymbolTable = Mapping[Any, _SymbolInfo]
+
+
 def _extract_function_signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     """Extract a clean signature string from a function definition node."""
     args = []
@@ -500,6 +589,21 @@ def _load_file_at_commit(project_root: str, commit_sha: str, rel_path: str) -> s
         logger.debug("Could not get %s at commit %s", rel_path, commit_sha)
         return None
     return result.stdout
+
+
+def _changed_files_between(project_root: str, base_ref: str, head_ref: str) -> tuple[str, ...]:
+    """Return paths changed between two git refs, or an empty tuple on lookup failure."""
+    result = subprocess.run(
+        ["git", "diff", "--name-only", base_ref, head_ref],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        logger.debug("Could not diff %s..%s", base_ref, head_ref)
+        return ()
+    return tuple(path for path in result.stdout.splitlines() if path)
 
 
 def _parse_python_source(source: str, source_hint: str) -> ast.Module | None:
@@ -585,23 +689,62 @@ def _analyze_python_file_symbols(file_path: Path) -> dict[str, _SymbolInfo]:
     return _extract_module_symbols(tree, str(file_path))
 
 
-def _changed_symbols_since_base(
-    base_symbols: dict[str, _SymbolInfo],
-    derived_symbols: dict[str, _SymbolInfo],
-) -> dict[str, _SymbolInfo]:
-    changed: dict[str, _SymbolInfo] = {}
-    for name, derived_sym in derived_symbols.items():
-        base_sym = base_symbols.get(name)
+def _symbol_with_file_path(symbol: _SymbolInfo, file_path: str) -> _SymbolInfo:
+    return _SymbolInfo(
+        name=symbol.name,
+        symbol_type=symbol.symbol_type,
+        file_path=file_path,
+        line_start=symbol.line_start,
+        line_end=symbol.line_end,
+        signature=symbol.signature,
+    )
+
+
+def _symbol_identity(symbol: _SymbolInfo) -> tuple[str, str]:
+    return (symbol.file_path.strip().lstrip("./"), symbol.name)
+
+
+def _symbol_table(symbols: Iterable[_SymbolInfo]) -> dict[tuple[str, str], _SymbolInfo]:
+    return {_symbol_identity(symbol): symbol for symbol in symbols}
+
+
+def _symbol_values(symbols: _SymbolTable) -> Iterable[_SymbolInfo]:
+    return symbols.values()
+
+
+def _changed_symbol_infos_since_base(
+    base_symbols: Iterable[_SymbolInfo],
+    derived_symbols: Iterable[_SymbolInfo],
+) -> dict[tuple[str, str], _SymbolInfo]:
+    base_by_identity = _symbol_table(base_symbols)
+    changed: dict[tuple[str, str], _SymbolInfo] = {}
+    for derived_sym in derived_symbols:
+        identity = _symbol_identity(derived_sym)
+        base_sym = base_by_identity.get(identity)
         if base_sym is None:
-            changed[name] = derived_sym
+            changed[identity] = derived_sym
             continue
         if (
             base_sym.line_start != derived_sym.line_start
             or base_sym.line_end != derived_sym.line_end
             or base_sym.signature != derived_sym.signature
         ):
-            changed[name] = derived_sym
+            changed[identity] = derived_sym
     return changed
+
+
+def _changed_symbols_since_base(
+    base_symbols: dict[str, _SymbolInfo],
+    derived_symbols: dict[str, _SymbolInfo],
+) -> dict[str, _SymbolInfo]:
+    """Return changed symbols keyed by bare name for legacy tests and callers."""
+    return {
+        symbol.name: symbol
+        for symbol in _changed_symbol_infos_since_base(
+            base_symbols.values(),
+            derived_symbols.values(),
+        ).values()
+    }
 
 
 def _symbol_in_touched_files(symbol: _SymbolInfo, touched_files: set[str]) -> bool:
@@ -610,24 +753,30 @@ def _symbol_in_touched_files(symbol: _SymbolInfo, touched_files: set[str]) -> bo
 
 
 def _check_same_symbol_edit(
-    task_base_symbols: dict[str, _SymbolInfo],
-    task_commit_symbols: dict[str, _SymbolInfo],
-    target_head_symbols: dict[str, _SymbolInfo],
+    task_base_symbols: _SymbolTable,
+    task_commit_symbols: _SymbolTable,
+    target_head_symbols: _SymbolTable,
     touched_files: set[str],
 ) -> list[SymbolOverlap]:
     """Detect when both task and target changed the same symbol."""
     overlaps: list[SymbolOverlap] = []
-    task_changed = _changed_symbols_since_base(task_base_symbols, task_commit_symbols)
-    target_changed = _changed_symbols_since_base(task_base_symbols, target_head_symbols)
-    for name, task_sym in task_changed.items():
+    task_changed = _changed_symbol_infos_since_base(
+        _symbol_values(task_base_symbols),
+        _symbol_values(task_commit_symbols),
+    )
+    target_changed = _changed_symbol_infos_since_base(
+        _symbol_values(task_base_symbols),
+        _symbol_values(target_head_symbols),
+    )
+    for identity, task_sym in task_changed.items():
         if not _symbol_in_touched_files(task_sym, touched_files):
             continue
-        target_sym = target_changed.get(name)
+        target_sym = target_changed.get(identity)
         if target_sym is None:
             continue
         overlaps.append(
             SymbolOverlap(
-                symbol_name=name,
+                symbol_name=task_sym.name,
                 symbol_type=task_sym.symbol_type,
                 file_path=task_sym.file_path,
                 task_line_range=(task_sym.line_start, task_sym.line_end),
@@ -659,14 +808,17 @@ def _record_file_symbols(
     file_path: Path,
     all_symbols: dict[str, list[_SymbolInfo]],
     file_is_test: dict[str, bool],
+    display_path: str | None = None,
 ) -> None:
     if file_path.suffix != ".py":
         return
-    file_path_str = str(file_path)
+    file_path_str = display_path or str(file_path)
     is_test = _is_test_file(file_path_str)
     file_is_test[file_path_str] = is_test
     file_is_test[str(file_path.resolve())] = is_test
     for name, info in _analyze_python_file_symbols(file_path).items():
+        if display_path is not None:
+            info = _symbol_with_file_path(info, display_path)
         all_symbols.setdefault(name, []).append(info)
 
 
@@ -700,17 +852,11 @@ def _duplicate_definition_record(name: str, infos: list[_SymbolInfo]) -> Duplica
     )
 
 
-def _check_duplicate_definitions(
-    integrated_files: list[Path],
+def _duplicate_definition_records(
+    all_symbols: dict[str, list[_SymbolInfo]],
+    file_is_test: dict[str, bool],
 ) -> list[DuplicateDefinition]:
-    """Detect when the same symbol is defined multiple times across files."""
-    all_symbols: dict[str, list[_SymbolInfo]] = {}
-    file_is_test: dict[str, bool] = {}
     duplicates: list[DuplicateDefinition] = []
-
-    for file_path in integrated_files:
-        _record_file_symbols(file_path, all_symbols, file_is_test)
-
     for name, infos in all_symbols.items():
         if len(infos) <= 1:
             continue
@@ -719,13 +865,79 @@ def _check_duplicate_definitions(
         if _should_skip_duplicate_name(name):
             continue
         duplicates.append(_duplicate_definition_record(name, infos))
-
     return duplicates
 
 
+def _check_duplicate_definitions(
+    integrated_files: list[Path],
+    display_root: Path | None = None,
+) -> list[DuplicateDefinition]:
+    """Detect when the same symbol is defined multiple times across files."""
+    all_symbols: dict[str, list[_SymbolInfo]] = {}
+    file_is_test: dict[str, bool] = {}
+
+    for file_path in integrated_files:
+        display_path = _candidate_rel_path(display_root, file_path) if display_root else None
+        _record_file_symbols(file_path, all_symbols, file_is_test, display_path)
+
+    return _duplicate_definition_records(all_symbols, file_is_test)
+
+
+def _duplicate_records_from_symbol_infos(
+    symbols: Iterable[_SymbolInfo],
+) -> list[DuplicateDefinition]:
+    all_symbols: dict[str, list[_SymbolInfo]] = {}
+    file_is_test: dict[str, bool] = {}
+    for symbol in symbols:
+        all_symbols.setdefault(symbol.name, []).append(symbol)
+        file_is_test[symbol.file_path] = _is_test_file(symbol.file_path)
+    return _duplicate_definition_records(all_symbols, file_is_test)
+
+
+def _duplicate_file_sets(
+    symbols: _SymbolTable,
+) -> dict[str, frozenset[str]]:
+    return {
+        duplicate.symbol_name: frozenset(duplicate.file_paths)
+        for duplicate in _duplicate_records_from_symbol_infos(_symbol_values(symbols))
+    }
+
+
+def _merge_duplicate_file_sets(
+    *sources: dict[str, frozenset[str]],
+) -> dict[str, frozenset[str]]:
+    merged: dict[str, frozenset[str]] = {}
+    for source in sources:
+        for symbol_name, file_paths in source.items():
+            merged[symbol_name] = merged.get(symbol_name, frozenset()) | file_paths
+    return merged
+
+
+def _introduced_duplicate_definitions(
+    *,
+    candidate_files: list[Path],
+    candidate_path: Path,
+    base_symbols: _SymbolTable,
+    target_head_symbols: _SymbolTable,
+) -> list[DuplicateDefinition]:
+    duplicates = _check_duplicate_definitions(candidate_files, display_root=candidate_path)
+    known_duplicate_files = _merge_duplicate_file_sets(
+        _duplicate_file_sets(base_symbols),
+        _duplicate_file_sets(target_head_symbols),
+    )
+    introduced: list[DuplicateDefinition] = []
+    for duplicate in duplicates:
+        candidate_files_set = frozenset(duplicate.file_paths)
+        if not candidate_files_set.issubset(
+            known_duplicate_files.get(duplicate.symbol_name, frozenset())
+        ):
+            introduced.append(duplicate)
+    return introduced
+
+
 def _check_signature_drift(
-    base_symbols: dict[str, _SymbolInfo],
-    integrated_symbols: dict[str, _SymbolInfo],
+    base_symbols: _SymbolTable,
+    integrated_symbols: _SymbolTable,
     touched_files: set[str],
 ) -> list[SignatureDrift]:
     """Detect when a public callable's signature changed.
@@ -733,8 +945,9 @@ def _check_signature_drift(
     Only checks symbols in touched files.
     """
     drifts: list[SignatureDrift] = []
+    base_by_identity = _symbol_table(_symbol_values(base_symbols))
 
-    for name, int_sym in integrated_symbols.items():
+    for int_sym in _symbol_values(integrated_symbols):
         # Only check functions/methods in touched files
         if int_sym.symbol_type not in ("function", "method"):
             continue
@@ -743,31 +956,26 @@ def _check_signature_drift(
         if rel_path not in touched_files and int_sym.file_path not in touched_files:
             continue
 
-        if name in base_symbols:
-            base_sym = base_symbols[name]
-            if base_sym.signature != int_sym.signature:
-                drifts.append(
-                    SignatureDrift(
-                        symbol_name=name,
-                        file_path=int_sym.file_path,
-                        base_signature=base_sym.signature or "unknown",
-                        integrated_signature=int_sym.signature or "unknown",
-                    )
+        base_sym = base_by_identity.get(_symbol_identity(int_sym))
+        if base_sym is not None and base_sym.signature != int_sym.signature:
+            drifts.append(
+                SignatureDrift(
+                    symbol_name=int_sym.name,
+                    file_path=int_sym.file_path,
+                    base_signature=base_sym.signature or "unknown",
+                    integrated_signature=int_sym.signature or "unknown",
                 )
+            )
 
     return drifts
 
 
-def _get_symbols_at_commit(
+def _get_symbol_infos_at_commit(
     project_root: str,
     commit_sha: str,
     file_paths: list[str],
-) -> dict[str, _SymbolInfo]:
-    """Extract symbols from files at a specific git commit.
-
-    Returns combined symbols from all files.
-    """
-    all_symbols: dict[str, _SymbolInfo] = {}
+) -> list[_SymbolInfo]:
+    all_symbols: list[_SymbolInfo] = []
 
     for rel_path in file_paths:
         if not rel_path.endswith(".py"):
@@ -782,10 +990,95 @@ def _get_symbols_at_commit(
         if tree is None:
             continue
 
-        file_symbols = _extract_module_symbols(tree, rel_path)
-        all_symbols.update(file_symbols)
+        all_symbols.extend(_extract_module_symbols(tree, rel_path).values())
 
     return all_symbols
+
+
+def _get_symbol_table_at_commit(
+    project_root: str,
+    commit_sha: str,
+    file_paths: list[str],
+) -> dict[tuple[str, str], _SymbolInfo]:
+    return _symbol_table(_get_symbol_infos_at_commit(project_root, commit_sha, file_paths))
+
+
+def _get_symbols_at_commit(
+    project_root: str,
+    commit_sha: str,
+    file_paths: list[str],
+) -> dict[str, _SymbolInfo]:
+    """Extract symbols from files at a specific git commit.
+
+    Returns combined symbols from all files.
+    """
+    return {
+        symbol.name: symbol
+        for symbol in _get_symbol_infos_at_commit(project_root, commit_sha, file_paths)
+    }
+
+
+def _unique_paths(paths: Iterable[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(path for path in paths if path))
+
+
+def _changed_python_files_between(
+    project_root: str,
+    base_ref: str,
+    head_ref: str,
+) -> tuple[str, ...]:
+    return tuple(
+        path
+        for path in _changed_files_between(project_root, base_ref, head_ref)
+        if path.endswith(".py")
+    )
+
+
+def _semantic_python_files(
+    *,
+    project_root: str,
+    task_base_sha: str,
+    task_commit_sha: str | None,
+    target_head_sha: str,
+    touched_files: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Return the bounded Python file set needed for cross-file semantic checks."""
+    touched_python = tuple(_filter_python_files(touched_files))
+    task_changed = (
+        _changed_python_files_between(project_root, task_base_sha, task_commit_sha)
+        if task_commit_sha
+        else ()
+    )
+    if not touched_python and not task_changed:
+        return ()
+
+    target_changed = _changed_python_files_between(project_root, task_base_sha, target_head_sha)
+    return _unique_paths((*touched_python, *task_changed, *target_changed))
+
+
+def _task_python_files(
+    *,
+    project_root: str,
+    task_base_sha: str,
+    task_commit_sha: str | None,
+    touched_files: tuple[str, ...],
+) -> tuple[str, ...]:
+    touched_python = tuple(_filter_python_files(touched_files))
+    task_changed = (
+        _changed_python_files_between(project_root, task_base_sha, task_commit_sha)
+        if task_commit_sha
+        else ()
+    )
+    return _unique_paths((*touched_python, *task_changed))
+
+
+def _candidate_rel_path(root: Path | None, file_path: Path) -> str:
+    if root is None:
+        return str(file_path)
+    try:
+        return str(file_path.relative_to(root))
+    except ValueError:
+        return str(file_path)
 
 
 def collect_python_overlap_evidence(
@@ -801,10 +1094,18 @@ def collect_python_overlap_evidence(
     if not py_files or not target_head_sha or not task_commit_sha:
         return ()
 
-    file_paths = list(py_files)
-    task_base_symbols = _get_symbols_at_commit(project_root, task_base_sha, file_paths)
-    task_commit_symbols = _get_symbols_at_commit(project_root, task_commit_sha, file_paths)
-    target_head_symbols = _get_symbols_at_commit(project_root, target_head_sha, file_paths)
+    file_paths = list(
+        _semantic_python_files(
+            project_root=project_root,
+            task_base_sha=task_base_sha,
+            task_commit_sha=task_commit_sha,
+            target_head_sha=target_head_sha,
+            touched_files=py_files,
+        )
+    )
+    task_base_symbols = _get_symbol_table_at_commit(project_root, task_base_sha, file_paths)
+    task_commit_symbols = _get_symbol_table_at_commit(project_root, task_commit_sha, file_paths)
+    target_head_symbols = _get_symbol_table_at_commit(project_root, target_head_sha, file_paths)
     touched_set = set(py_files)
 
     evidence: list[OverlapEvidence] = []
@@ -818,11 +1119,16 @@ def collect_python_overlap_evidence(
     )
     evidence.extend(_check_signature_drift(task_base_symbols, task_commit_symbols, touched_set))
     evidence.extend(
-        _check_duplicate_definitions([
-            candidate_root / path
-            for path in py_files
-            if (candidate_root / path).exists() and (candidate_root / path).is_file()
-        ])
+        _introduced_duplicate_definitions(
+            candidate_files=[
+                candidate_root / path
+                for path in file_paths
+                if (candidate_root / path).exists() and (candidate_root / path).is_file()
+            ],
+            candidate_path=candidate_root,
+            base_symbols=task_base_symbols,
+            target_head_symbols=target_head_symbols,
+        )
     )
     return tuple(evidence)
 
@@ -861,12 +1167,26 @@ def _validate_candidate_syntax(
     return (candidate_files, None)
 
 
-def _extract_candidate_symbols(candidate_files: list[Path]) -> dict[str, _SymbolInfo]:
+def _existing_candidate_python_files(candidate_path: Path, py_files: list[str]) -> list[Path]:
+    return [
+        candidate_path / rel_path
+        for rel_path in py_files
+        if (candidate_path / rel_path).exists() and (candidate_path / rel_path).is_file()
+    ]
+
+
+def _extract_candidate_symbols(
+    candidate_files: list[Path],
+    display_root: Path | None = None,
+) -> dict[tuple[str, str], _SymbolInfo]:
     """Extract symbols from all candidate Python files."""
-    candidate_symbols: dict[str, _SymbolInfo] = {}
+    candidate_symbols: dict[tuple[str, str], _SymbolInfo] = {}
     for file_path in candidate_files:
-        symbols = _analyze_python_file_symbols(file_path)
-        candidate_symbols.update(symbols)
+        display_path = _candidate_rel_path(display_root, file_path) if display_root else None
+        for symbol in _analyze_python_file_symbols(file_path).values():
+            if display_path is not None:
+                symbol = _symbol_with_file_path(symbol, display_path)
+            candidate_symbols[_symbol_identity(symbol)] = symbol
     return candidate_symbols
 
 
@@ -876,17 +1196,24 @@ def _load_comparison_symbols(
     task_commit_sha: str | None,
     target_head_sha: str,
     py_files: list[str],
-    candidate_symbols: dict[str, _SymbolInfo],
-) -> tuple[dict[str, _SymbolInfo], dict[str, _SymbolInfo], dict[str, _SymbolInfo]] | None:
+    candidate_symbols: _SymbolTable,
+) -> (
+    tuple[dict[tuple[str, str], _SymbolInfo], _SymbolTable, dict[tuple[str, str], _SymbolInfo]]
+    | None
+):
     """Load symbols from git commits for comparison.
 
     Returns (task_base_symbols, task_commit_symbols, target_head_symbols) or None on error.
     """
     try:
-        task_base_symbols = _get_symbols_at_commit(project_root, task_base_sha, py_files)
-        target_head_symbols = _get_symbols_at_commit(project_root, target_head_sha, py_files)
+        task_base_symbols = _get_symbol_table_at_commit(project_root, task_base_sha, py_files)
+        target_head_symbols = _get_symbol_table_at_commit(project_root, target_head_sha, py_files)
         if task_commit_sha:
-            task_commit_symbols = _get_symbols_at_commit(project_root, task_commit_sha, py_files)
+            task_commit_symbols: _SymbolTable = _get_symbol_table_at_commit(
+                project_root,
+                task_commit_sha,
+                py_files,
+            )
         else:
             task_commit_symbols = candidate_symbols
         return (task_base_symbols, task_commit_symbols, target_head_symbols)
@@ -896,9 +1223,9 @@ def _load_comparison_symbols(
 
 
 def _check_signature_drifts(
-    task_base_symbols: dict[str, _SymbolInfo],
-    target_head_symbols: dict[str, _SymbolInfo],
-    candidate_symbols: dict[str, _SymbolInfo],
+    task_base_symbols: _SymbolTable,
+    target_head_symbols: _SymbolTable,
+    candidate_symbols: _SymbolTable,
     touched_set: set[str],
 ) -> list[SignatureDrift]:
     """Check for signature drift against both base and target."""
@@ -908,12 +1235,13 @@ def _check_signature_drifts(
     )
 
     # Combine unique drifts
-    all_drifts: dict[str, SignatureDrift] = {}
+    all_drifts: dict[tuple[str, str], SignatureDrift] = {}
     for d in drifts_from_base:
-        all_drifts[d.symbol_name] = d
+        all_drifts[(d.file_path, d.symbol_name)] = d
     for d in drifts_from_target:
-        if d.symbol_name not in all_drifts:
-            all_drifts[d.symbol_name] = d
+        identity = (d.file_path, d.symbol_name)
+        if identity not in all_drifts:
+            all_drifts[identity] = d
 
     return list(all_drifts.values())
 
@@ -1020,10 +1348,10 @@ def _load_candidate_python_files(
 def _concurrent_symbol_verdict(
     *,
     task_slug: str,
-    task_base_symbols: dict[str, _SymbolInfo],
-    task_commit_symbols: dict[str, _SymbolInfo],
-    target_head_symbols: dict[str, _SymbolInfo],
-    candidate_symbols: dict[str, _SymbolInfo],
+    task_base_symbols: _SymbolTable,
+    task_commit_symbols: _SymbolTable,
+    target_head_symbols: _SymbolTable,
+    candidate_symbols: _SymbolTable,
     touched_set: set[str],
 ) -> SemanticGateVerdict | None:
     same_symbol_edits = _check_same_symbol_edit(
@@ -1042,6 +1370,7 @@ def _concurrent_symbol_verdict(
 
 def _run_python_symbol_checks(
     *,
+    candidate_path: Path,
     candidate_files: list[Path],
     project_root: str,
     task_base_sha: str,
@@ -1051,17 +1380,22 @@ def _run_python_symbol_checks(
     touched_files: tuple[str, ...],
     task_slug: str,
 ) -> SemanticGateVerdict:
-    candidate_symbols = _extract_candidate_symbols(candidate_files)
-    duplicates = _check_duplicate_definitions(candidate_files)
-    if duplicates:
-        return _duplicate_definition_verdict(task_slug, duplicates)
-
+    candidate_symbols = _extract_candidate_symbols(candidate_files, display_root=candidate_path)
     comparison = _load_comparison_symbols(
         project_root, task_base_sha, task_commit_sha, target_head_sha, py_files, candidate_symbols
     )
     if comparison is None:
         return _semantic_gate_pass(task_slug)
     task_base_symbols, task_commit_symbols, target_head_symbols = comparison
+
+    duplicates = _introduced_duplicate_definitions(
+        candidate_files=candidate_files,
+        candidate_path=candidate_path,
+        base_symbols=task_base_symbols,
+        target_head_symbols=target_head_symbols,
+    )
+    if duplicates:
+        return _duplicate_definition_verdict(task_slug, duplicates)
 
     verdict = _concurrent_symbol_verdict(
         task_slug=task_slug,
@@ -1084,18 +1418,37 @@ def run_python_semantic_gate(
     task_slug: str,
 ) -> SemanticGateVerdict:
     """Run deterministic Python semantic checks on an integration candidate."""
-    candidate_files, early_verdict = _load_candidate_python_files(
+    task_py_files = _task_python_files(
+        project_root=project_root,
+        task_base_sha=task_base_sha,
+        task_commit_sha=task_commit_sha,
+        touched_files=touched_files,
+    )
+    py_files = list(
+        _semantic_python_files(
+            project_root=project_root,
+            task_base_sha=task_base_sha,
+            task_commit_sha=task_commit_sha,
+            target_head_sha=target_head_sha,
+            touched_files=touched_files,
+        )
+    )
+    task_candidate_files, early_verdict = _load_candidate_python_files(
         candidate_path,
-        touched_files,
+        task_py_files,
         task_slug,
     )
     if early_verdict is not None:
         return early_verdict
 
-    py_files = _filter_python_files(touched_files)
-    assert candidate_files is not None
+    candidate_files = _existing_candidate_python_files(candidate_path, py_files)
+    if not candidate_files:
+        candidate_files = task_candidate_files or []
+    if not candidate_files:
+        return _semantic_gate_pass(task_slug)
 
     return _run_python_symbol_checks(
+        candidate_path=candidate_path,
         candidate_files=candidate_files,
         project_root=project_root,
         task_base_sha=task_base_sha,
@@ -1126,14 +1479,18 @@ __all__ = [
     "_deserialize_evidence",
     "_serialize_evidence",
     "collect_python_overlap_evidence",
+    "describe_evidence",
+    "describe_evidence_payload",
     "emit_integration_candidate_failed",
     "emit_integration_candidate_passed",
     "emit_integration_overlap_detected",
     "emit_integration_risk_scored",
     "emit_semantic_gate_rejected",
     "evidence_payload",
+    "parse_evidence_payload",
     "parse_integration_candidate_verdict",
     "parse_integration_risk_record",
     "parse_semantic_gate_verdict",
     "run_python_semantic_gate",
+    "summarize_evidence",
 ]

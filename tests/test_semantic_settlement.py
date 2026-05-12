@@ -27,15 +27,19 @@ from dgov.semantic_settlement import (
     TextConflict,
     _deserialize_evidence,
     _serialize_evidence,
+    describe_evidence,
+    describe_evidence_payload,
     emit_integration_candidate_failed,
     emit_integration_candidate_passed,
     emit_integration_overlap_detected,
     emit_integration_risk_scored,
     emit_semantic_gate_rejected,
     evidence_payload,
+    parse_evidence_payload,
     parse_integration_candidate_verdict,
     parse_integration_risk_record,
     parse_semantic_gate_verdict,
+    summarize_evidence,
 )
 
 pytestmark = pytest.mark.unit
@@ -457,6 +461,61 @@ class TestEvidenceSerialization:
                 "target_line_range": None,
             }
         ]
+
+    def test_parse_evidence_payload_does_not_mutate_input(self):
+        """Public parser should not consume the serialized _kind field."""
+        payload = [
+            {
+                "_kind": "TextConflict",
+                "file_path": "src/conflict.py",
+                "conflict_markers": 2,
+                "base_lines": None,
+                "ours_lines": None,
+                "theirs_lines": None,
+            }
+        ]
+
+        parsed = parse_evidence_payload(payload)
+
+        assert isinstance(parsed[0], TextConflict)
+        assert payload[0]["_kind"] == "TextConflict"
+
+    def test_describe_evidence_formats_settlement_narrative(self):
+        """Evidence descriptions should be readable by review, watch, and retry prompts."""
+        evidence = SymbolOverlap(
+            symbol_name="Processor.process",
+            symbol_type="method",
+            file_path="src/runner.py",
+            task_line_range=(12, 18),
+            target_line_range=(14, 22),
+        )
+
+        description = describe_evidence(evidence)
+
+        assert description == (
+            "same-symbol edit: method Processor.process in src/runner.py "
+            "(task lines 12-18; target lines 14-22)"
+        )
+
+    def test_describe_evidence_payload_handles_serialized_records(self):
+        """Serialized evidence should share the same narrative wording."""
+        payload = evidence_payload((
+            SignatureDrift(
+                symbol_name="run",
+                file_path="src/runner.py",
+                base_signature="def run(path)",
+                integrated_signature="def run(path, *, force)",
+            ),
+        ))
+
+        assert describe_evidence_payload(payload) == (
+            "signature drift: run in src/runner.py changed from def run(path) "
+            "to def run(path, *, force)",
+        )
+        assert (
+            summarize_evidence(parse_evidence_payload(payload))
+            == describe_evidence_payload(payload)[0]
+        )
 
 
 class TestEventEmitters:
@@ -1149,7 +1208,7 @@ def process(value, default):
 
         assert record.target_head_sha == target_sha
         assert record.task_commit_sha == task_sha
-        assert record.risk_level == RiskLevel.MEDIUM
+        assert record.risk_level == RiskLevel.HIGH
         assert record.python_overlap_detected is True
         overlaps = [
             evidence for evidence in record.overlap_evidence if isinstance(evidence, SymbolOverlap)
@@ -1166,29 +1225,106 @@ def process(value, default):
             plan_name="test-plan",
             project_config=ProjectConfig(),
         )
-        drift = SignatureDrift(
+        private_drift = SignatureDrift(
+            symbol_name="_process",
+            file_path="module.py",
+            base_signature="def _process(value)",
+            integrated_signature="def _process(value, default)",
+        )
+        public_drift = SignatureDrift(
             symbol_name="process",
             file_path="module.py",
             base_signature="def process(value)",
             integrated_signature="def process(value, default)",
         )
-        overlap = SymbolOverlap(
+        private_overlap = SymbolOverlap(
+            symbol_name="_process",
+            symbol_type="function",
+            file_path="module.py",
+        )
+        public_overlap = SymbolOverlap(
             symbol_name="process",
             symbol_type="function",
             file_path="module.py",
         )
-        duplicate = DuplicateDefinition(
+        private_duplicate = DuplicateDefinition(
+            symbol_name="_process",
+            symbol_type="function",
+            file_paths=("a.py", "b.py"),
+        )
+        public_duplicate = DuplicateDefinition(
             symbol_name="process",
             symbol_type="function",
             file_paths=("a.py", "b.py"),
         )
+        syntax = SyntaxConflict(file_path="module.py", error_message="invalid syntax")
+        text = TextConflict(file_path="module.py", conflict_markers=2)
 
         assert flow._risk_level_from_evidence(()) == RiskLevel.NONE
-        assert flow._risk_level_from_evidence((drift,)) == RiskLevel.LOW
-        assert flow._risk_level_from_evidence((overlap,)) == RiskLevel.MEDIUM
-        assert flow._risk_level_from_evidence((duplicate,)) == RiskLevel.HIGH
-        assert flow._risk_level_from_evidence((drift, overlap)) == RiskLevel.CRITICAL
-        assert flow._risk_level_from_evidence((drift, drift, drift, drift)) == RiskLevel.CRITICAL
+        assert flow._risk_level_from_evidence((private_drift,)) == RiskLevel.LOW
+        assert flow._risk_level_from_evidence((public_drift,)) == RiskLevel.HIGH
+        assert flow._risk_level_from_evidence((private_overlap,)) == RiskLevel.MEDIUM
+        assert flow._risk_level_from_evidence((public_overlap,)) == RiskLevel.HIGH
+        assert flow._risk_level_from_evidence((private_duplicate,)) == RiskLevel.MEDIUM
+        assert flow._risk_level_from_evidence((public_duplicate,)) == RiskLevel.HIGH
+        assert flow._risk_level_from_evidence((syntax,)) == RiskLevel.CRITICAL
+        assert flow._risk_level_from_evidence((text,)) == RiskLevel.CRITICAL
+        assert flow._risk_level_from_evidence((private_drift,) * 4) == RiskLevel.LOW
+        assert flow._risk_level_from_evidence((private_drift, public_overlap)) == RiskLevel.HIGH
+
+    def test_semantic_gate_rejection_message_includes_evidence(self, tmp_path: Path):
+        from dgov.config import ProjectConfig
+        from dgov.settlement_flow import SettlementFlow
+
+        flow = SettlementFlow(
+            session_root=str(tmp_path),
+            plan_name="test-plan",
+            project_config=ProjectConfig(),
+        )
+        verdict = SemanticGateVerdict(
+            task_slug="task",
+            gate_name="same_symbol_edit",
+            passed=False,
+            failure_class=FailureClass.SAME_SYMBOL_EDIT,
+            evidence=(
+                SymbolOverlap(
+                    symbol_name="foo",
+                    symbol_type="function",
+                    file_path="src/a.py",
+                ),
+            ),
+            error_message="concurrent edit detected",
+        )
+
+        message = flow.semantic_gate_rejection_message(verdict)
+
+        assert "Semantic gate 'same_symbol_edit' rejected: same_symbol_edit" in message
+        assert "concurrent edit detected" in message
+        assert "Settlement evidence:" in message
+        assert "same-symbol edit: function foo in src/a.py" in message
+
+    def test_candidate_failure_message_includes_text_conflict_evidence(self, tmp_path: Path):
+        from dgov.config import ProjectConfig
+        from dgov.settlement_flow import SettlementFlow
+        from dgov.worktree import IntegrationCandidateResult
+
+        flow = SettlementFlow(
+            session_root=str(tmp_path),
+            plan_name="test-plan",
+            project_config=ProjectConfig(),
+        )
+        result = IntegrationCandidateResult(
+            passed=False,
+            error="Replay failed",
+            conflict_files=("src/a.py",),
+            conflict_marker_counts={"src/a.py": 2},
+        )
+
+        message = flow.integration_candidate_failure_message(result)
+
+        assert "Replay failed" in message
+        assert "Settlement evidence:" in message
+        assert "text conflict: src/a.py has 2 conflict marker blocks" in message
 
     def test_critical_risk_short_circuits_candidate_creation(self, tmp_path: Path):
         import asyncio
@@ -1208,7 +1344,7 @@ def process(value, default):
             )
             assert error is not None
             assert error.startswith("Integration risk CRITICAL:")
-            assert "SymbolOverlap" in error
+            assert "same-symbol edit: function process in module.py" in error
             assert was_settlement is True
 
         asyncio.run(_run_check())
@@ -1252,3 +1388,158 @@ class TestPythonSemanticGateIntegration:
         # Should detect cross-file duplicate
         assert len(dups) == 1
         assert dups[0].symbol_name == "helper"
+
+    def test_semantic_gate_rejects_duplicate_from_target_changed_file(self, tmp_path: Path):
+        """Gate includes target-changed Python files in cross-file duplicate checks."""
+        from dgov.semantic_settlement import FailureClass, run_python_semantic_gate
+
+        _init_git_repo(tmp_path)
+        src = tmp_path / "src"
+        src.mkdir()
+        task_file = src / "task.py"
+        target_file = src / "target.py"
+        task_base = "def task_only():\n    return 1\n"
+        task_changed = task_base + "\n\ndef shared():\n    return 'task'\n"
+        target_changed = "def shared():\n    return 'target'\n"
+
+        task_file.write_text(task_base)
+        base_sha = _commit_all(tmp_path, "base")
+
+        _git(tmp_path, "checkout", "-b", "task-branch")
+        task_file.write_text(task_changed)
+        task_sha = _commit_all(tmp_path, "task adds shared")
+
+        _git(tmp_path, "checkout", "main")
+        target_file.write_text(target_changed)
+        target_sha = _commit_all(tmp_path, "target adds shared")
+        task_file.write_text(task_changed)
+
+        verdict = run_python_semantic_gate(
+            candidate_path=tmp_path,
+            project_root=str(tmp_path),
+            task_base_sha=base_sha,
+            task_commit_sha=task_sha,
+            target_head_sha=target_sha,
+            touched_files=("src/task.py",),
+            task_slug="task",
+        )
+
+        assert verdict.passed is False
+        assert verdict.failure_class == FailureClass.DUPLICATE_DEFINITION
+        assert len(verdict.evidence) == 1
+        duplicate = verdict.evidence[0]
+        assert isinstance(duplicate, DuplicateDefinition)
+        assert duplicate.symbol_name == "shared"
+        assert set(duplicate.file_paths) == {"src/task.py", "src/target.py"}
+
+    def test_semantic_gate_ignores_preexisting_cross_file_duplicates(self, tmp_path: Path):
+        """Pre-existing duplicate names across files are not a new settlement conflict."""
+        from dgov.semantic_settlement import run_python_semantic_gate
+
+        _init_git_repo(tmp_path)
+        src = tmp_path / "src"
+        src.mkdir()
+        task_file = src / "task.py"
+        target_file = src / "target.py"
+        task_base = "def shared():\n    return 'base task'\n"
+        target_base = "def shared():\n    return 'base target'\n"
+        task_changed = "def shared():\n    return 'task'\n"
+        target_changed = "def shared():\n    return 'target'\n"
+
+        task_file.write_text(task_base)
+        target_file.write_text(target_base)
+        base_sha = _commit_all(tmp_path, "base")
+
+        _git(tmp_path, "checkout", "-b", "task-branch")
+        task_file.write_text(task_changed)
+        task_sha = _commit_all(tmp_path, "task edits task module")
+
+        _git(tmp_path, "checkout", "main")
+        target_file.write_text(target_changed)
+        target_sha = _commit_all(tmp_path, "target edits target module")
+        task_file.write_text(task_changed)
+
+        verdict = run_python_semantic_gate(
+            candidate_path=tmp_path,
+            project_root=str(tmp_path),
+            task_base_sha=base_sha,
+            task_commit_sha=task_sha,
+            target_head_sha=target_sha,
+            touched_files=("src/task.py",),
+            task_slug="task",
+        )
+
+        assert verdict.passed is True
+
+    def test_semantic_gate_ignores_target_head_duplicate_unrelated_to_task(self, tmp_path: Path):
+        """Target-head duplicate names should not be charged to an unrelated task."""
+        from dgov.semantic_settlement import run_python_semantic_gate
+
+        _init_git_repo(tmp_path)
+        src = tmp_path / "src"
+        src.mkdir()
+        target_a = src / "target_a.py"
+        target_b = src / "target_b.py"
+        task_file = src / "task.py"
+        target_a.write_text("def alpha():\n    return 1\n")
+        target_b.write_text("def beta():\n    return 2\n")
+        task_file.write_text("def task_only():\n    return 3\n")
+        base_sha = _commit_all(tmp_path, "base")
+
+        _git(tmp_path, "checkout", "-b", "task-branch")
+        task_file.write_text("def task_only():\n    return 4\n")
+        task_sha = _commit_all(tmp_path, "task edits task module")
+
+        _git(tmp_path, "checkout", "main")
+        target_a.write_text("def shared():\n    return 1\n")
+        target_b.write_text("def shared():\n    return 2\n")
+        target_sha = _commit_all(tmp_path, "target has duplicate")
+        task_file.write_text("def task_only():\n    return 4\n")
+
+        verdict = run_python_semantic_gate(
+            candidate_path=tmp_path,
+            project_root=str(tmp_path),
+            task_base_sha=base_sha,
+            task_commit_sha=task_sha,
+            target_head_sha=target_sha,
+            touched_files=("src/task.py",),
+            task_slug="task",
+        )
+
+        assert verdict.passed is True
+
+    def test_semantic_gate_ignores_target_head_syntax_error_unrelated_to_task(
+        self, tmp_path: Path
+    ):
+        """Syntax rejection stays scoped to files changed by the task."""
+        from dgov.semantic_settlement import run_python_semantic_gate
+
+        _init_git_repo(tmp_path)
+        src = tmp_path / "src"
+        src.mkdir()
+        target_file = src / "target.py"
+        task_file = src / "task.py"
+        target_file.write_text("def target_only():\n    return 1\n")
+        task_file.write_text("def task_only():\n    return 2\n")
+        base_sha = _commit_all(tmp_path, "base")
+
+        _git(tmp_path, "checkout", "-b", "task-branch")
+        task_file.write_text("def task_only():\n    return 3\n")
+        task_sha = _commit_all(tmp_path, "task edits task module")
+
+        _git(tmp_path, "checkout", "main")
+        target_file.write_text("def broken(:\n")
+        target_sha = _commit_all(tmp_path, "target has syntax error")
+        task_file.write_text("def task_only():\n    return 3\n")
+
+        verdict = run_python_semantic_gate(
+            candidate_path=tmp_path,
+            project_root=str(tmp_path),
+            task_base_sha=base_sha,
+            task_commit_sha=task_sha,
+            target_head_sha=target_sha,
+            touched_files=("src/task.py",),
+            task_slug="task",
+        )
+
+        assert verdict.passed is True
