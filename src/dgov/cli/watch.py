@@ -18,6 +18,10 @@ from dgov.cli import cli
 from dgov.event_types import (
     DgovEvent,
     EvtTaskDispatched,
+    IntegrationCandidateFailed,
+    IntegrationCandidatePassed,
+    IntegrationOverlapDetected,
+    IntegrationRiskScored,
     IterationFork,
     MergeCompleted,
     ReviewFail,
@@ -27,6 +31,7 @@ from dgov.event_types import (
     SelfReviewFixStarted,
     SelfReviewPassed,
     SelfReviewRejected,
+    SemanticGateRejected,
     SettlementRetry,
     TaskAbandoned,
     TaskDone,
@@ -39,6 +44,7 @@ from dgov.event_types import (
 from dgov.live_state import live_plan_names
 from dgov.persistence import latest_event_id, read_events
 from dgov.project_root import resolve_project_root
+from dgov.semantic_settlement import describe_evidence_payload
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
@@ -172,7 +178,90 @@ def _format_event(
         ),
     ):
         return _format_self_review_event(event, ts, task_slug)
+    if isinstance(
+        event,
+        (
+            IntegrationRiskScored,
+            IntegrationOverlapDetected,
+            IntegrationCandidatePassed,
+            IntegrationCandidateFailed,
+            SemanticGateRejected,
+        ),
+    ):
+        return _format_semantic_settlement_event(event, ts, task_slug)
     return _format_default_event(event, ts, task_slug)
+
+
+def _format_semantic_settlement_event(
+    event: IntegrationRiskScored
+    | IntegrationOverlapDetected
+    | IntegrationCandidatePassed
+    | IntegrationCandidateFailed
+    | SemanticGateRejected,
+    ts: str,
+    task_slug: str,
+) -> RenderableType:
+    if isinstance(event, IntegrationRiskScored):
+        return _format_integration_risk_event(event, ts, task_slug)
+    if isinstance(event, IntegrationOverlapDetected):
+        evidence = _format_evidence_lines((event.evidence,))
+        return _make_row(ts, "!", "overlap", "bold yellow", task_slug, evidence, full_width=True)
+    if isinstance(event, IntegrationCandidatePassed):
+        detail = _short_sha_detail("candidate", event.candidate_sha)
+        return _make_row(ts, "✔", "cand ok", "green", task_slug, detail)
+    if isinstance(event, IntegrationCandidateFailed):
+        detail = _failure_detail(event.failure_class, event.error_message, event.evidence)
+        return _make_row(ts, "✖", "cand err", "bold red", task_slug, detail, full_width=True)
+    detail = _failure_detail(event.failure_class, event.error_message, event.evidence)
+    if event.gate_name:
+        detail = f"gate={event.gate_name}\n{detail}" if detail else f"gate={event.gate_name}"
+    return _make_row(ts, "✖", "gate err", "bold red", task_slug, detail, full_width=True)
+
+
+def _format_integration_risk_event(
+    event: IntegrationRiskScored,
+    ts: str,
+    task_slug: str,
+) -> RenderableType:
+    parts = [f"risk={event.risk_level or 'unknown'}"]
+    if event.python_overlap_detected:
+        parts.append("overlap detected")
+    if event.claimed_files:
+        parts.append(f"claimed={len(event.claimed_files)}")
+    if event.changed_files:
+        parts.append(f"changed={len(event.changed_files)}")
+    evidence = _format_evidence_lines(event.overlap_evidence)
+    detail = ", ".join(parts)
+    if evidence:
+        detail = f"{detail}\n{evidence}"
+    return _make_row(ts, "!", "risk", "bold yellow", task_slug, detail, full_width=bool(evidence))
+
+
+def _short_sha_detail(label: str, sha: str) -> str:
+    if not sha:
+        return ""
+    return f"{label}={sha[:8]}"
+
+
+def _failure_detail(
+    failure_class: str,
+    error_message: str,
+    evidence_payload: tuple[dict, ...],
+) -> str:
+    lines: list[str] = []
+    if failure_class:
+        lines.append(f"class={failure_class}")
+    if error_message:
+        lines.append(error_message)
+    evidence = _format_evidence_lines(evidence_payload)
+    if evidence:
+        lines.append(evidence)
+    return "\n".join(lines)
+
+
+def _format_evidence_lines(evidence_payload: tuple[dict, ...]) -> str:
+    descriptions = describe_evidence_payload(evidence_payload)
+    return "\n".join(f"evidence: {description}" for description in descriptions)
 
 
 def _format_dispatch_event(

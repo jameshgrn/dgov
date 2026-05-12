@@ -29,6 +29,7 @@ from dgov.event_types import (
     EvtTaskDispatched,
     IntegrationCandidateFailed,
     IntegrationCandidatePassed,
+    IntegrationOverlapDetected,
     IntegrationRiskScored,
     IterationFork,
     MergeCompleted,
@@ -53,6 +54,7 @@ from dgov.event_types import (
 )
 from dgov.persistence import read_events
 from dgov.repo_snapshot import format_structural_offender_report
+from dgov.semantic_settlement import describe_evidence_payload
 
 _log = logging.getLogger(__name__)
 _ITERATION_EXHAUSTED_RE = re.compile(r"Exceeded max iterations \((?P<budget>\d+)\)", re.IGNORECASE)
@@ -189,6 +191,11 @@ class UnitReview:
     integration_risk_detected: bool = False
     integration_candidate_passed: bool | None = None  # None if no candidate validation
     integration_failure_class: str | None = None  # FailureClass value
+    integration_claimed_files: tuple[str, ...] = ()
+    integration_changed_files: tuple[str, ...] = ()
+    integration_gate_name: str | None = None
+    integration_error: str | None = None
+    integration_evidence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -732,10 +739,33 @@ def _apply_integration_risk_scored(event: IntegrationRiskScored, state: dict) ->
     risk_level = event.risk_level
     if isinstance(risk_level, str):
         state["integration_risk_level"] = risk_level
+    state["integration_claimed_files"] = tuple(event.claimed_files or ())
+    state["integration_changed_files"] = tuple(event.changed_files or ())
     if event.python_overlap_detected is True:
         state["integration_risk_detected"] = True
     if event.overlap_evidence and len(event.overlap_evidence) > 0:
         state["integration_risk_detected"] = True
+        _append_integration_evidence(state, event.overlap_evidence)
+
+
+def _append_integration_evidence(state: dict, evidence_payload: object) -> None:
+    payload: tuple[dict[str, Any], ...]
+    if isinstance(evidence_payload, dict):
+        payload = (cast("dict[str, Any]", evidence_payload),)
+    elif isinstance(evidence_payload, tuple | list):
+        payload = tuple(
+            cast("dict[str, Any]", item) for item in evidence_payload if isinstance(item, dict)
+        )
+    else:
+        payload = ()
+    if not payload:
+        return
+
+    known = set(state["integration_evidence"])
+    for description in describe_evidence_payload(payload):
+        if description not in known:
+            state["integration_evidence"].append(description)
+            known.add(description)
 
 
 def _apply_integration_failure(
@@ -746,14 +776,24 @@ def _apply_integration_failure(
     failure_class = event.failure_class
     if isinstance(failure_class, str):
         state["integration_failure_class"] = failure_class
+    error_message = event.error_message
+    if isinstance(error_message, str) and error_message:
+        state["integration_error"] = error_message
+    if isinstance(event, SemanticGateRejected) and event.gate_name:
+        state["integration_gate_name"] = event.gate_name
+    _append_integration_evidence(state, event.evidence)
 
 
 def _apply_semantic_settlement_event(ev: _EventWithId, state: dict) -> None:
     """Handle semantic settlement events: risk scoring, candidate validation, gates."""
     if isinstance(ev.event, IntegrationRiskScored):
         _apply_integration_risk_scored(ev.event, state)
+    elif isinstance(ev.event, IntegrationOverlapDetected):
+        state["integration_risk_detected"] = True
+        _append_integration_evidence(state, ev.event.evidence)
     elif isinstance(ev.event, IntegrationCandidatePassed):
         state["integration_candidate_passed"] = True
+        _append_integration_evidence(state, ev.event.evidence)
     elif isinstance(ev.event, (IntegrationCandidateFailed, SemanticGateRejected)):
         _apply_integration_failure(ev.event, state)
 
@@ -781,6 +821,11 @@ def _initial_unit_rollup_state() -> dict:
         "integration_risk_detected": False,
         "integration_candidate_passed": None,
         "integration_failure_class": None,
+        "integration_claimed_files": (),
+        "integration_changed_files": (),
+        "integration_gate_name": None,
+        "integration_error": None,
+        "integration_evidence": [],
         # Settlement phase tracking
         "phase": None,
         "phase_timings": [],
@@ -835,6 +880,11 @@ def _unit_rollup_dict(state: dict, unit_events: list[dict]) -> dict:
         "integration_risk_detected": state["integration_risk_detected"],
         "integration_candidate_passed": state["integration_candidate_passed"],
         "integration_failure_class": state["integration_failure_class"],
+        "integration_claimed_files": state["integration_claimed_files"],
+        "integration_changed_files": state["integration_changed_files"],
+        "integration_gate_name": state["integration_gate_name"],
+        "integration_error": state["integration_error"],
+        "integration_evidence": tuple(state["integration_evidence"]),
         # Settlement phase
         "phase": state["phase"],
         "phase_timings": tuple(state["phase_timings"]),
@@ -1111,6 +1161,11 @@ def _build_integration_fields(rollup: dict) -> dict[str, Any]:
         "integration_risk_detected": rollup["integration_risk_detected"],
         "integration_candidate_passed": rollup["integration_candidate_passed"],
         "integration_failure_class": rollup["integration_failure_class"],
+        "integration_claimed_files": rollup["integration_claimed_files"],
+        "integration_changed_files": rollup["integration_changed_files"],
+        "integration_gate_name": rollup["integration_gate_name"],
+        "integration_error": rollup["integration_error"],
+        "integration_evidence": rollup["integration_evidence"],
     }
 
 

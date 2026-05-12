@@ -1238,11 +1238,25 @@ def _render_integration_telemetry(unit) -> None:
             click.echo(click.style(f"    integration  risk={risk_label}", fg="yellow"))
         else:
             click.echo(click.style("    integration  overlap detected", fg="yellow"))
+    if unit.integration_claimed_files:
+        _render_path_list("claimed     ", unit.integration_claimed_files)
+    if unit.integration_changed_files:
+        _render_path_list("changed     ", unit.integration_changed_files)
     if unit.integration_candidate_passed is True:
         click.echo("    candidate    passed")
     elif unit.integration_candidate_passed is False:
         fc = unit.integration_failure_class or "failed"
         click.echo(click.style(f"    candidate    {fc}", fg="red"))
+    if unit.integration_gate_name:
+        click.echo(click.style(f"    gate         {unit.integration_gate_name}", fg="yellow"))
+    if unit.integration_error:
+        _render_multiline_field("reason      ", unit.integration_error, max_lines=3)
+    if unit.integration_evidence:
+        _render_multiline_field(
+            "evidence    ",
+            "\n".join(unit.integration_evidence),
+            max_lines=6,
+        )
 
 
 def _render_failed_unit(unit) -> None:
@@ -1292,6 +1306,7 @@ def _render_active_unit(unit) -> None:
         ("phases", _format_phase_timings(unit)),
     ]
     _render_unit_fields(fields)
+    _render_integration_telemetry(unit)
     if unit.last_thought:
         _render_multiline_field("last thought", unit.last_thought, max_lines=2)
     click.echo("")
@@ -1433,6 +1448,11 @@ def _review_unit_dict(unit) -> dict:
         "integration_risk_detected": unit.integration_risk_detected,
         "integration_candidate_passed": unit.integration_candidate_passed,
         "integration_failure_class": unit.integration_failure_class,
+        "integration_claimed_files": list(unit.integration_claimed_files),
+        "integration_changed_files": list(unit.integration_changed_files),
+        "integration_gate_name": unit.integration_gate_name,
+        "integration_error": unit.integration_error,
+        "integration_evidence": list(unit.integration_evidence),
     }
 
 

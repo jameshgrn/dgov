@@ -27,7 +27,13 @@ from dgov.cli.watch import (
     _format_event,
     _infer_plan_name_from_active_tasks,
 )
-from dgov.event_types import SettlementRetry, TaskDone, WorkerLog
+from dgov.event_types import (
+    IntegrationRiskScored,
+    SemanticGateRejected,
+    SettlementRetry,
+    TaskDone,
+    WorkerLog,
+)
 from dgov.persistence import (
     emit_event,
     list_runtime_artifacts,
@@ -1345,6 +1351,70 @@ def test_format_event_renders_task_done_tokens() -> None:
     assert "1,234 prompt + 567 completion tokens" in rendered
 
 
+def test_format_event_renders_integration_risk_evidence() -> None:
+    renderable = _format_event(
+        IntegrationRiskScored(
+            task_slug="task-a",
+            risk_level="high",
+            claimed_files=("src/a.py",),
+            changed_files=("src/a.py",),
+            python_overlap_detected=True,
+            overlap_evidence=(
+                {
+                    "_kind": "SymbolOverlap",
+                    "symbol_name": "foo",
+                    "symbol_type": "function",
+                    "file_path": "src/a.py",
+                    "task_line_range": None,
+                    "target_line_range": None,
+                },
+            ),
+        ),
+        "2026-04-24T12:34:56Z",
+    )
+
+    assert renderable is not None
+    console = Console(record=True, width=120)
+    console.print(renderable)
+    rendered = console.export_text()
+    assert "risk=high" in rendered
+    assert "claimed=1" in rendered
+    assert "changed=1" in rendered
+    assert "same-symbol edit: function foo in src/a.py" in rendered
+
+
+def test_format_event_renders_semantic_gate_rejection_evidence() -> None:
+    renderable = _format_event(
+        SemanticGateRejected(
+            task_slug="task-a",
+            gate_name="same_symbol_edit",
+            failure_class="same_symbol_edit",
+            error_message="concurrent edit detected",
+            evidence=(
+                {
+                    "_kind": "SymbolOverlap",
+                    "symbol_name": "foo",
+                    "symbol_type": "function",
+                    "file_path": "src/a.py",
+                    "task_line_range": None,
+                    "target_line_range": None,
+                },
+            ),
+        ),
+        "2026-04-24T12:34:56Z",
+    )
+
+    assert renderable is not None
+    console = Console(record=True, width=120)
+    console.print(renderable)
+    rendered = console.export_text()
+    assert "gate err" in rendered
+    assert "gate=same_symbol_edit" in rendered
+    assert "class=same_symbol_edit" in rendered
+    assert "concurrent edit detected" in rendered
+    assert "same-symbol edit: function foo in src/a.py" in rendered
+
+
 def test_infer_plan_name_ignores_stale_prior_run(tmp_path: Path) -> None:
     emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
     emit_event(
@@ -1735,6 +1805,9 @@ class TestReviewIntegrationTelemetry:
             integration_risk_level="high",
             integration_risk_detected=True,
             integration_candidate_passed=True,
+            integration_claimed_files=("src/a.py",),
+            integration_changed_files=("src/a.py", "tests/test_a.py"),
+            integration_evidence=("same-symbol edit: function foo in src/a.py",),
         )
         review = PlanReview(
             plan_name="p",
@@ -1751,6 +1824,11 @@ class TestReviewIntegrationTelemetry:
 
         assert result.exit_code == 0, result.output
         assert "risk=high, overlap detected" in result.output
+        assert "claimed" in result.output
+        assert "src/a.py" in result.output
+        assert "changed" in result.output
+        assert "tests/test_a.py" in result.output
+        assert "same-symbol edit: function foo in src/a.py" in result.output
         assert "candidate    passed" in result.output
 
     def test_review_shows_candidate_failure_when_present(
@@ -1768,6 +1846,9 @@ class TestReviewIntegrationTelemetry:
             integration_risk_detected=True,
             integration_candidate_passed=False,
             integration_failure_class="same_symbol_edit",
+            integration_gate_name="same_symbol_edit",
+            integration_error="concurrent edit detected",
+            integration_evidence=("same-symbol edit: function foo in src/a.py",),
         )
         review = PlanReview(
             plan_name="p",
@@ -1785,6 +1866,9 @@ class TestReviewIntegrationTelemetry:
         assert result.exit_code == 1  # Failed units exit non-zero
         assert "risk=critical, overlap detected" in result.output
         assert "candidate    same_symbol_edit" in result.output
+        assert "gate         same_symbol_edit" in result.output
+        assert "concurrent edit detected" in result.output
+        assert "same-symbol edit: function foo in src/a.py" in result.output
 
     def test_review_omits_integration_when_not_present(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1841,6 +1925,11 @@ class TestReviewIntegrationTelemetry:
             integration_risk_detected=True,
             integration_candidate_passed=True,
             integration_failure_class=None,
+            integration_claimed_files=("src/a.py",),
+            integration_changed_files=("src/a.py",),
+            integration_gate_name=None,
+            integration_error=None,
+            integration_evidence=("same-symbol edit: function foo in src/a.py",),
         )
         review = PlanReview(
             plan_name="p",
@@ -1862,3 +1951,8 @@ class TestReviewIntegrationTelemetry:
         assert unit_data["integration_risk_detected"] is True
         assert unit_data["integration_candidate_passed"] is True
         assert unit_data["integration_failure_class"] is None
+        assert unit_data["integration_claimed_files"] == ["src/a.py"]
+        assert unit_data["integration_changed_files"] == ["src/a.py"]
+        assert unit_data["integration_gate_name"] is None
+        assert unit_data["integration_error"] is None
+        assert unit_data["integration_evidence"] == ["same-symbol edit: function foo in src/a.py"]

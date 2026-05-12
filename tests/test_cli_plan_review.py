@@ -132,6 +132,72 @@ def test_review_renders_deployed_unit(
     assert "Added the thing." in result.output
 
 
+def test_review_renders_semantic_evidence_from_event_log(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.persistence import emit_event
+
+    plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "do a"})
+    root = str(tmp_path)
+    task_slug = "tasks/main.a"
+    overlap = {
+        "_kind": "SymbolOverlap",
+        "symbol_name": "foo",
+        "symbol_type": "function",
+        "file_path": "src/a.py",
+        "task_line_range": None,
+        "target_line_range": None,
+    }
+    emit_event(root, "run_start", "runner", plan_name="p")
+    emit_event(root, "dag_task_dispatched", "pane-a", plan_name="p", task_slug=task_slug)
+    emit_event(
+        root,
+        "integration_risk_scored",
+        "pane-a",
+        plan_name="p",
+        task_slug=task_slug,
+        risk_level="high",
+        claimed_files=["src/a.py"],
+        changed_files=["src/a.py", "tests/test_a.py"],
+        python_overlap_detected=True,
+        overlap_evidence=[overlap],
+    )
+    emit_event(
+        root,
+        "semantic_gate_rejected",
+        "pane-a",
+        plan_name="p",
+        task_slug=task_slug,
+        gate_name="same_symbol_edit",
+        passed=False,
+        failure_class="same_symbol_edit",
+        error_message="concurrent edit detected",
+        evidence=[overlap],
+    )
+    emit_event(
+        root,
+        "task_merge_failed",
+        "pane-a",
+        plan_name="p",
+        task_slug=task_slug,
+        error="settlement rejected",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
+
+    assert result.exit_code == 1
+    assert "risk=high, overlap detected" in result.output
+    assert "claimed" in result.output
+    assert "src/a.py" in result.output
+    assert "changed" in result.output
+    assert "tests/test_a.py" in result.output
+    assert "candidate    same_symbol_edit" in result.output
+    assert "gate         same_symbol_edit" in result.output
+    assert "concurrent edit detected" in result.output
+    assert "same-symbol edit: function foo in src/a.py" in result.output
+
+
 # -- Failed unit with hint --
 
 

@@ -948,13 +948,29 @@ class TestIntegrationRiskTelemetry:
                 "plan",
                 risk_level="high",
                 python_overlap_detected=True,
-                overlap_evidence=[{"_kind": "SymbolOverlap", "symbol_name": "foo"}],
+                claimed_files=["src/a.py"],
+                changed_files=["src/a.py"],
+                overlap_evidence=[
+                    {
+                        "_kind": "SymbolOverlap",
+                        "symbol_name": "foo",
+                        "symbol_type": "function",
+                        "file_path": "src/a.py",
+                        "task_line_range": [10, 12],
+                        "target_line_range": [11, 14],
+                    }
+                ],
             ),
             _lifecycle(3, "merge_completed", "t", "plan", merge_sha="abc123"),
         ]
         rollup = _rollup_unit_events(events)
         assert rollup["integration_risk_level"] == "high"
         assert rollup["integration_risk_detected"] is True
+        assert rollup["integration_claimed_files"] == ("src/a.py",)
+        assert rollup["integration_changed_files"] == ("src/a.py",)
+        assert rollup["integration_evidence"] == (
+            "same-symbol edit: function foo in src/a.py (task lines 10-12; target lines 11-14)",
+        )
 
     def test_integration_risk_scored_no_overlap(self):
         """rollup should capture risk_level even when no overlap detected."""
@@ -1007,11 +1023,23 @@ class TestIntegrationRiskTelemetry:
                 passed=False,
                 failure_class="syntax_conflict",
                 error_message="parse error",
+                evidence=[
+                    {
+                        "_kind": "SyntaxConflict",
+                        "file_path": "src/a.py",
+                        "line_number": 3,
+                        "column": 1,
+                        "error_message": "invalid syntax",
+                        "parser_used": "python",
+                    }
+                ],
             ),
         ]
         rollup = _rollup_unit_events(events)
         assert rollup["integration_candidate_passed"] is False
         assert rollup["integration_failure_class"] == "syntax_conflict"
+        assert rollup["integration_error"] == "parse error"
+        assert rollup["integration_evidence"] == ("syntax conflict: src/a.py:3:1: invalid syntax",)
 
     def test_semantic_gate_rejected(self):
         """rollup should capture semantic gate rejection with failure class."""
@@ -1026,11 +1054,24 @@ class TestIntegrationRiskTelemetry:
                 passed=False,
                 failure_class="same_symbol_edit",
                 error_message="concurrent edit detected",
+                evidence=[
+                    {
+                        "_kind": "SymbolOverlap",
+                        "symbol_name": "foo",
+                        "symbol_type": "function",
+                        "file_path": "src/a.py",
+                        "task_line_range": None,
+                        "target_line_range": None,
+                    }
+                ],
             ),
         ]
         rollup = _rollup_unit_events(events)
         assert rollup["integration_candidate_passed"] is False
         assert rollup["integration_failure_class"] == "same_symbol_edit"
+        assert rollup["integration_gate_name"] == "same_symbol_edit"
+        assert rollup["integration_error"] == "concurrent edit detected"
+        assert rollup["integration_evidence"] == ("same-symbol edit: function foo in src/a.py",)
 
     def test_build_unit_review_includes_integration_fields(self, tmp_path: Path):
         """UnitReview should include integration fields when events present."""
@@ -1044,6 +1085,18 @@ class TestIntegrationRiskTelemetry:
                 "p",
                 risk_level="high",
                 python_overlap_detected=True,
+                claimed_files=["src/a.py"],
+                changed_files=["src/a.py"],
+                overlap_evidence=[
+                    {
+                        "_kind": "SymbolOverlap",
+                        "symbol_name": "foo",
+                        "symbol_type": "function",
+                        "file_path": "src/a.py",
+                        "task_line_range": None,
+                        "target_line_range": None,
+                    }
+                ],
             ),
             _lifecycle(3, "integration_candidate_passed", "t", "p", passed=True),
             _lifecycle(4, "merge_completed", "t", "p", merge_sha="abc123"),
@@ -1066,6 +1119,9 @@ class TestIntegrationRiskTelemetry:
         assert review.integration_risk_detected is True
         assert review.integration_candidate_passed is True
         assert review.integration_failure_class is None
+        assert review.integration_claimed_files == ("src/a.py",)
+        assert review.integration_changed_files == ("src/a.py",)
+        assert review.integration_evidence == ("same-symbol edit: function foo in src/a.py",)
 
     def test_unit_without_integration_events_has_none_values(self, tmp_path: Path):
         """UnitReview should have None/false defaults when no integration events."""
@@ -1092,6 +1148,11 @@ class TestIntegrationRiskTelemetry:
         assert review.integration_risk_detected is False
         assert review.integration_candidate_passed is None
         assert review.integration_failure_class is None
+        assert review.integration_claimed_files == ()
+        assert review.integration_changed_files == ()
+        assert review.integration_gate_name is None
+        assert review.integration_error is None
+        assert review.integration_evidence == ()
 
 
 # ---------------------------------------------------------------------------

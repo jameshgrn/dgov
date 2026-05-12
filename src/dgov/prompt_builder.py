@@ -255,11 +255,11 @@ class PromptBuilder:
         return (
             "Your previous attempt was REJECTED by settlement. "
             "Fix the issue and call done.\n\n"
-            f"SETTLEMENT ERROR:\n{settlement_error}\n\n"
+            f"SETTLEMENT VERDICT AND EVIDENCE:\n{settlement_error}\n\n"
             f"ORIGINAL TASK:\n{task.prompt or ''}\n\n"
             "The worktree has your changes (uncommitted). "
             "Use git_diff to see them, fix the problem, then rerun the failing "
-            "verification command shown in SETTLEMENT ERROR before calling done."
+            "verification command shown in SETTLEMENT VERDICT AND EVIDENCE before calling done."
         )
 
     def _get_ledger_entries(self, task: DagTaskSpec) -> list[dict]:
