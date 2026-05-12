@@ -3,7 +3,9 @@ language = "python"
 src_dir = "src/"
 test_dir = "tests/"
 source_extensions = [".py"]
-default_agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
+llm_base_url = "https://api.fireworks.ai/inference/v1"
+llm_api_key_env = "FIREWORKS_API_KEY"
 test_cmd = "uv run pytest -q -m unit {test_dir} --tb=short"
 lint_cmd = "uv run ruff check {file}"
 format_cmd = "uv run ruff format {file}"
@@ -27,8 +29,8 @@ deny_shell_file_mutations = true
 deny_shell_commands = ["pip", "python -m pip", "pip3", "python -m venv", "uv venv"]
 
 [agents]
-kimi = "accounts/fireworks/routers/kimi-k2p5-turbo"
-"kimi-k2.5" = "accounts/fireworks/routers/kimi-k2p5-turbo"
+kimi = "accounts/fireworks/routers/kimi-k2p6-turbo"
+"kimi-k2.6" = "accounts/fireworks/routers/kimi-k2p6-turbo"
 
 # Settlement timeout in seconds (commands exceeding this are killed)
 settlement_timeout = 120

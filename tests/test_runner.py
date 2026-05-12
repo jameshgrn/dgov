@@ -526,7 +526,9 @@ class TestPreflight:
     def test_preflight_uses_configured_api_key_env(self, tmp_path: Path, monkeypatch) -> None:
         dgov_dir = tmp_path / ".dgov"
         dgov_dir.mkdir()
-        (dgov_dir / "project.toml").write_text('[project]\nllm_api_key_env = "OPENAI_API_KEY"\n')
+        (dgov_dir / "project.toml").write_text(
+            '[project]\nllm_api_key_env = "CUSTOM_FIREWORKS_API_KEY"\n'
+        )
         dag = DagDefinition(
             name="preflight",
             dag_file="test.toml",
@@ -536,7 +538,7 @@ class TestPreflight:
         )
         runner = EventDagRunner(dag, session_root=str(tmp_path))
         monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
-        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setenv("CUSTOM_FIREWORKS_API_KEY", "test-key")
         asyncio.run(runner._check_model_env())
 
 

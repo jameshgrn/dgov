@@ -13,7 +13,7 @@ It should document the following commands based on `src/dgov/cli/`:
 Use clear headers and code examples.
 """
 commit_message = "docs: add CLI reference page"
-agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
 files = { create = ["docs/docs/pages/cli-reference.mdx"] }
 
 [tasks.plan_reference]
@@ -26,13 +26,13 @@ It should document the `plan.toml` format:
 Use a full TOML example.
 """
 commit_message = "docs: add Plan reference page"
-agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
 files = { create = ["docs/docs/pages/plan-reference.mdx"] }
 
 [tasks.update_config]
 summary = "Update vocs.config.ts with new pages"
 prompt = "Add 'CLI Reference' and 'Plan Reference' to the sidebar in `docs/vocs.config.ts`."
 commit_message = "docs: update sidebar navigation"
-agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
 files = { edit = ["docs/vocs.config.ts"] }
 depends_on = ["cli_reference", "plan_reference"]

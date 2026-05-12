@@ -11,7 +11,7 @@ class TestProjectConfigDefaults:
         assert pc.language == "python"
         assert pc.src_dir == "src/"
         assert pc.test_dir == "tests/"
-        assert pc.default_agent == "accounts/fireworks/routers/kimi-k2p5-turbo"
+        assert pc.default_agent == "accounts/fireworks/routers/kimi-k2p6-turbo"
         assert pc.llm_base_url == "https://api.fireworks.ai/inference/v1"
         assert pc.llm_api_key_env == "FIREWORKS_API_KEY"
         assert "pytest" in pc.test_cmd
@@ -89,8 +89,8 @@ class TestPromptSection:
 class TestWorkerPayload:
     def test_worker_payload_round_trip_preserves_worker_fields(self):
         pc = ProjectConfig(
-            llm_base_url="https://api.openai.com/v1",
-            llm_api_key_env="OPENAI_API_KEY",
+            llm_base_url="https://api.fireworks.ai/inference/v1",
+            llm_api_key_env="CUSTOM_FIREWORKS_API_KEY",
             type_check_cmd="uv run ty check",
             worker_iteration_budget=75,
             worker_iteration_warn_at=60,
@@ -104,8 +104,8 @@ class TestWorkerPayload:
         round_tripped = ProjectConfig.from_worker_payload(pc.to_worker_payload())
 
         assert round_tripped.llm_runtime_settings() == (
-            "https://api.openai.com/v1",
-            "OPENAI_API_KEY",
+            "https://api.fireworks.ai/inference/v1",
+            "CUSTOM_FIREWORKS_API_KEY",
         )
         assert round_tripped.type_check_cmd == "uv run ty check"
         assert round_tripped.line_length == 120
@@ -134,9 +134,9 @@ class TestLoadProjectConfig:
         (dgov_dir / "project.toml").write_text(
             '[project]\nlanguage = "go"\nsrc_dir = "cmd/"\n'
             'test_dir = "cmd/"\ntest_cmd = "go test ./..."\n'
-            'default_agent = "gpt-4.1-mini"\n'
-            'llm_base_url = "https://api.openai.com/v1"\n'
-            'llm_api_key_env = "OPENAI_API_KEY"\n'
+            'default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"\n'
+            'llm_base_url = "https://api.fireworks.ai/inference/v1"\n'
+            'llm_api_key_env = "CUSTOM_FIREWORKS_API_KEY"\n'
             'lint_cmd = "golangci-lint run {file}"\n'
             'format_cmd = "gofmt -w {file}"\n'
             "worker_iteration_budget = 75\n"
@@ -148,9 +148,9 @@ class TestLoadProjectConfig:
         assert pc.language == "go"
         assert pc.src_dir == "cmd/"
         assert pc.test_cmd == "go test ./..."
-        assert pc.default_agent == "gpt-4.1-mini"
-        assert pc.llm_base_url == "https://api.openai.com/v1"
-        assert pc.llm_api_key_env == "OPENAI_API_KEY"
+        assert pc.default_agent == "accounts/fireworks/routers/kimi-k2p6-turbo"
+        assert pc.llm_base_url == "https://api.fireworks.ai/inference/v1"
+        assert pc.llm_api_key_env == "CUSTOM_FIREWORKS_API_KEY"
         assert pc.worker_iteration_budget == 75
         assert pc.worker_iteration_warn_at == 60
         assert pc.worker_tree_max_lines == 0

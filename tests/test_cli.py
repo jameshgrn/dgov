@@ -593,7 +593,7 @@ def test_init_creates_bootstrap_files(
         content = config.read_text()
         assert 'language = "python"' in content
         assert 'src_dir = "src/"' in content
-        assert 'default_agent = "accounts/fireworks/routers/kimi-k2p5-turbo"' in content
+        assert 'default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"' in content
         assert 'llm_base_url = "https://api.fireworks.ai/inference/v1"' in content
         assert 'llm_api_key_env = "FIREWORKS_API_KEY"' in content
         assert '# Run "dgov sentrux gate-save" after bootstrap' in content

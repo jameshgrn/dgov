@@ -1,6 +1,6 @@
 # dgov Benchmarks
 
-Model: Kimi K2.5 via Fireworks (`accounts/fireworks/routers/kimi-k2p5-turbo`)
+Model: Kimi K2.6 via Fireworks (`accounts/fireworks/routers/kimi-k2p6-turbo`)
 Tasks: trivial single-function file creation
 Platform: macOS Darwin 25.4.0, Python 3.14.3
 

@@ -563,7 +563,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--goal", required=True)
     p.add_argument("--worktree", required=True)
-    p.add_argument("--model", default="accounts/fireworks/routers/kimi-k2p5-turbo")
+    p.add_argument("--model", default="accounts/fireworks/routers/kimi-k2p6-turbo")
     p.add_argument("--project-config", default="", help="JSON-encoded project config")
     p.add_argument("--task-scope", default="", help="JSON-encoded task file-claim scope")
     args = p.parse_args()

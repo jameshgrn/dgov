@@ -77,22 +77,22 @@ name only.
 
 ### LLM endpoint
 
-`dgov` talks to any OpenAI-compatible HTTP endpoint. Default:
+`dgov` talks to an OpenAI-compatible HTTP endpoint. Default:
 
 ```toml
 [project]
-default_agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
 llm_base_url = "https://api.fireworks.ai/inference/v1"
 llm_api_key_env = "FIREWORKS_API_KEY"
 ```
 
-To use official OpenAI:
+For Anthropic-compatible clients outside `dgov`, use the same Fireworks router
+with the Anthropic-compatible endpoint:
 
-```toml
-[project]
-default_agent = "gpt-4.1-mini"
-llm_base_url = "https://api.openai.com/v1"
-llm_api_key_env = "OPENAI_API_KEY"
+```text
+base_url = "https://api.fireworks.ai/inference"
+model = "accounts/fireworks/routers/kimi-k2p6-turbo"
+api_key_env = "FIREWORKS_API_KEY"
 ```
 
 Export the matching env var before `dgov compile` or `dgov run`.

@@ -21,4 +21,4 @@ files.edit = ["src/module/file.py"]
 # files.touch = ["src/read_only.py"]
 
 # depends_on = ["other-section/other-file.other-task"]
-# agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+# agent = "accounts/fireworks/routers/kimi-k2p6-turbo"

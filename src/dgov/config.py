@@ -19,7 +19,7 @@ from dgov.workers.config import (
 # -- Project config: per-repo conventions for workers --
 
 
-_DEFAULT_AGENT = "accounts/fireworks/routers/kimi-k2p5-turbo"
+_DEFAULT_AGENT = "accounts/fireworks/routers/kimi-k2p6-turbo"
 _DEFAULT_SCOPE_IGNORE_FILES = (".venv", "uv.lock", "__pycache__", "*.pyc")
 _RESERVED_SCOPE_IGNORE_PATHS = (".sentrux/baseline.json", ".coverage-baseline/")
 

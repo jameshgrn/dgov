@@ -7,8 +7,8 @@ Princeton's [HAL Harness](https://github.com/princeton-pli/hal-harness).
 
 | Agent | What it tests |
 |-------|--------------|
-| `dgov_pipeline` | Full dgov: plan → worktree → Kimi K2.5 worker → settlement → merge |
-| `kimi_baseline` | Raw Kimi K2.5 single call (no tools, no settlement) |
+| `dgov_pipeline` | Full dgov: plan → worktree → Kimi K2.6 worker → settlement → merge |
+| `kimi_baseline` | Raw Kimi K2.6 single call (no tools, no settlement) |
 
 The meaningful comparison: same model, same problem — does the dgov harness
 improve pass rate? And at what cost/latency overhead?
@@ -42,7 +42,7 @@ hal-eval \
   --benchmark swebench_verified_mini \
   --agent_dir /path/to/dgov/benchmarks/hal/agents/kimi_baseline \
   --agent_function main.run \
-  --agent_name "kimi-k2.5-baseline" \
+  --agent_name "kimi-k2.6-baseline" \
   --max_concurrent 5
 ```
 
@@ -53,7 +53,7 @@ hal-eval \
   --benchmark swebench_verified_mini \
   --agent_dir /path/to/dgov/benchmarks/hal/agents/dgov_pipeline \
   --agent_function main.run \
-  --agent_name "dgov-kimi-k2.5" \
+  --agent_name "dgov-kimi-k2.6" \
   --max_concurrent 3
 ```
 

@@ -200,7 +200,7 @@ name = "agent-plan"
 summary = "Custom agent task"
 prompt = "Do something"
 commit_message = "Done"
-agent = "claude-3"
+agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
 timeout_s = 1200
 """
         plan_file.write_text(plan_content)
@@ -208,7 +208,7 @@ timeout_s = 1200
         result = parse_plan_file(str(plan_file))
 
         unit = result.units["custom-agent"]
-        assert unit.agent == "claude-3"
+        assert unit.agent == "accounts/fireworks/routers/kimi-k2p6-turbo"
         assert unit.timeout_s == 1200
 
     def test_parses_plan_with_task_test_override(self, tmp_path):
@@ -348,14 +348,14 @@ class TestCompilePlan:
                     prompt="Do it",
                     commit_message="Done",
                     files=PlanUnitFiles(),
-                    agent="claude-3-opus",
+                    agent="accounts/fireworks/routers/kimi-k2p6-turbo",
                 )
             },
         )
 
         result = compile_plan(plan, project_agent="test-agent")
 
-        assert result.tasks["task-1"].agent == "claude-3-opus"
+        assert result.tasks["task-1"].agent == "accounts/fireworks/routers/kimi-k2p6-turbo"
 
     def test_fails_unauthorized_department_edit(self):
         plan = PlanSpec(

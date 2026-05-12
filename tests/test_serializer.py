@@ -641,7 +641,7 @@ class TestSerializeCompiledTomlWithAgentAndTimeout:
             prompt="Do something",
             commit_message="Done",
             files=PlanUnitFiles(),
-            agent="claude-3-opus",
+            agent="accounts/fireworks/routers/kimi-k2p6-turbo",
             timeout_s=1200,
         )
 
@@ -661,7 +661,7 @@ class TestSerializeCompiledTomlWithAgentAndTimeout:
 
         result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
 
-        assert 'agent = "claude-3-opus"' in result
+        assert 'agent = "accounts/fireworks/routers/kimi-k2p6-turbo"' in result
         assert "timeout_s = 1200" in result
 
     def test_agent_and_timeout_not_present_when_empty(self, tmp_path):

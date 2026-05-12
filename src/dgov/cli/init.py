@@ -527,7 +527,7 @@ def _project_header_lines(
         f"source_extensions = [{ext_str}]",
         "",
         "# OpenAI-compatible worker endpoint",
-        'default_agent = "accounts/fireworks/routers/kimi-k2p5-turbo"',
+        'default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"',
         'llm_base_url = "https://api.fireworks.ai/inference/v1"',
         'llm_api_key_env = "FIREWORKS_API_KEY"',
         "",

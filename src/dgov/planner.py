@@ -419,7 +419,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--goal", required=True)
     parser.add_argument("--worktree", required=True)
-    parser.add_argument("--model", default="accounts/fireworks/routers/kimi-k2p5-turbo")
+    parser.add_argument("--model", default="accounts/fireworks/routers/kimi-k2p6-turbo")
     parser.add_argument("--project-config", default="", help="JSON-encoded project config")
     parser.add_argument("--interactive", action="store_true", help="Enable ask_user tool")
     args = parser.parse_args()

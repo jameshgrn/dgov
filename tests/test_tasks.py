@@ -124,7 +124,7 @@ def test_replace_runtime_artifacts(tmp_project):
         {
             "slug": "replaced-2",
             "prompt": "Replaced 2",
-            "agent": "claude",
+            "agent": "accounts/fireworks/routers/kimi-k2p6-turbo",
             "project_root": tmp_project,
             "worktree_path": str(Path(tmp_project) / "worktrees/r2"),
             "branch_name": "task/r2",

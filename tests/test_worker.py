@@ -273,12 +273,12 @@ def test_load_project_config_llm_from_toml(tmp_path: Path) -> None:
     dgov_dir = tmp_path / ".dgov"
     dgov_dir.mkdir()
     (dgov_dir / "project.toml").write_text(
-        '[project]\nllm_base_url = "https://api.openai.com/v1"\n'
-        'llm_api_key_env = "OPENAI_API_KEY"\n'
+        '[project]\nllm_base_url = "https://api.fireworks.ai/inference/v1"\n'
+        'llm_api_key_env = "CUSTOM_FIREWORKS_API_KEY"\n'
     )
     config = load_project_config(tmp_path)
-    assert config.llm_base_url == "https://api.openai.com/v1"
-    assert config.llm_api_key_env == "OPENAI_API_KEY"
+    assert config.llm_base_url == "https://api.fireworks.ai/inference/v1"
+    assert config.llm_api_key_env == "CUSTOM_FIREWORKS_API_KEY"
 
 
 # -- get_tool_spec --

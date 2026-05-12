@@ -1,4 +1,4 @@
-"""Kimi K2.5 baseline agent for HAL benchmarks.
+"""Kimi K2.6 baseline agent for HAL benchmarks.
 
 Single-call, no tool loop, no dgov. This is the floor — it shows what
 the raw model produces when given only the problem statement. Compare
@@ -25,14 +25,14 @@ Output ONLY the patch. No explanation, no markdown fences.
 
 
 def run(input: dict[str, dict], **kwargs) -> dict:
-    """HAL agent entry point — raw Kimi K2.5 single call."""
+    """HAL agent entry point — raw Kimi K2.6 single call."""
     assert len(input) == 1
     task_id, task = next(iter(input.items()))
 
     problem_statement = task["problem_statement"]
     model = kwargs.get(
         "model_name",
-        "accounts/fireworks/models/kimi-k2p5-turbo",
+        "accounts/fireworks/routers/kimi-k2p6-turbo",
     )
 
     client = OpenAI(

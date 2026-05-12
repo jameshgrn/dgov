@@ -7,13 +7,16 @@
 
 Provider configuration is therefore repo-level, not per-task.
 
+The current standard provider is Fireworks Kimi K2.6 Turbo. Use it anywhere
+older examples used OpenAI, OpenRouter, or Anthropic model names.
+
 ## Configuration
 
 Three fields in `.dgov/project.toml` control the endpoint:
 
 ```toml
 [project]
-default_agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
 llm_base_url = "https://api.fireworks.ai/inference/v1"
 llm_api_key_env = "FIREWORKS_API_KEY"
 ```
@@ -31,7 +34,7 @@ override the base URL or the API-key env var.
 
 ```toml
 [project]
-default_agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
 llm_base_url = "https://api.fireworks.ai/inference/v1"
 llm_api_key_env = "FIREWORKS_API_KEY"
 ```
@@ -40,34 +43,34 @@ llm_api_key_env = "FIREWORKS_API_KEY"
 export FIREWORKS_API_KEY=your-key-here
 ```
 
-## OpenAI
+## OpenAI-Compatible Fireworks
 
 ```toml
 [project]
-default_agent = "gpt-4.1-mini"
-llm_base_url = "https://api.openai.com/v1"
-llm_api_key_env = "OPENAI_API_KEY"
+default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
+llm_base_url = "https://api.fireworks.ai/inference/v1"
+llm_api_key_env = "FIREWORKS_API_KEY"
 ```
 
 ```bash
-export OPENAI_API_KEY=your-key-here
+export FIREWORKS_API_KEY=your-key-here
 ```
 
-## OpenRouter
+## Anthropic-Compatible Fireworks
 
-```toml
-[project]
-default_agent = "anthropic/claude-3.5-sonnet"
-llm_base_url = "https://openrouter.ai/api/v1"
-llm_api_key_env = "OPENROUTER_API_KEY"
+`dgov` itself uses the OpenAI-compatible endpoint above. For tools that call
+Anthropic-compatible APIs, use the same router with Fireworks' Anthropic-style
+base URL:
+
+```text
+base_url = "https://api.fireworks.ai/inference"
+model = "accounts/fireworks/routers/kimi-k2p6-turbo"
+api_key_env = "FIREWORKS_API_KEY"
 ```
 
 ```bash
-export OPENROUTER_API_KEY=your-key-here
+export FIREWORKS_API_KEY=your-key-here
 ```
-
-Any model OpenRouter exposes is valid in `default_agent`; pick one whose
-output schema your worker tools can consume.
 
 ## Other OpenAI-compatible endpoints
 
@@ -98,8 +101,8 @@ dgov compile .dgov/plans/my-plan --dry-run
 ## Common mistakes
 
 **Wrong env var name.** `.dgov/project.toml` says `llm_api_key_env =
-"OPENAI_API_KEY"` but you exported `FIREWORKS_API_KEY`. Both `dgov compile`
-and `dgov run` fail at preflight.
+"FIREWORKS_API_KEY"`, so both `dgov compile` and `dgov run` read that env var
+literally.
 
 **Confusing model name with endpoint.** `default_agent` is the model or
 router identifier. It does not select the provider — the endpoint is set by
