@@ -524,13 +524,18 @@ def _transient_write_path(item: object) -> str | None:
     return None
 
 
-def _collect_transient_write_paths(session_root: str, task_slug: str) -> set[str]:
+def _collect_transient_write_paths(
+    session_root: str,
+    task_slug: str,
+    pane_slug: str | None = None,
+) -> set[str]:
     """Collect all transient write paths from worker log activity for a task.
 
-    Reads all events for this task across all panes in the current run.
+    When a current pane is known, scope to that pane. Historical task-wide
+    activity can include abandoned retry attempts and produce false positives.
     """
     transient_paths: set[str] = set()
-    events = read_events(session_root, task_slug=task_slug)
+    events = read_events(session_root, slug=pane_slug, task_slug=task_slug)
     for event in events:
         for item in _worker_log_activity(event):
             path = _transient_write_path(item)
@@ -568,9 +573,8 @@ def _check_transient_scope(
 ) -> ReviewResult | None:
     """Reject transient unclaimed writes observed in worker tool activity.
 
-    Checks ALL panes for this task across the current run (not just the current
-    pane). This ensures unclaimed writes from earlier retries are still caught
-    even if a later retry cleans the worktree and succeeds.
+    Checks the active pane when available. Older panes from abandoned attempts
+    are historical evidence, not the candidate currently under review.
 
     Only write-capable activities (write_file, edit_file, apply_patch, revert_file)
     are checked. Read-only activity such as read_file is ignored.
@@ -583,7 +587,7 @@ def _check_transient_scope(
         scope_ignore_files
     )
 
-    transient_paths = _collect_transient_write_paths(session_root, task_slug)
+    transient_paths = _collect_transient_write_paths(session_root, task_slug, pane_slug)
     unclaimed = _filter_unclaimed_non_ignored(
         transient_paths,
         claimed,

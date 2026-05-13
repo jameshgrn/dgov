@@ -474,7 +474,7 @@ class TestReviewSandbox:
         _modify_tracked(worktree, "claimed.py", "x = 2\n")
 
         session_root = tmp_path / "session"
-        # Old pane: unclaimed write (should fail closed)
+        # Old pane: unclaimed write from a prior attempt.
         _emit_worker_result_activity(
             session_root, "pane-old", "task-1", "write_file", "scratch.py", "create"
         )
@@ -490,15 +490,10 @@ class TestReviewSandbox:
             task_slug="task-1",
             pane_slug="pane-current",
         )
-        # Note: With fail-closed retry semantics, this now FAILS because
-        # unclaimed writes from earlier panes are still checked.
-        # The earlier pane's unclaimed scratch.py causes rejection.
-        assert not result.passed
-        assert result.verdict == "scope_violation"
-        assert "scratch.py" in (result.error or "")
+        assert result.passed
 
-    def test_transient_scope_fail_closed_across_retries(self, tmp_path: Path):
-        """Unclaimed writes from earlier panes fail review even if current pane is clean."""
+    def test_transient_scope_ignores_old_retry_panes(self, tmp_path: Path):
+        """Unclaimed writes from earlier panes do not poison current retry review."""
         worktree_retry = _retry_worktree_with_claimed(tmp_path)
         session_root = tmp_path / "session"
 
@@ -518,9 +513,7 @@ class TestReviewSandbox:
             task_slug="task-1",
             pane_slug="pane-2",
         )
-        assert not result.passed
-        assert result.verdict == "scope_violation"
-        assert "debug_1.py" in (result.error or "")
+        assert result.passed
 
     def test_transient_scope_claimed_writes_across_retries_pass(self, tmp_path: Path):
         """Claimed writes from all panes pass review - no scope violation."""

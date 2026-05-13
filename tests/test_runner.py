@@ -1193,15 +1193,11 @@ class TestSemanticSettlementShadowMode:
             assert len(risk_calls) == 0
 
 
-class TestRetryScopeFailClosed:
-    """Tests for fail-closed transient scope enforcement across retries.
+class TestRetryScopePaneScoping:
+    """Tests for pane-scoped transient activity review."""
 
-    Unclaimed tool writes from earlier attempts must cause review rejection
-    even if a later retry cleans the worktree and succeeds.
-    """
-
-    def test_transient_scope_fail_closed_across_retries(self):
-        """Earlier pane's unclaimed write causes failure on retry review."""
+    def test_transient_scope_receives_active_pane(self):
+        """Review receives the pane needed to avoid stale retry activity."""
 
         # Simulate review_sandbox behavior with transient scope checking
         # First attempt pane: unclaimed write
