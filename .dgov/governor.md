@@ -23,6 +23,9 @@ system level. Workers may be probabilistic. Governance should not be.
 - Avoid broad exploratory tasks. Break them into concrete units.
 - Put repo-wide implementation guidance in `.dgov/sops/`, not in ad hoc task text.
 - Keep provider config and project conventions in `.dgov/project.toml`.
+- When verification commands repeat across plans, define them as `[verify.<name>]`
+  recipes in `.dgov/project.toml` and reference them by name instead of embedding
+  full commands in every task prompt.
 
 ## Operational Memory
 
