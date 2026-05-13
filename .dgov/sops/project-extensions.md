@@ -15,18 +15,8 @@ priority: must
 - create project-local SOPs in `.dgov/sops/` for conventions that are specific to this repo
 - reference the verify recipe by name in task prompts instead of pasting the full command
 - keep language-neutral examples in SOPs; reserve language-specific tooling to `project.toml`
-
-Example `.dgov/project.toml` snippet:
-
-```toml
-[verify.test]
-command = "pytest -q {test_dir}"
-description = "Run targeted tests"
-
-[verify.lint]
-command = "ruff check {file}"
-description = "Check formatting and style"
-```
+- use a `.dgov/project.toml` recipe shape like `[verify.test]` with `command = "pytest -q {test_dir}"` and `description = "Run targeted tests"`
+- use a `.dgov/project.toml` lint recipe shape like `[verify.lint]` with `command = "ruff check {file}"` and `description = "Check formatting and style"`
 
 ## Do Not
 - paste the same long command string into every task prompt
