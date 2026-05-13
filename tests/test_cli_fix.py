@@ -205,6 +205,29 @@ class TestFixHappyPath:
         parsed = tomllib.loads(main_toml_path.read_text())
         assert parsed["tasks"]["apply"]["commit_message"] == "fix: resolve critical bug in parser"
 
+    def test_wraps_unstructured_prompt_in_orient_edit_verify(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_compile: MagicMock,
+        mock_run: MagicMock,
+        mock_archive: MagicMock,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(cli, ["fix", "Fix parse bug", "--file", "src/parser.py"])
+
+        assert result.exit_code == 0, result.output
+        plan_dir = _runtime_fix_plans_dir(tmp_path) / "fix-fix-parse-bug"
+        parsed = tomllib.loads((plan_dir / "fix" / "main.toml").read_text())
+        prompt = parsed["tasks"]["apply"]["prompt"]
+        assert parsed["tasks"]["apply"]["summary"] == "Fix parse bug"
+        assert "Orient:" in prompt
+        assert "Edit:" in prompt
+        assert "Verify:" in prompt
+        assert "uv run ruff check src/parser.py" in prompt
+
 
 class TestFixEdgeCases:
     """Edge cases and error handling for the fix command."""

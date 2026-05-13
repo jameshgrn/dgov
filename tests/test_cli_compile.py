@@ -261,6 +261,127 @@ def test_compile_dry_run_label(runner: CliRunner, tmp_path: Path) -> None:
     assert "dry-run" in result.output
 
 
+def test_compile_warns_when_setup_cmd_depends_on_plan_created_file(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text(
+        '[project]\nsetup_cmd = "xcodegen generate --spec project.yml"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    plan_dir = tmp_path / "swift-plan"
+    section_dir = plan_dir / "tasks"
+    section_dir.mkdir(parents=True)
+    (plan_dir / "_root.toml").write_text(
+        '[plan]\nname = "swift-plan"\nsummary = ""\nsections = ["tasks"]\n'
+    )
+    (section_dir / "main.toml").write_text(
+        "[tasks.project]\n"
+        'summary = "Create XcodeGen project file"\n'
+        'prompt = "Orient:\\nRead README.md.\\n\\nEdit:\\n'
+        '1. Create project.yml.\\n\\nVerify:\\n- Check TOML."\n'
+        'commit_message = "Create XcodeGen project file"\n'
+        'files.create = ["project.yml"]\n'
+    )
+
+    result = runner.invoke(cli, ["compile", str(plan_dir), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "setup_cmd references 'project.yml', which this plan creates" in result.output
+
+
+def test_compile_warns_when_verify_tool_missing_from_worker_path(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text("[project]\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    plan_dir = tmp_path / "tool-plan"
+    section_dir = plan_dir / "tasks"
+    section_dir.mkdir(parents=True)
+    (plan_dir / "_root.toml").write_text(
+        '[plan]\nname = "tool-plan"\nsummary = ""\nsections = ["tasks"]\n'
+    )
+    (section_dir / "main.toml").write_text(
+        "[tasks.main]\n"
+        'summary = "Update tool docs"\n'
+        'prompt = "Orient:\\nRead README.md.\\n\\nEdit:\\n'
+        "1. Update README.md.\\n\\nVerify:\\n"
+        '- `definitely-missing-dgov-tool --check README.md`."\n'
+        'commit_message = "Update tool docs"\n'
+        'files.edit = ["README.md"]\n'
+    )
+
+    result = runner.invoke(cli, ["compile", str(plan_dir), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "Verify command references tool 'definitely-missing-dgov-tool'" in result.output
+
+
+def test_compile_warns_when_plan_archive_is_ignored(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text("[project]\n", encoding="utf-8")
+    (dgov_dir / ".gitignore").write_text("plans/archive/\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    plan_dir = tmp_path / "archive-plan"
+    section_dir = plan_dir / "tasks"
+    section_dir.mkdir(parents=True)
+    (plan_dir / "_root.toml").write_text(
+        '[plan]\nname = "archive-plan"\nsummary = ""\nsections = ["tasks"]\n'
+    )
+    (section_dir / "main.toml").write_text(
+        "[tasks.main]\n"
+        'summary = "Update docs"\n'
+        'prompt = "Orient:\\nRead README.md.\\n\\nEdit:\\n'
+        '1. Update README.md.\\n\\nVerify:\\n- Review diff."\n'
+        'commit_message = "Update docs"\n'
+        'files.edit = ["README.md"]\n'
+    )
+
+    result = runner.invoke(cli, ["compile", str(plan_dir), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "ignores .dgov/plans/archive" in result.output
+
+
+def test_compile_does_not_warn_zero_sop_for_docs_only_task(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text("[project]\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    plan_dir = tmp_path / "docs-plan"
+    section_dir = plan_dir / "tasks"
+    section_dir.mkdir(parents=True)
+    (plan_dir / "_root.toml").write_text(
+        '[plan]\nname = "docs-plan"\nsummary = ""\nsections = ["tasks"]\n'
+    )
+    (section_dir / "main.toml").write_text(
+        "[tasks.main]\n"
+        'summary = "Update docs"\n'
+        'prompt = "Orient:\\nRead README.md.\\n\\nEdit:\\n'
+        '1. Update README.md.\\n\\nVerify:\\n- Review diff."\n'
+        'commit_message = "Update docs"\n'
+        'files.edit = ["README.md"]\n'
+    )
+
+    result = runner.invoke(cli, ["compile", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert "matched zero SOPs" not in result.output
+
+
 # -- serializer edge cases --
 
 

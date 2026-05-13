@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
+import shlex
+import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
@@ -68,7 +71,7 @@ def compile_plan_dir(plan_root: Path, *, dry_run: bool, recompile_sops: bool, gr
         recompile_sops=recompile_sops,
     )
     out_path = _write_compiled_plan(plan_root, bundle_result, resolved)
-    warnings = _validate_compiled_plan(out_path, project_config)
+    warnings = _validate_compiled_plan(out_path, project_config, project_root)
     summary = _build_summary(out_path, resolved, bundle_result, dry_run, warnings)
 
     _print_summary(summary)
@@ -205,12 +208,47 @@ def _print_sop_assignments(result: BundleResult, *, dry_run: bool) -> None:
     for uid, names in sorted(result.sop_mapping.items()):
         if names:
             click.echo(f"  SOPs: {uid.split('.')[-1]} → {', '.join(names)}", err=True)
-    no_sop_units = [uid for uid, names in result.sop_mapping.items() if not names]
+    no_sop_units = [
+        uid
+        for uid, names in result.sop_mapping.items()
+        if not names and _unit_needs_sop_attention(result.plan.units[uid])
+    ]
     if no_sop_units:
         click.echo(
             f"  WARNING: {len(no_sop_units)} unit(s) matched zero SOPs",
             err=True,
         )
+        for uid in no_sop_units[:5]:
+            click.echo(
+                "  WARNING"
+                f" [{uid}]: zero SOP match. The deterministic matcher uses summary words, "
+                "file extensions, test paths, and role. Add matching applies_to tags or set "
+                'sop_mapping = ["sop-name"] in the source task.',
+                err=True,
+            )
+        if len(no_sop_units) > 5:
+            click.echo(f"  WARNING: ... and {len(no_sop_units) - 5} more", err=True)
+
+
+_SOP_ATTENTION_EXTENSIONS = (".py", ".swift", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go")
+
+
+def _unit_needs_sop_attention(unit) -> bool:
+    paths = (
+        *unit.files.create,
+        *unit.files.edit,
+        *unit.files.touch,
+        *unit.files.delete,
+    )
+    return any(_path_needs_sop_attention(path) for path in paths)
+
+
+def _path_needs_sop_attention(path: str) -> bool:
+    normalized = path.strip().lstrip("./").lower()
+    parts = tuple(part for part in normalized.split("/") if part)
+    return normalized.endswith(_SOP_ATTENTION_EXTENSIONS) or any(
+        part in {"test", "tests"} for part in parts[:-1]
+    )
 
 
 def _write_compiled_plan(
@@ -229,11 +267,15 @@ def _write_compiled_plan(
 def _validate_compiled_plan(
     out_path: Path,
     project_config: ProjectConfig,
+    project_root: Path,
 ) -> tuple[PlanIssue, ...]:
     from dgov.plan import parse_plan_file, validate_plan
 
     compiled_spec = parse_plan_file(str(out_path))
     plan_issues = validate_plan(compiled_spec, departments=project_config.departments)
+    plan_issues.extend(_setup_cmd_warnings(compiled_spec, project_config, project_root))
+    plan_issues.extend(_prompt_tool_warnings(compiled_spec, project_config, project_root))
+    plan_issues.extend(_archive_ignore_warnings(project_root))
     plan_errors = tuple(i for i in plan_issues if i.severity == "error")
     plan_warnings = tuple(i for i in plan_issues if i.severity == "warning")
 
@@ -243,6 +285,174 @@ def _validate_compiled_plan(
         raise click.exceptions.Exit(code=1) from None
 
     return plan_warnings
+
+
+_SETUP_PATH_RE = re.compile(r"(?<![\w/.-])([\w.-]+\.(?:yml|yaml|json|toml|xcodeproj|xcworkspace))")
+
+
+def _setup_cmd_warnings(
+    plan,
+    project_config: ProjectConfig,
+    project_root: Path,
+) -> list[PlanIssue]:
+    from dgov.plan import PlanIssue
+
+    setup_cmd = (project_config.setup_cmd or "").strip()
+    if not setup_cmd:
+        return []
+    created = {
+        path
+        for unit in plan.units.values()
+        for path in (*unit.files.create, *unit.files.touch)
+        if path.strip()
+    }
+    warnings: list[PlanIssue] = []
+    for path in sorted(set(_SETUP_PATH_RE.findall(setup_cmd))):
+        if _setup_cmd_guards_path(setup_cmd, path) or (project_root / path).exists():
+            continue
+        if path in created:
+            message = (
+                f"setup_cmd references {path!r}, which this plan creates. setup_cmd runs before "
+                "the first worker task. Guard it, for example: "
+                f"`if [ -f {path} ]; then ...; fi`."
+            )
+        else:
+            message = (
+                f"setup_cmd references missing input {path!r}. "
+                "Worker preparation will fail unless the command guards the missing file "
+                "or the file exists before run."
+            )
+        warnings.append(PlanIssue(severity="warning", message=message))
+    return warnings
+
+
+def _setup_cmd_guards_path(setup_cmd: str, path: str) -> bool:
+    return f"[ -f {path} ]" in setup_cmd or f"test -f {path}" in setup_cmd
+
+
+_PROMPT_COMMAND_RE = re.compile(r"`([^`\n]+)`")
+_PROMPT_HEADING_RE = re.compile(r"^\s*(?:#{1,6}\s+)?(?:\*\*)?(orient|edit|verify)\b", re.I)
+_SHELL_BUILTINS = {
+    "[",
+    "cd",
+    "command",
+    "echo",
+    "export",
+    "false",
+    "if",
+    "printf",
+    "pwd",
+    "set",
+    "test",
+    "then",
+    "true",
+}
+
+
+def _prompt_tool_warnings(
+    plan,
+    project_config: ProjectConfig,
+    project_root: Path,
+) -> list[PlanIssue]:
+    from dgov.plan import PlanIssue
+
+    worker_path = _worker_path(project_root, project_config)
+    warnings: list[PlanIssue] = []
+    for unit_id, unit in plan.units.items():
+        seen: set[str] = set()
+        for command in _verify_prompt_commands(unit.prompt):
+            tool = _verification_tool(command)
+            if not tool or tool in seen or _tool_available(tool, worker_path, project_root):
+                continue
+            seen.add(tool)
+            warnings.append(
+                PlanIssue(
+                    severity="warning",
+                    unit=unit_id,
+                    message=(
+                        f"Verify command references tool {tool!r}, which is not available "
+                        "in the worker PATH. Configure the tool in .dgov/project.toml "
+                        "or use an available wrapper."
+                    ),
+                )
+            )
+    return warnings
+
+
+def _worker_path(project_root: Path, project_config: ProjectConfig) -> str:
+    from dgov.workers.atomic import AtomicTools
+
+    tools = AtomicTools(project_root, project_config)
+    try:
+        return tools._sandbox_env()["PATH"]
+    finally:
+        shutil.rmtree(tools._sandbox_home, ignore_errors=True)
+
+
+def _verify_prompt_commands(prompt: str) -> list[str]:
+    commands: list[str] = []
+    in_verify = False
+    for line in prompt.splitlines():
+        if heading := _PROMPT_HEADING_RE.match(line):
+            in_verify = heading.group(1).lower() == "verify"
+            continue
+        if not in_verify:
+            continue
+        commands.extend(match.group(1).strip() for match in _PROMPT_COMMAND_RE.finditer(line))
+    return [command for command in commands if command]
+
+
+def _verification_tool(command: str) -> str:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return ""
+    while tokens and _is_env_assignment(tokens[0]):
+        tokens.pop(0)
+    if not tokens:
+        return ""
+    tool = tokens[0]
+    return "" if tool in _SHELL_BUILTINS else tool
+
+
+def _is_env_assignment(token: str) -> bool:
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token))
+
+
+def _tool_available(tool: str, worker_path: str, project_root: Path) -> bool:
+    if "/" in tool:
+        path = Path(tool)
+        return path.exists() if path.is_absolute() else (project_root / path).exists()
+    return shutil.which(tool, path=worker_path) is not None
+
+
+def _archive_ignore_warnings(project_root: Path) -> list[PlanIssue]:
+    from dgov.plan import PlanIssue
+
+    ignored_by = [
+        path
+        for path in (project_root / ".dgov" / ".gitignore", project_root / ".gitignore")
+        if _ignores_plan_archive(path)
+    ]
+    if not ignored_by:
+        return []
+    files = ", ".join(str(path.relative_to(project_root)) for path in ignored_by)
+    return [
+        PlanIssue(
+            severity="warning",
+            message=(
+                f"{files} ignores .dgov/plans/archive. Automatic archive moves can leave "
+                "tracked plan deletions without tracked archived source."
+            ),
+        )
+    ]
+
+
+def _ignores_plan_archive(ignore_file: Path) -> bool:
+    if not ignore_file.exists():
+        return False
+    ignored_patterns = {"plans/archive/", "/plans/archive/", ".dgov/plans/archive/"}
+    return any(line.strip() in ignored_patterns for line in ignore_file.read_text().splitlines())
 
 
 def _print_plan_errors(plan_errors: tuple[PlanIssue, ...]) -> None:

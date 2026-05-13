@@ -1043,6 +1043,21 @@ def _maybe_archive_completed_plan(
     dest = archive_plan(plan_dir)
     if not want_json():
         click.echo(f"Plan fully deployed → archived to {dest}")
+        _warn_if_archive_left_git_changes(project_root)
+
+
+def _warn_if_archive_left_git_changes(project_root: str) -> None:
+    changes = _git_stdout(
+        project_root,
+        ["status", "--porcelain", "--untracked-files=all", "--", ".dgov/plans"],
+    )
+    if not changes:
+        return
+    click.echo(
+        "  archive git changes: plan source was moved under .dgov/plans/archive; "
+        "review and commit the archive move when appropriate.",
+        err=True,
+    )
 
 
 def _compile_dag_for_run(plan_file: str, pc: ProjectConfig, only: str | None) -> DagDefinition:

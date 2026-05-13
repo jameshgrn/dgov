@@ -97,6 +97,7 @@ class PlanUnit:
     iteration_budget: int | None = None
     test_cmd: str | None = None
     prompt_file: str | None = None
+    sop_mapping: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -161,6 +162,7 @@ def _dag_task_to_plan_unit(
         iteration_budget=task.iteration_budget,
         test_cmd=task.test_cmd,
         prompt_file=task.prompt_file,
+        sop_mapping=task.sop_mapping,
         files=PlanUnitFiles(
             create=task.files.create,
             edit=task.files.edit,
@@ -270,6 +272,7 @@ def _compile_plan_task(
         timeout_s=unit.timeout_s if unit.timeout_s else plan.default_timeout_s,
         iteration_budget=unit.iteration_budget,
         test_cmd=unit.test_cmd,
+        sop_mapping=unit.sop_mapping,
     )
 
 
