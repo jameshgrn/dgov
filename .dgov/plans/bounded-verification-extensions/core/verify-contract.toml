@@ -27,6 +27,7 @@ Edit:
 3. Add a runner helper that executes one named recipe from a project root, captures stdout/stderr into .dgov/runtime/verify/<recipe>.log unless log_name overrides it, scans warning lines conservatively, and returns VerifyRunResult. Use subprocess with explicit cwd, text capture, timeout, and no shell-specific parsing beyond executing the declared command string.
 4. Wire ProjectConfig in src/dgov/config.py to expose verify_recipes without moving language-specific behavior into ProjectConfig. Preserve existing worker payload behavior; verify recipes are governor-side only.
 5. Add tests in tests/test_verify.py covering valid recipe loading, invalid recipe diagnostics, log capture, warning counting, and non-zero command status. Use simple shell commands created in tmp_path; do not depend on Swift/Xcode or external tools.
+6. If you test frozen dataclass immutability, use `setattr(instance, "field", value)` inside `pytest.raises(AttributeError)`. Do not assign directly to frozen dataclass fields in tests; `ty check` treats that as an invalid-assignment diagnostic before runtime.
 
 Verify:
 uv run pytest -q tests/test_verify.py

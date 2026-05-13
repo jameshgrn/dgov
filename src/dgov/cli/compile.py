@@ -332,6 +332,7 @@ def _setup_cmd_guards_path(setup_cmd: str, path: str) -> bool:
 
 _PROMPT_COMMAND_RE = re.compile(r"`([^`\n]+)`")
 _PROMPT_HEADING_RE = re.compile(r"^\s*(?:#{1,6}\s+)?(?:\*\*)?(orient|edit|verify)\b", re.I)
+_MARKDOWN_HEADING_RE = re.compile(r"^\s*#{1,6}\s+\S+")
 _SHELL_BUILTINS = {
     "[",
     "cd",
@@ -396,10 +397,39 @@ def _verify_prompt_commands(prompt: str) -> list[str]:
         if heading := _PROMPT_HEADING_RE.match(line):
             in_verify = heading.group(1).lower() == "verify"
             continue
+        if _MARKDOWN_HEADING_RE.match(line):
+            in_verify = False
+            continue
         if not in_verify:
             continue
-        commands.extend(match.group(1).strip() for match in _PROMPT_COMMAND_RE.finditer(line))
+        commands.extend(
+            command
+            for match in _PROMPT_COMMAND_RE.finditer(line)
+            if (command := match.group(1).strip()) and _looks_like_verify_command(command)
+        )
     return [command for command in commands if command]
+
+
+def _looks_like_verify_command(command: str) -> bool:
+    """Classify command-like snippets conservatively.
+
+    Verify sections often contain API names and filenames in backticks. The
+    warning pass should only inspect snippets that look like shell commands,
+    otherwise SOP prose such as `.get()` or `project.toml` becomes noise.
+    """
+    if "(" in command or ")" in command:
+        return False
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    while tokens and _is_env_assignment(tokens[0]):
+        tokens.pop(0)
+    if not tokens:
+        return False
+    if len(tokens) > 1:
+        return True
+    return tokens[0] in {"pytest", "ruff", "ty", "dgov", "xcodebuild", "swift", "make"}
 
 
 def _verification_tool(command: str) -> str:

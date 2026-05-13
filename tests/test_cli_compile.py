@@ -323,6 +323,22 @@ def test_compile_warns_when_verify_tool_missing_from_worker_path(
     assert "Verify command references tool 'definitely-missing-dgov-tool'" in result.output
 
 
+def test_verify_prompt_command_scan_ignores_sop_prose_snippets() -> None:
+    from dgov.cli.compile import _verify_prompt_commands
+
+    prompt = """
+## Verify
+- Use `.get()`, `project.toml`, and `result.model_dump()` in prose.
+## Escalate
+- Mention `definitely-missing-dgov-tool --not-a-command` outside Verify.
+
+Verify:
+- `definitely-missing-dgov-tool --check README.md`
+"""
+
+    assert _verify_prompt_commands(prompt) == ["definitely-missing-dgov-tool --check README.md"]
+
+
 def test_compile_warns_when_plan_archive_is_ignored(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
