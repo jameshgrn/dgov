@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from dgov.tool_policy import parse_tool_policy
+from dgov.verify import VerifyRecipe, load_verify_recipes
 from dgov.workers.config import (
     AtomicConfig,
     atomic_config_from_payload,
@@ -46,6 +47,7 @@ class ProjectConfig(AtomicConfig):
     coverage_cmd: str | None = None
     coverage_threshold: float = 2.0
     departments: dict[str, list[str]] = field(default_factory=dict)
+    verify_recipes: dict[str, VerifyRecipe] = field(default_factory=dict)
 
     def resolve_test_cmd(self, file: str = "") -> str:
         """Build the test command with substitutions."""
@@ -206,6 +208,7 @@ def _governor_config_fields(raw: Mapping[str, Any], proj: Mapping[str, Any]) -> 
         "coverage_cmd": proj.get("coverage_cmd") or None,
         "coverage_threshold": proj.get("coverage_threshold", 2.0),
         "departments": _table(raw, "departments"),
+        "verify_recipes": load_verify_recipes(raw),
     }
 
 
