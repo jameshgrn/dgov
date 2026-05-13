@@ -497,7 +497,7 @@ def _check_unclaimed_prompt_refs_for_unit(slug: str, unit: PlanUnit) -> list[Pla
     claimed = _claimed_prompt_paths(unit)
     seen: set[str] = set()
     issues: list[PlanIssue] = []
-    for match in _PROMPT_PATH_RE.finditer(unit.prompt):
+    for match in _PROMPT_PATH_RE.finditer(_prompt_reference_body(unit.prompt)):
         ref_path = _normalize_touch_path(match.group(1))
         if ref_path in seen or ref_path in claimed:
             continue
@@ -514,6 +514,14 @@ def _check_unclaimed_prompt_refs_for_unit(slug: str, unit: PlanUnit) -> list[Pla
             )
         )
     return issues
+
+
+def _prompt_reference_body(prompt: str) -> str:
+    """Scan the task body, not SOP text prepended by the compiler."""
+    match = _PROMPT_PHASE_RES["Orient"].search(prompt)
+    if match:
+        return prompt[match.start() :]
+    return prompt
 
 
 def _claimed_prompt_paths(unit: PlanUnit) -> set[str]:

@@ -327,11 +327,16 @@ def test_verify_prompt_command_scan_ignores_sop_prose_snippets() -> None:
     from dgov.cli.compile import _verify_prompt_commands
 
     prompt = """
+[SOP: Project-Local Extensions]
 ## Verify
-- Use `.get()`, `project.toml`, and `result.model_dump()` in prose.
+- Use `.get()`, `project.toml`, `description = "Run targeted tests"`, and `-m unit` in prose.
 ## Escalate
 - Mention `definitely-missing-dgov-tool --not-a-command` outside Verify.
 
+Orient:
+- Read README.md.
+Edit:
+- Update README.md.
 Verify:
 - `definitely-missing-dgov-tool --check README.md`
 """

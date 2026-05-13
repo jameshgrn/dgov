@@ -332,6 +332,7 @@ def _setup_cmd_guards_path(setup_cmd: str, path: str) -> bool:
 
 _PROMPT_COMMAND_RE = re.compile(r"`([^`\n]+)`")
 _PROMPT_HEADING_RE = re.compile(r"^\s*(?:#{1,6}\s+)?(?:\*\*)?(orient|edit|verify)\b", re.I)
+_PROMPT_ORIENT_RE = re.compile(r"^\s*(?:#{1,6}\s+)?(?:\*\*)?orient\b", re.I | re.M)
 _MARKDOWN_HEADING_RE = re.compile(r"^\s*#{1,6}\s+\S+")
 _SHELL_BUILTINS = {
     "[",
@@ -393,7 +394,7 @@ def _worker_path(project_root: Path, project_config: ProjectConfig) -> str:
 def _verify_prompt_commands(prompt: str) -> list[str]:
     commands: list[str] = []
     in_verify = False
-    for line in prompt.splitlines():
+    for line in _task_prompt_body(prompt).splitlines():
         if heading := _PROMPT_HEADING_RE.match(line):
             in_verify = heading.group(1).lower() == "verify"
             continue
@@ -408,6 +409,12 @@ def _verify_prompt_commands(prompt: str) -> list[str]:
             if (command := match.group(1).strip()) and _looks_like_verify_command(command)
         )
     return [command for command in commands if command]
+
+
+def _task_prompt_body(prompt: str) -> str:
+    """Return worker-authored task instructions, excluding prepended SOP blocks."""
+    match = _PROMPT_ORIENT_RE.search(prompt)
+    return prompt[match.start() :] if match else prompt
 
 
 def _looks_like_verify_command(command: str) -> bool:
@@ -426,6 +433,8 @@ def _looks_like_verify_command(command: str) -> bool:
     while tokens and _is_env_assignment(tokens[0]):
         tokens.pop(0)
     if not tokens:
+        return False
+    if len(tokens) >= 2 and tokens[1] == "=":
         return False
     if len(tokens) > 1:
         return True
