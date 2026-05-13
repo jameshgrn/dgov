@@ -354,7 +354,7 @@ def _check_reserved_paths(actual_files: frozenset[str]) -> ReviewResult | None:
     return None
 
 
-def _is_scope_ignored(
+def is_scope_ignored(
     path: str,
     ignored_exact: frozenset[str],
     ignored_prefix_dirs: tuple[str, ...],
@@ -375,7 +375,7 @@ def _is_scope_ignored(
     )
 
 
-def _split_ignore_entries(
+def split_ignore_entries(
     scope_ignore_files: Sequence[str],
 ) -> tuple[frozenset[str], tuple[str, ...], frozenset[str], tuple[str, ...]]:
     """Split ignore entries into exact paths, directory rules, and globs.
@@ -416,19 +416,19 @@ def _add_directory_ignore(entry: str, prefix_dirs: list[str], named_dirs: set[st
         named_dirs.add(stripped)
 
 
-def _compute_unclaimed_files(
+def compute_unclaimed_files(
     actual_files: frozenset[str],
     claimed: frozenset[str],
     scope_ignore_files: Sequence[str],
 ) -> frozenset[str]:
     """Return actual files minus claimed files, filtering out ignored paths."""
-    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = _split_ignore_entries(
+    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = split_ignore_entries(
         scope_ignore_files
     )
     return frozenset(
         f
         for f in actual_files - claimed
-        if not _is_scope_ignored(
+        if not is_scope_ignored(
             f, ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs
         )
     )
@@ -464,7 +464,7 @@ def _read_scope_violation(
     )
 
 
-def _check_scope(
+def check_scope(
     actual_files: frozenset[str],
     claimed_files: Sequence[str] | None,
     scope_ignore_files: Sequence[str] = (),
@@ -485,7 +485,7 @@ def _check_scope(
         return None
 
     claimed = frozenset(claimed_files)
-    unclaimed = _compute_unclaimed_files(actual_files, claimed, scope_ignore_files)
+    unclaimed = compute_unclaimed_files(actual_files, claimed, scope_ignore_files)
     if not unclaimed:
         return None
 
@@ -524,7 +524,7 @@ def _transient_write_path(item: object) -> str | None:
     return None
 
 
-def _collect_transient_write_paths(
+def collect_transient_write_paths(
     session_root: str,
     task_slug: str,
     pane_slug: str | None = None,
@@ -544,7 +544,7 @@ def _collect_transient_write_paths(
     return transient_paths
 
 
-def _filter_unclaimed_non_ignored(
+def filter_unclaimed_non_ignored(
     paths: set[str],
     claimed: frozenset[str],
     ignored_exact: frozenset[str],
@@ -557,13 +557,13 @@ def _filter_unclaimed_non_ignored(
         p
         for p in paths
         if p not in claimed
-        and not _is_scope_ignored(
+        and not is_scope_ignored(
             p, ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs
         )
     )
 
 
-def _check_transient_scope(
+def check_transient_scope(
     session_root: str | None,
     task_slug: str | None,
     pane_slug: str | None,
@@ -583,12 +583,12 @@ def _check_transient_scope(
         return None
 
     claimed = frozenset(claimed_files)
-    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = _split_ignore_entries(
+    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = split_ignore_entries(
         scope_ignore_files
     )
 
-    transient_paths = _collect_transient_write_paths(session_root, task_slug, pane_slug)
-    unclaimed = _filter_unclaimed_non_ignored(
+    transient_paths = collect_transient_write_paths(session_root, task_slug, pane_slug)
+    unclaimed = filter_unclaimed_non_ignored(
         transient_paths,
         claimed,
         ignored_exact,
@@ -663,8 +663,8 @@ def _review_policy_failure(
     for result in (
         _check_size(actual_files, max_diff_lines),
         _check_reserved_paths(actual_files),
-        _check_scope(actual_files, claimed_files, scope_ignore_files, read_files),
-        _check_transient_scope(
+        check_scope(actual_files, claimed_files, scope_ignore_files, read_files),
+        check_transient_scope(
             project_root,
             task_slug,
             pane_slug,
