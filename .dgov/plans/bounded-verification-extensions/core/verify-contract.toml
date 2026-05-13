@@ -1,0 +1,36 @@
+[tasks.verify-contract]
+summary = "Add a project extension verification contract"
+commit_message = "Add verification extension contract"
+files.create = [
+  "src/dgov/verify.py",
+  "tests/test_verify.py",
+]
+files.edit = [
+  "src/dgov/config.py",
+]
+files.read = [
+  ".dgov/governor.md",
+  "src/dgov/workers/config.py",
+  "tests/test_cli.py",
+]
+test_cmd = "uv run pytest -q tests/test_verify.py"
+prompt = '''
+Orient:
+Read src/dgov/config.py, src/dgov/workers/config.py, tests/test_cli.py around project.toml handling, and .dgov/governor.md before editing. This task adds a core contract for project-local verification recipes. Do not add Swift, Xcode, JavaScript, Rust, or package-specific behavior to core. Core dgov should know how to load, validate, run, and report declared recipes; projects/extensions own language-specific commands and parsers.
+
+Edit:
+1. Create src/dgov/verify.py with small immutable data models for verification recipes and results:
+   - VerifyRecipe with name, command, optional description, optional log_name, and optional parser name.
+   - VerifyCommandResult with recipe name, command, exit_code, duration_s, log_path, warning_count, and a compact summary.
+   - VerifyRunResult with overall status and the tuple of command results.
+2. Add a loader that reads a new project.toml section shaped like [verify.<name>] from the already-loaded raw TOML data. Keep it strict: command is required and must be a non-empty string; unknown scalar fields should raise a clear ValueError that names the recipe and field.
+3. Add a runner helper that executes one named recipe from a project root, captures stdout/stderr into .dgov/runtime/verify/<recipe>.log unless log_name overrides it, scans warning lines conservatively, and returns VerifyRunResult. Use subprocess with explicit cwd, text capture, timeout, and no shell-specific parsing beyond executing the declared command string.
+4. Wire ProjectConfig in src/dgov/config.py to expose verify_recipes without moving language-specific behavior into ProjectConfig. Preserve existing worker payload behavior; verify recipes are governor-side only.
+5. Add tests in tests/test_verify.py covering valid recipe loading, invalid recipe diagnostics, log capture, warning counting, and non-zero command status. Use simple shell commands created in tmp_path; do not depend on Swift/Xcode or external tools.
+
+Verify:
+uv run pytest -q tests/test_verify.py
+uv run ruff check src/dgov/verify.py src/dgov/config.py tests/test_verify.py
+uv run ruff format --check src/dgov/verify.py src/dgov/config.py tests/test_verify.py
+uv run ty check src/dgov/verify.py src/dgov/config.py
+'''
