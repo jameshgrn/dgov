@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import copy
 import fnmatch
+import os
 import re
 import shlex
 import shutil
@@ -102,6 +103,49 @@ def _tool_bin_dirs(names: tuple[str, ...]) -> list[str]:
     return dirs
 
 
+def _configured_tool_names(config: worker_config.AtomicConfig) -> tuple[str, ...]:
+    commands = (
+        config.test_cmd,
+        config.lint_cmd,
+        config.format_cmd,
+        config.lint_fix_cmd,
+        config.type_check_cmd or "",
+    )
+    return tuple(
+        dict.fromkeys(tool for command in commands if (tool := _configured_command_tool(command)))
+    )
+
+
+def _configured_command_tool(command: str) -> str:
+    normalized = command.replace("{file}", "placeholder").replace("{test_dir}", "placeholder")
+    try:
+        tokens = shlex.split(normalized)
+    except ValueError:
+        return ""
+    if not tokens:
+        return ""
+    uv_wrapped, core = _unwrap_shell_command(tokens)
+    if uv_wrapped and core:
+        return "uv"
+    return tokens[0]
+
+
+def _user_identity() -> str:
+    if user := os.environ.get("USER") or os.environ.get("LOGNAME"):
+        return user
+    try:
+        result = subprocess.run(
+            ["whoami"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip()
+
+
 class AtomicTools:
     """The Actuator Layer: Strict, isolated tools."""
 
@@ -117,13 +161,14 @@ class AtomicTools:
         # Resolve python/venv paths once at init, not per-command
         self._python_bin = Path(sys.executable).parent
         self._python = sys.executable
-        self._tool_bin_dirs = _tool_bin_dirs(("uv", "sg"))
+        self._tool_bin_dirs = _tool_bin_dirs(("uv", "sg", *_configured_tool_names(config)))
         # Sandbox HOME outside worktree — prevents macOS Library/ polluting git status
         self._sandbox_home = Path(tempfile.mkdtemp(prefix="dgov-sandbox-"))
         self._activity_log: list[dict[str, Any]] = []
         self._successful_test_verification = False
 
     def _sandbox_env(self) -> dict[str, str]:
+        user = _user_identity()
         path_parts = [
             str(self._python_bin),
             *self._tool_bin_dirs,
@@ -137,6 +182,7 @@ class AtomicTools:
             "HOME": str(self._sandbox_home),
             "LANG": "en_US.UTF-8",
             "PYTHONPATH": str(self.worktree / self.config.src_dir.rstrip("/")),
+            **({"USER": user, "LOGNAME": user} if user else {}),
         }
 
     def _check_path(self, path: str) -> Path | str:

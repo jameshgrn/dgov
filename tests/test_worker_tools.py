@@ -444,6 +444,29 @@ class TestRunBashPolicy:
         assert result.startswith("Error:")
         assert "file mutation shell command" in result
 
+    def test_worker_env_includes_user_identity(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        result = t.run_bash("printenv USER")
+        assert "EXIT:0" in result
+
+    def test_worker_path_includes_configured_tool_dirs(
+        self, worktree, worker_module, tmp_path, monkeypatch
+    ):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        tool = bin_dir / "swift-format"
+        tool.write_text("#!/bin/sh\nexit 0\n")
+        tool.chmod(0o755)
+        monkeypatch.setenv("PATH", str(bin_dir))
+
+        config = worker_module.AtomicConfig(lint_cmd="swift-format lint {file}")
+        t = worker_module.AtomicTools(worktree, config)
+
+        result = t.run_bash("command -v swift-format")
+
+        assert str(tool) in result
+        assert "EXIT:0" in result
+
 
 class TestLintCheck:
     def test_uses_project_config(self, worktree, worker_module):

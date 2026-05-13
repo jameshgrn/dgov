@@ -86,8 +86,9 @@ def _planner_contract_section() -> str:
     return f"""
 ENVIRONMENT:
 - Python: {sys.executable}
-- Available: rg, sg (ast-grep), jq, tree, git, python, pytest, ruff (all pre-installed)
-- Everything is pre-installed. Do NOT install packages, create venvs, or pip install.
+- Available: rg, sg (ast-grep), jq, tree, git, and configured project tools
+  when they resolve in PATH.
+- Do NOT install packages, create venvs, or pip install.
 - Use relative paths for all file tools.
 
 PLANNING CONTRACT:
