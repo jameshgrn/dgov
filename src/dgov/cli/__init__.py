@@ -284,5 +284,6 @@ from dgov.cli import (  # noqa: E402
     run as run,
     sentrux as sentrux,
     tools as tools,
+    verify as verify,
     watch as watch,
 )
