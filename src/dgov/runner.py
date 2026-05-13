@@ -1606,7 +1606,7 @@ class EventDagRunner:
             ctx.pane_slug = pane_slug
             self._pending_dispatches.add(action.task_slug)
             ctx.start_time = time.time()
-            task_scope = self._task_scope_payload(action.task_slug, task)
+            task_scope = self._task_scope_payload(action.task_slug, task, pane_slug)
             self._record_dispatch_artifact(action, task, wt, prompt, agent)
             kernel_actions = self.kernel.handle(TaskDispatched(action.task_slug, pane_slug))
             self._emit_task_dispatched(action, pane_slug, agent)
@@ -1649,14 +1649,22 @@ class EventDagRunner:
     def _dispatch_pane_slug(self, task_slug: str) -> str:
         return f"headless-{task_slug}-{uuid.uuid4().hex[:8]}"
 
-    def _task_scope_payload(self, task_slug: str, task: DagTaskSpec) -> dict[str, object]:
+    def _task_scope_payload(
+        self,
+        task_slug: str,
+        task: DagTaskSpec,
+        pane_slug: str,
+    ) -> dict[str, object]:
         return {
             "task_slug": task_slug,
+            "session_root": self.session_root,
+            "pane_slug": pane_slug,
             "create": list(task.files.create),
             "edit": list(task.files.edit),
             "delete": list(task.files.delete),
             "touch": list(task.files.touch),
             "read": list(task.files.read),
+            "scope_ignore_files": list(self.project_config.scope_ignore_files),
             "verify_test_targets": list(_verify_test_targets(task, self.project_config.test_dir)),
         }
 
@@ -2025,7 +2033,8 @@ class EventDagRunner:
             timeout_s=task.timeout_s,
             test_cmd=task.test_cmd,
         )
-        retry_scope = self._retry_scope(action.task_slug, task)
+        retry_pane_slug = f"{action.pane_slug}-retry"
+        retry_scope = self._retry_scope(action.task_slug, task, retry_pane_slug)
         if (command := _test_failure_command(settlement_error)) and retry_scope[
             "verify_test_targets"
         ]:
@@ -2036,7 +2045,7 @@ class EventDagRunner:
             self.session_root,
             self.dag.name,
             action.task_slug,
-            f"{action.pane_slug}-retry",
+            retry_pane_slug,
             wt.path,
             retry_task,
             retry_scope,
@@ -2044,14 +2053,22 @@ class EventDagRunner:
             on_event=self.on_event,
         )
 
-    def _retry_scope(self, task_slug: str, task: DagTaskSpec) -> dict[str, object]:
+    def _retry_scope(
+        self,
+        task_slug: str,
+        task: DagTaskSpec,
+        pane_slug: str = "",
+    ) -> dict[str, object]:
         return {
             "task_slug": task_slug,
+            "session_root": self.session_root,
+            "pane_slug": pane_slug,
             "create": list(task.files.create),
             "edit": list(task.files.edit),
             "delete": list(task.files.delete),
             "touch": list(task.files.touch),
             "read": list(task.files.read),
+            "scope_ignore_files": list(self.project_config.scope_ignore_files),
             "verify_test_targets": list(_verify_test_targets(task, self.project_config.test_dir)),
         }
 

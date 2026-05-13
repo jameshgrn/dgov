@@ -96,6 +96,7 @@ def _capture_scope_factory(captured: dict[str, object]):
         on_event=None,
     ):
         captured["task_scope"] = task_scope
+        captured["pane_slug"] = pane_slug
         on_exit(task_slug, pane_slug, 0, "")
 
     return _capture
@@ -931,11 +932,14 @@ class TestVerificationScope:
 
         assert captured["task_scope"] == {
             "task_slug": "a",
+            "session_root": "/tmp/test-project",
+            "pane_slug": captured["pane_slug"],
             "create": ["tests/test_created.py"],
             "edit": ["src/core.py"],
             "delete": [],
             "touch": ["tests/test_touch.py"],
             "read": ["tests/test_read.py", "README.md"],
+            "scope_ignore_files": [".venv", "uv.lock", "__pycache__", "*.pyc"],
             "verify_test_targets": [
                 "tests/test_created.py",
                 "tests/test_touch.py",
@@ -960,11 +964,14 @@ class TestVerificationScope:
 
         assert runner._retry_scope("a", task) == {
             "task_slug": "a",
+            "session_root": "/tmp/test-project",
+            "pane_slug": "",
             "create": ["src/new.py"],
             "edit": [],
             "delete": [],
             "touch": ["tests/test_touch.py"],
             "read": ["tests/test_read.py"],
+            "scope_ignore_files": [".venv", "uv.lock", "__pycache__", "*.pyc"],
             "verify_test_targets": ["tests/test_touch.py", "tests/test_read.py"],
         }
 
@@ -993,11 +1000,14 @@ class TestVerificationScope:
 
         assert captured["task_scope"] == {
             "task_slug": "a",
+            "session_root": "/tmp/test-project",
+            "pane_slug": "pane-a-retry",
             "create": ["src/new.py"],
             "edit": [],
             "delete": [],
             "touch": [],
             "read": ["tests/test_a.py"],
+            "scope_ignore_files": [".venv", "uv.lock", "__pycache__", "*.pyc"],
             "verify_test_targets": ["tests/test_a.py"],
             "require_successful_test_verification": True,
             "required_verification_command": "uv run pytest tests/test_a.py -q",

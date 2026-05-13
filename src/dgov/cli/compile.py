@@ -107,7 +107,107 @@ def _merge_plan_tree(tree: PlanTree) -> FlatPlan:
 
 def _ensure_plan_has_units(plan: FlatPlan) -> None:
     if not plan.units:
-        _exit_with_error("Error: plan tree has no units")
+        diagnostic = _empty_plan_tree_diagnostic(plan)
+        _exit_with_error(f"Error: plan tree has no units. {diagnostic}")
+
+
+def _empty_plan_tree_diagnostic(plan: FlatPlan) -> str:
+    declared_sections = set(plan.root_meta.sections)
+    undeclared_sections = _undeclared_task_sections(plan.plan_root, declared_sections)
+    if undeclared_sections:
+        return (
+            "Found task TOML files in undeclared section directories: "
+            f"{', '.join(undeclared_sections)}. Add the section name to _root.toml "
+            "[plan].sections or move the task file into a declared section."
+        )
+    if not declared_sections:
+        return (
+            "_root.toml [plan].sections is empty. Declare at least one section and "
+            "add a depth-1 TOML file containing [tasks.<slug>]."
+        )
+
+    visible_files = _visible_task_toml_files(plan.plan_root, plan.root_meta.sections)
+    if visible_files:
+        return (
+            "Task TOML files were found but no [tasks.<slug>] tables were parsed: "
+            f"{', '.join(visible_files)}."
+        )
+
+    ignored_files = _ignored_task_toml_files(plan.plan_root, plan.root_meta.sections)
+    if ignored_files:
+        return (
+            "Declared sections contain only ignored TOML files: "
+            f"{', '.join(ignored_files)}. Rename a task file without a leading '_' "
+            "or '.' prefix."
+        )
+
+    nested_files = _nested_task_toml_files(plan.plan_root, plan.root_meta.sections)
+    if nested_files:
+        return (
+            "Task TOML files are nested below section directories, but plan trees "
+            f"read only depth-1 files: {', '.join(nested_files)}."
+        )
+
+    return (
+        "Declared sections contain no task TOML files. Add a depth-1 TOML file "
+        "containing [tasks.<slug>] to one of: "
+        f"{', '.join(plan.root_meta.sections)}."
+    )
+
+
+def _visible_task_toml_files(plan_root: Path, sections: tuple[str, ...]) -> list[str]:
+    files: list[str] = []
+    for section in sections:
+        section_dir = plan_root / section
+        if not section_dir.is_dir():
+            continue
+        files.extend(
+            str(path.relative_to(plan_root))
+            for path in sorted(section_dir.iterdir())
+            if path.is_file() and path.suffix == ".toml" and not path.name.startswith((".", "_"))
+        )
+    return files
+
+
+def _ignored_task_toml_files(plan_root: Path, sections: tuple[str, ...]) -> list[str]:
+    files: list[str] = []
+    for section in sections:
+        section_dir = plan_root / section
+        if not section_dir.is_dir():
+            continue
+        files.extend(
+            str(path.relative_to(plan_root))
+            for path in sorted(section_dir.iterdir())
+            if path.is_file() and path.suffix == ".toml" and path.name.startswith((".", "_"))
+        )
+    return files
+
+
+def _nested_task_toml_files(plan_root: Path, sections: tuple[str, ...]) -> list[str]:
+    files: list[str] = []
+    for section in sections:
+        section_dir = plan_root / section
+        if not section_dir.is_dir():
+            continue
+        files.extend(
+            str(path.relative_to(plan_root))
+            for path in sorted(section_dir.rglob("*.toml"))
+            if path.is_file() and path.parent != section_dir
+        )
+    return files
+
+
+def _undeclared_task_sections(plan_root: Path, declared_sections: set[str]) -> list[str]:
+    sections: list[str] = []
+    for path in sorted(plan_root.iterdir()):
+        if (
+            path.is_dir()
+            and path.name not in declared_sections
+            and path.name != "archive"
+            and _visible_task_toml_files(plan_root, (path.name,))
+        ):
+            sections.append(path.name)
+    return sections
 
 
 def _resolve_plan_refs(plan: FlatPlan) -> FlatPlan:
@@ -334,6 +434,30 @@ _PROMPT_COMMAND_RE = re.compile(r"`([^`\n]+)`")
 _PROMPT_HEADING_RE = re.compile(r"^\s*(?:#{1,6}\s+)?(?:\*\*)?(orient|edit|verify)\b", re.I)
 _PROMPT_ORIENT_RE = re.compile(r"^\s*(?:#{1,6}\s+)?(?:\*\*)?orient\b", re.I | re.M)
 _MARKDOWN_HEADING_RE = re.compile(r"^\s*#{1,6}\s+\S+")
+_VERIFY_COMMAND_TOOLS = {
+    "actionlint",
+    "bun",
+    "cargo",
+    "dgov",
+    "git",
+    "go",
+    "make",
+    "npm",
+    "npx",
+    "pnpm",
+    "python",
+    "python3",
+    "pytest",
+    "rg",
+    "ruff",
+    "shellcheck",
+    "shfmt",
+    "swift",
+    "ty",
+    "uv",
+    "xcodebuild",
+    "xcrun",
+}
 _SHELL_BUILTINS = {
     "[",
     "cd",
@@ -436,9 +560,22 @@ def _looks_like_verify_command(command: str) -> bool:
         return False
     if len(tokens) >= 2 and tokens[1] == "=":
         return False
-    if len(tokens) > 1:
+    tool = tokens[0]
+    if tool in _VERIFY_COMMAND_TOOLS or _looks_like_executable_path(tool):
         return True
-    return tokens[0] in {"pytest", "ruff", "ty", "dgov", "xcodebuild", "swift", "make"}
+    if len(tokens) == 1:
+        return False
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_.+-]*", tool):
+        return False
+    return any(_looks_like_command_argument(arg) for arg in tokens[1:])
+
+
+def _looks_like_executable_path(token: str) -> bool:
+    return token.startswith(("./", "../", "/"))
+
+
+def _looks_like_command_argument(token: str) -> bool:
+    return token.startswith(("-", "./", "../", "/")) or "/" in token or Path(token).suffix != ""
 
 
 def _verification_tool(command: str) -> str:

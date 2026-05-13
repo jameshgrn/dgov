@@ -72,6 +72,7 @@ def _render_structured_fix_prompt(prompt: str, files: tuple[str, ...]) -> str:
         "2. Keep unrelated cleanup out of the diff.\n\n"
         "Verify:\n"
         f"{verify_lines}\n"
+        "- Run `scope_status` and fix any blocking scope issue before done.\n"
         "- Review `git diff` before calling done."
     )
 
@@ -91,19 +92,36 @@ def _fix_task_summary(prompt: str) -> str:
 
 def _render_fix_plan_toml(
     prompt: str,
-    files: list[str],
+    *,
+    create_files: list[str],
+    edit_files: list[str],
     commit_message: str,
     summary: str,
 ) -> str:
     """Render the single task file for a fix plan tree."""
-    files_str = ", ".join(_toml_str(f) for f in files)
+    create_str = ", ".join(_toml_str(f) for f in create_files)
+    edit_str = ", ".join(_toml_str(f) for f in edit_files)
     return (
         "[tasks.apply]\n"
         f"summary = {_toml_str(summary)}\n"
         f"prompt = {_toml_ml_str(prompt)}\n"
         f"commit_message = {_toml_str(commit_message)}\n"
-        f"files = [{files_str}]\n"
+        f"files.create = [{create_str}]\n"
+        f"files.edit = [{edit_str}]\n"
     )
+
+
+def _split_fix_file_claims(
+    project_root: Path, files: tuple[str, ...]
+) -> tuple[list[str], list[str]]:
+    create_files: list[str] = []
+    edit_files: list[str] = []
+    for file in files:
+        if (project_root / file).exists():
+            edit_files.append(file)
+        else:
+            create_files.append(file)
+    return create_files, edit_files
 
 
 def _archive_if_exists(plan_dir: Path) -> None:
@@ -152,6 +170,7 @@ def _allocate_fix_plan_dir(
 
 
 def _create_fix_plan(
+    project_root: Path,
     plan_dir: Path,
     plan_name: str,
     prompt: str,
@@ -169,11 +188,13 @@ summary = "Apply requested fix"
 sections = ["fix"]
 '''
     (plan_dir / "_root.toml").write_text(root_toml)
+    create_files, edit_files = _split_fix_file_claims(project_root, files)
     main_toml = _render_fix_plan_toml(
         structured_prompt,
-        list(files),
-        commit_message,
-        _fix_task_summary(prompt),
+        create_files=create_files,
+        edit_files=edit_files,
+        commit_message=commit_message,
+        summary=_fix_task_summary(prompt),
     )
     (fix_section_dir / "main.toml").write_text(main_toml)
 
@@ -257,7 +278,7 @@ def fix_cmd(
         explicit_name=name,
     )
 
-    _create_fix_plan(plan_dir, plan_name, prompt, file, commit_message)
+    _create_fix_plan(project_root, plan_dir, plan_name, prompt, file, commit_message)
     click.echo(f"Created plan '{plan_name}' at {plan_dir}")
     _compile_fix_plan(plan_dir)
     _finish_fix_plan(plan_dir, _run_fix_plan(plan_dir, project_root))

@@ -203,8 +203,8 @@ class AtomicTools:
     def _normalize_scope_path(self, path: str) -> str:
         return path.strip().lstrip("./").rstrip("/")
 
-    def _verify_test_targets(self) -> tuple[str, ...]:
-        raw = self.task_scope.get("verify_test_targets", [])
+    def _scope_paths(self, name: str) -> tuple[str, ...]:
+        raw = self.task_scope.get(name, [])
         if isinstance(raw, list):
             return tuple(
                 dict.fromkeys(
@@ -214,6 +214,19 @@ class AtomicTools:
                 )
             )
         return ()
+
+    def _claimed_writable_paths(self) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys([
+                *self._scope_paths("create"),
+                *self._scope_paths("edit"),
+                *self._scope_paths("delete"),
+                *self._scope_paths("touch"),
+            ])
+        )
+
+    def _verify_test_targets(self) -> tuple[str, ...]:
+        return self._scope_paths("verify_test_targets")
 
     def _done_verification_error(self) -> str | None:
         if (
@@ -1080,6 +1093,83 @@ class AtomicTools:
             if not self._run_test_target_is_allowed(target, allowed_targets)
         ]
 
+    def scope_status(self) -> str:
+        """Preview settlement scope checks for current worker changes."""
+        if not self.task_scope:
+            return "Error: scope_status() requires task scope from the governor."
+
+        actual_files = self._git_status_paths()
+        if isinstance(actual_files, str):
+            return actual_files
+
+        from dgov.scope_status import analyze_scope_status
+
+        status = analyze_scope_status(
+            actual_files=actual_files,
+            claimed_files=self._claimed_writable_paths(),
+            read_files=self._scope_paths("read"),
+            scope_ignore_files=self._scope_paths("scope_ignore_files"),
+            session_root=str(self.task_scope.get("session_root", "")).strip() or None,
+            task_slug=str(self.task_scope.get("task_slug", "")).strip() or None,
+            pane_slug=str(self.task_scope.get("pane_slug", "")).strip() or None,
+        )
+        return self._format_scope_status(status)
+
+    def _git_status_paths(self) -> frozenset[str] | str:
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=self.worktree,
+            capture_output=True,
+            text=True,
+        )
+        if status.returncode != 0:
+            return "Error: git status failed."
+
+        files: set[str] = set()
+        for line in status.stdout.rstrip("\n").split("\n"):
+            if not line:
+                continue
+            path_part = line[3:]
+            if " -> " in path_part:
+                path_part = path_part.split(" -> ", 1)[1]
+            files.add(path_part)
+        return frozenset(files)
+
+    def _format_scope_status(self, status: object) -> str:
+        def _paths(values: object) -> str:
+            if not isinstance(values, frozenset):
+                return "(none)"
+            return ", ".join(sorted(values)) or "(none)"
+
+        blocking = getattr(status, "blocking_failure", None)
+        lines = [
+            f"scope_status: {'fail' if blocking else 'pass'}",
+            f"claimed_writable: {_paths(getattr(status, 'claimed_writable', frozenset()))}",
+            f"claimed_readonly: {_paths(getattr(status, 'claimed_readonly', frozenset()))}",
+            f"modified_files: {_paths(getattr(status, 'actual_files', frozenset()))}",
+        ]
+        transient = getattr(status, "transient_write_paths", frozenset())
+        if transient:
+            lines.append(f"transient_writes: {_paths(transient)}")
+        ignored_actual = getattr(status, "ignored_actual_paths", frozenset())
+        if ignored_actual:
+            lines.append(f"ignored_modified: {_paths(ignored_actual)}")
+        ignored_transient = getattr(status, "ignored_transient_paths", frozenset())
+        if ignored_transient:
+            lines.append(f"ignored_transient: {_paths(ignored_transient)}")
+        unclaimed_actual = getattr(status, "unclaimed_actual_paths", frozenset())
+        if unclaimed_actual:
+            lines.append(f"unclaimed_modified: {_paths(unclaimed_actual)}")
+        unclaimed_transient = getattr(status, "unclaimed_transient_paths", frozenset())
+        if unclaimed_transient:
+            lines.append(f"unclaimed_transient: {_paths(unclaimed_transient)}")
+        if blocking:
+            error = getattr(blocking, "error", "") or "scope check failed"
+            lines.append(f"blocking: {error}")
+        else:
+            lines.append("blocking: (none)")
+        return "\n".join(lines)
+
     def lint_check(self, file: str = "") -> str:
         """Run lint using the project's declared lint command."""
         target = file if file else self.config.src_dir
@@ -1787,6 +1877,21 @@ _WORKER_TOOL_SPECS: tuple[dict[str, Any], ...] = (
             "description": (
                 "Run the project's type checker (e.g. ty check). "
                 "Returns checker output. Use after edits to verify type correctness."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scope_status",
+            "description": (
+                "Preview settlement scope status for current changes, including "
+                "unclaimed modified files and transient worker-tool writes."
             ),
             "parameters": {
                 "type": "object",

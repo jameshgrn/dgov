@@ -109,7 +109,8 @@ WORKFLOW — follow this order:
 3. VERIFY: check_syntax immediately after editing (instant).
    lint_fix to auto-clean trivial issues (unused imports/vars).
    search_tests_for to find relevant tests, then run_tests only on in-scope test files.
-4. FINISH: git_diff to review all your changes.
+4. FINISH: scope_status to catch settlement scope failures early.
+   git_diff to review all your changes.
    assert_file_unchanged on files you should NOT have touched.
    Call done with a summary.
 """

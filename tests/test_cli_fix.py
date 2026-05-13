@@ -95,7 +95,7 @@ class TestFixHappyPath:
         # Verify run was called
         mock_run.assert_called_once()
 
-    def test_multiple_file_options_preserved(
+    def test_multiple_new_file_options_preserved_as_create_claims(
         self,
         runner: CliRunner,
         tmp_path: Path,
@@ -104,7 +104,7 @@ class TestFixHappyPath:
         mock_run: MagicMock,
         mock_archive: MagicMock,
     ) -> None:
-        """Multiple --file options are preserved exactly in the generated task TOML."""
+        """Missing --file paths become explicit create claims in the generated task TOML."""
         monkeypatch.chdir(tmp_path)
 
         result = runner.invoke(
@@ -131,11 +131,35 @@ class TestFixHappyPath:
         content = main_toml_path.read_text()
         parsed = tomllib.loads(content)
 
-        assert parsed["tasks"]["apply"]["files"] == [
+        assert parsed["tasks"]["apply"]["files"]["create"] == [
             "src/main.py",
             "src/config.py",
             "tests/test_main.py",
         ]
+        assert parsed["tasks"]["apply"]["files"]["edit"] == []
+
+    def test_existing_file_options_preserved_as_edit_claims(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_compile: MagicMock,
+        mock_run: MagicMock,
+        mock_archive: MagicMock,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("print('hi')\n")
+
+        result = runner.invoke(cli, ["fix", "Update main", "--file", "src/main.py"])
+
+        assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
+
+        plan_dir = _runtime_fix_plans_dir(tmp_path) / "fix-update-main"
+        parsed = tomllib.loads((plan_dir / "fix" / "main.toml").read_text())
+
+        assert parsed["tasks"]["apply"]["files"]["create"] == []
+        assert parsed["tasks"]["apply"]["files"]["edit"] == ["src/main.py"]
 
     def test_name_override(
         self,
@@ -227,6 +251,7 @@ class TestFixHappyPath:
         assert "Edit:" in prompt
         assert "Verify:" in prompt
         assert "uv run ruff check src/parser.py" in prompt
+        assert "scope_status" in prompt
 
 
 class TestFixEdgeCases:
