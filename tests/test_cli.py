@@ -590,6 +590,7 @@ def test_init_creates_bootstrap_files(
         assert config.exists()
         assert governor.exists()
         assert sops_dir.is_dir()
+        assert "plans/archive/" not in Path(td, ".dgov", ".gitignore").read_text()
         content = config.read_text()
         assert 'language = "python"' in content
         assert 'src_dir = "src/"' in content
@@ -915,10 +916,32 @@ def test_detect_rust_project(tmp_path: Path) -> None:
     assert ".rs" in ext
 
 
-def test_detect_fallback_to_python(tmp_path: Path) -> None:
-    """Empty dir defaults to python."""
+def test_detect_fallback_to_unknown(tmp_path: Path) -> None:
+    """Empty dirs are low-confidence unknown projects, not Python by assumption."""
     lang, _src, _test, _ext = _detect_project(tmp_path)
-    assert lang == "python"
+    assert lang == "unknown"
+
+
+def test_init_project_type_swift_writes_swift_config(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        monkeypatch.setattr("dgov.cli.init._sentrux_available", lambda: False)
+
+        result = runner.invoke(cli, ["init", "--project-type", "swift", "--preflight"])
+
+        assert result.exit_code == 0, result.output
+        config = Path(td, ".dgov", "project.toml").read_text()
+        assert 'language = "swift"' in config
+        assert 'src_dir = "Sources/"' in config
+        assert 'test_dir = "Tests/"' in config
+        assert 'lint_cmd = "xcrun swift-format lint --strict {file}"' in config
+        assert (
+            'setup_cmd = "if [ -f project.yml ]; then USER=$(whoami) xcodegen generate; fi"'
+            in config
+        )
+        assert "pane: unavailable" in result.output
+        assert "worker env:" in result.output
 
 
 # -- _render_project_toml --

@@ -77,8 +77,8 @@ def _environment_section() -> str:
     return f"""
 ENVIRONMENT:
 - Python: {sys.executable}
-- Available: rg, sg (ast-grep), jq, tree, git, python, pytest, ruff (all pre-installed)
-- Everything is pre-installed. Do NOT install packages, create venvs, or pip install.
+- Available: rg, sg (ast-grep), jq, tree, git, and the tools configured in `.dgov/project.toml` when they resolve in PATH.
+- Do NOT install packages, create venvs, or pip install.
 - Use relative paths for all file tools (e.g. 'src/dgov/foo.py' not absolute).
 """
 
@@ -109,7 +109,8 @@ WORKFLOW — follow this order:
 3. VERIFY: check_syntax immediately after editing (instant).
    lint_fix to auto-clean trivial issues (unused imports/vars).
    search_tests_for to find relevant tests, then run_tests only on in-scope test files.
-4. FINISH: git_diff to review all your changes.
+4. FINISH: scope_status to catch settlement scope failures early.
+   git_diff to review all your changes.
    assert_file_unchanged on files you should NOT have touched.
    Call done with a summary.
 """

@@ -1,0 +1,44 @@
+[tasks.scope-status]
+summary = "Add reusable scope status analysis"
+commit_message = "Add scope status analysis"
+depends_on = ["core/verify-contract.verify-contract"]
+files.create = [
+  "src/dgov/scope_status.py",
+  "tests/test_scope_status.py",
+]
+files.edit = [
+  "src/dgov/settlement.py",
+]
+files.read = [
+  "src/dgov/persistence/events.py",
+  "tests/test_settlement.py",
+]
+test_cmd = "uv run pytest -q tests/test_scope_status.py tests/test_settlement.py::TestScope"
+prompt = '''
+Orient:
+Read src/dgov/settlement.py around _check_scope, _check_transient_scope, _collect_transient_write_paths, and ignore handling before editing. Also read tests/test_settlement.py for current scope behavior. The goal is to make settlement-preview scope evidence visible without weakening settlement. Do not duplicate scope rules in a second implementation.
+
+Edit:
+1. Create src/dgov/scope_status.py with a pure analysis result for:
+   - claimed writable paths.
+   - claimed read-only paths.
+   - actually modified paths from git diff/status inputs.
+   - transient write paths from worker activity.
+   - ignored paths.
+   - blocking failures that settlement would reject right now.
+2. Extract or expose narrowly-scoped helpers from src/dgov/settlement.py so scope_status can reuse the same ignore and transient-write classification logic. Keep settlement.py imports within existing boundary rules; do not make settlement depend on CLI modules.
+3. The analysis API should accept explicit claimed files/read files, actual files, optional session_root/task_slug/pane_slug, and scope_ignore_files. It should not run git itself; CLI code can collect git state later.
+4. Add tests in tests/test_scope_status.py proving parity with settlement for:
+   - unclaimed modified files.
+   - edited read-only files.
+   - transiently touched unclaimed files.
+   - ignored lock/cache files.
+   - clean in-scope changes.
+5. If tests require existing settlement helpers, adjust tests/test_settlement.py only if necessary to preserve current behavior; do not broaden settlement policy.
+
+Verify:
+uv run pytest -q tests/test_scope_status.py tests/test_settlement.py::TestScope
+uv run ruff check src/dgov/scope_status.py src/dgov/settlement.py tests/test_scope_status.py
+uv run ruff format --check src/dgov/scope_status.py src/dgov/settlement.py tests/test_scope_status.py
+uv run ty check src/dgov/scope_status.py src/dgov/settlement.py
+'''

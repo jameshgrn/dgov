@@ -163,13 +163,13 @@ class TestErrors:
     def test_declared_section_missing_dir(self, tmp_path: Path) -> None:
         _minimal_root(tmp_path, '["alpha", "missing"]')
         (tmp_path / "alpha").mkdir()
-        with pytest.raises(ValueError, match="'missing' has no directory"):
+        with pytest.raises(ValueError, match=r"sections declares section 'missing'"):
             walk_tree(tmp_path)
 
     def test_declared_section_is_file_not_dir(self, tmp_path: Path) -> None:
         _minimal_root(tmp_path, '["alpha"]')
         _write(tmp_path / "alpha", "not a directory")
-        with pytest.raises(ValueError, match="'alpha' has no directory"):
+        with pytest.raises(ValueError, match=r"Create .*alpha"):
             walk_tree(tmp_path)
 
 

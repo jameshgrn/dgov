@@ -334,6 +334,7 @@ def task_scope_section(task_scope: Mapping[str, object] | None) -> str:
         "- Every other path is out of scope, even if it looks related.",
         "- If a path claimed under files.create already exists in this worktree, treat it as"
         " an in-scope existing file and edit it in place rather than widening scope.",
+        "- Before done, run scope_status to preview modified and transient file scope.",
         "- Before finishing, verify that unclaimed files stayed unchanged.",
     ])
     return "\n".join(lines)

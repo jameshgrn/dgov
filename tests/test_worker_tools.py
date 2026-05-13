@@ -1,7 +1,10 @@
 """Tests for worker tools: navigation, SOP compound tools, project config."""
 
+import subprocess
+
 import pytest
 
+from dgov.persistence.events import emit_event
 from dgov.tool_policy import ToolPolicy
 
 
@@ -49,6 +52,30 @@ def worktree(tmp_path):
     (tmp_path / "tests" / "test_foo.py").write_text("def test_hello():\n    assert True\n")
     (tmp_path / "README.md").write_text("# Test Project\n")
     return tmp_path
+
+
+def _init_repo(path):
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=path, check=True)
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
+
+
+def _emit_worker_result_activity(session_root, pane_slug, task_slug, tool, path, mode):
+    emit_event(
+        str(session_root),
+        "worker_log",
+        pane_slug,
+        plan_name="plan",
+        task_slug=task_slug,
+        log_type="result",
+        content={
+            "tool": tool,
+            "status": "success",
+            "activity": [{"kind": tool, "path": path, "mode": mode}],
+        },
+    )
 
 
 @pytest.fixture
@@ -444,6 +471,29 @@ class TestRunBashPolicy:
         assert result.startswith("Error:")
         assert "file mutation shell command" in result
 
+    def test_worker_env_includes_user_identity(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        result = t.run_bash("printenv USER")
+        assert "EXIT:0" in result
+
+    def test_worker_path_includes_configured_tool_dirs(
+        self, worktree, worker_module, tmp_path, monkeypatch
+    ):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        tool = bin_dir / "swift-format"
+        tool.write_text("#!/bin/sh\nexit 0\n")
+        tool.chmod(0o755)
+        monkeypatch.setenv("PATH", str(bin_dir))
+
+        config = worker_module.AtomicConfig(lint_cmd="swift-format lint {file}")
+        t = worker_module.AtomicTools(worktree, config)
+
+        result = t.run_bash("command -v swift-format")
+
+        assert str(tool) in result
+        assert "EXIT:0" in result
+
 
 class TestLintCheck:
     def test_uses_project_config(self, worktree, worker_module):
@@ -482,6 +532,59 @@ class TestTypeCheck:
         t = worker_module.AtomicTools(worktree, config)
         result = t.type_check()
         assert "not configured" in result.lower()
+
+
+class TestScopeStatus:
+    def test_reports_clean_in_scope_changes(self, worktree, worker_module):
+        _init_repo(worktree)
+        (worktree / "src" / "foo.py").write_text("def hello():\n    return 'changed'\n")
+        t = worker_module.AtomicTools(
+            worktree,
+            worker_module.AtomicConfig(),
+            task_scope={
+                "task_slug": "task-1",
+                "session_root": str(worktree),
+                "pane_slug": "pane-1",
+                "edit": ["src/foo.py"],
+                "scope_ignore_files": ["uv.lock"],
+            },
+        )
+
+        result = t.scope_status()
+
+        assert "scope_status: pass" in result
+        assert "modified_files: src/foo.py" in result
+        assert "blocking: (none)" in result
+
+    def test_reports_unclaimed_transient_write_from_event_log(self, worktree, worker_module):
+        _init_repo(worktree)
+        session_root = worktree.parent / "session"
+        _emit_worker_result_activity(
+            session_root,
+            "pane-current",
+            "task-1",
+            "write_file",
+            "scratch.py",
+            "create",
+        )
+        t = worker_module.AtomicTools(
+            worktree,
+            worker_module.AtomicConfig(),
+            task_scope={
+                "task_slug": "task-1",
+                "session_root": str(session_root),
+                "pane_slug": "pane-current",
+                "edit": ["src/foo.py"],
+                "scope_ignore_files": [],
+            },
+        )
+
+        result = t.scope_status()
+
+        assert "scope_status: fail" in result
+        assert "transient_writes: scratch.py" in result
+        assert "unclaimed_transient: scratch.py" in result
+        assert "Transiently touched unclaimed files" in result
 
 
 # -- Project config loading --

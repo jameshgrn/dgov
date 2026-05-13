@@ -7,11 +7,13 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 import click
 
+from dgov import __version__
 from dgov.bootstrap_policy import GOVERNOR_CHARTER, SOP_FILES
 from dgov.cli import cli, want_json
 from dgov.project_root import resolve_project_root
@@ -44,7 +46,6 @@ runs.log
 out/
 runtime/
 plans/deployed.jsonl
-plans/archive/
 plans/*/_compiled.toml
 """
 
@@ -116,6 +117,10 @@ _SCOPE_IGNORE_CANDIDATES: tuple[str, ...] = (
     "bun.lockb",
     # Rust
     "Cargo.lock",
+    # Swift / Xcode
+    ".build",
+    "DerivedData",
+    "Package.resolved",
     # Go
     "go.sum",
     # Ruby
@@ -177,7 +182,7 @@ _JEST_CONFIG_FILES: tuple[str, ...] = (
 
 def _detect_scope_ignore_files(root: Path, language: str) -> list[str]:
     """Return known managed files plus Python's uv.lock default."""
-    detected = [name for name in _SCOPE_IGNORE_CANDIDATES if (root / name).is_file()]
+    detected = [name for name in _SCOPE_IGNORE_CANDIDATES if (root / name).exists()]
     if language == "python" and "uv.lock" not in detected:
         detected.append("uv.lock")
     return detected
@@ -357,47 +362,68 @@ def _detect_js_tooling(root: Path) -> dict[str, str]:
     return result
 
 
+@dataclass(frozen=True)
+class ProjectDetection:
+    language: str
+    src_dir: str
+    test_dir: str
+    extensions: list[str]
+    confidence: str
+    reason: str
+
+
+_PROJECT_TYPE_CHOICES = ("auto", "unknown", "python", "javascript", "rust", "go", "swift")
+
+
 def _detect_language_counts(root: Path) -> dict[str, int]:
     """Count source files by language in the project root."""
     py_files = _source_files(root, ".py")
     js_files = _source_files(root, ".js") + _source_files(root, ".ts")
     rs_files = _source_files(root, ".rs")
     go_files = _source_files(root, ".go")
+    swift_files = _source_files(root, ".swift")
 
     return {
         "python": len(py_files),
         "javascript": len(js_files),
         "rust": len(rs_files),
         "go": len(go_files),
+        "swift": len(swift_files),
     }
 
 
 def _detect_language(counts: dict[str, int]) -> str:
-    """Determine primary language from file counts, defaulting to python."""
+    """Determine primary language from file counts, defaulting to unknown."""
     language = max(counts, key=lambda k: counts.get(k, 0))
     if counts[language] == 0:
-        language = "python"
+        language = "unknown"
     return language
 
 
-def _detect_src_dir(root: Path) -> str:
+def _detect_src_dir(root: Path, language: str = "") -> str:
     """Detect the source directory path."""
+    if language == "swift" and (root / "Sources").is_dir():
+        return "Sources/"
     if (root / "src").is_dir():
         return "src/"
-    elif (root / "lib").is_dir():
+    if (root / "lib").is_dir():
         return "lib/"
-    else:
-        return "."
+    if language == "swift":
+        return "Sources/"
+    return "."
 
 
-def _detect_test_dir(root: Path) -> str:
+def _detect_test_dir(root: Path, language: str = "") -> str:
     """Detect the test directory path."""
+    if language == "swift" and (root / "Tests").is_dir():
+        return "Tests/"
     if (root / "tests").is_dir():
         return "tests/"
-    elif (root / "test").is_dir():
+    if (root / "test").is_dir():
         return "test/"
-    else:
-        return "tests/"
+    if language == "swift":
+        return "Tests/"
+    return "tests/"
 
 
 def _detect_extensions(language: str) -> list[str]:
@@ -407,19 +433,49 @@ def _detect_extensions(language: str) -> list[str]:
         "javascript": [".js", ".ts", ".tsx"],
         "rust": [".rs"],
         "go": [".go"],
+        "swift": [".swift"],
+        "unknown": [],
     }
     return ext_map.get(language, [".py"])
 
 
 def _detect_project(root: Path) -> tuple[str, str, str, list[str]]:
     """Auto-detect language, src dir, test dir, and extensions."""
-    counts = _detect_language_counts(root)
-    language = _detect_language(counts)
-    src_dir = _detect_src_dir(root)
-    test_dir = _detect_test_dir(root)
-    extensions = _detect_extensions(language)
+    detection = _detect_project_details(root)
+    return detection.language, detection.src_dir, detection.test_dir, detection.extensions
 
-    return language, src_dir, test_dir, extensions
+
+def _detect_project_details(root: Path, project_type: str = "auto") -> ProjectDetection:
+    """Auto-detect project metadata, or apply an explicit project type."""
+    if project_type not in _PROJECT_TYPE_CHOICES:
+        raise ValueError(f"Unknown project type: {project_type}")
+
+    counts = _detect_language_counts(root)
+    language = project_type if project_type != "auto" else _detect_language(counts)
+    src_dir = _detect_src_dir(root, language)
+    test_dir = _detect_test_dir(root, language)
+    extensions = _detect_extensions(language)
+    confidence, reason = _detection_confidence(language, counts, project_type)
+    return ProjectDetection(
+        language=language,
+        src_dir=src_dir,
+        test_dir=test_dir,
+        extensions=extensions,
+        confidence=confidence,
+        reason=reason,
+    )
+
+
+def _detection_confidence(
+    language: str,
+    counts: dict[str, int],
+    project_type: str,
+) -> tuple[str, str]:
+    if project_type != "auto":
+        return "explicit", f"selected by --project-type {project_type}"
+    if language == "unknown":
+        return "low", "no source files matched supported project types"
+    return "high", f"detected {counts[language]} {language} source file(s)"
 
 
 _LANG_TEMPLATES: dict[str, dict[str, str]] = {
@@ -450,6 +506,20 @@ _LANG_TEMPLATES: dict[str, dict[str, str]] = {
         "format_cmd": "gofmt -w {file}",
         "lint_fix_cmd": "golangci-lint run --fix {file}",
         "format_check_cmd": "gofmt -l {file}",
+    },
+    "swift": {
+        "test_cmd": "swift test",
+        "lint_cmd": "xcrun swift-format lint --strict {file}",
+        "format_cmd": "xcrun swift-format format --in-place {file}",
+        "lint_fix_cmd": "xcrun swift-format format --in-place {file}",
+        "format_check_cmd": "xcrun swift-format lint --strict {file}",
+    },
+    "unknown": {
+        "test_cmd": "",
+        "lint_cmd": "",
+        "format_cmd": "",
+        "lint_fix_cmd": "",
+        "format_check_cmd": "",
     },
 }
 
@@ -579,6 +649,8 @@ def _setup_lines(language: str) -> list[str]:
             'setup_cmd = "npm ci --ignore-scripts 2>/dev/null'
             ' || npm install --ignore-scripts 2>/dev/null"'
         ]
+    if language == "swift":
+        return ['setup_cmd = "if [ -f project.yml ]; then USER=$(whoami) xcodegen generate; fi"']
     return ['# setup_cmd = ""  # Runs in worktree before gates']
 
 
@@ -705,16 +777,111 @@ def _print_created_paths(created: list[Path]) -> None:
 
 
 def _print_init_config_summary(
-    language: str,
-    src_dir: str,
-    test_dir: str,
+    detection: ProjectDetection,
     scope_ignore_files: list[str],
+    project_root: Path,
 ) -> None:
-    click.echo(f"  language: {language}")
-    click.echo(f"  src_dir:  {src_dir}")
-    click.echo(f"  test_dir: {test_dir}")
+    cmds = _project_commands(detection.language, detection.src_dir, project_root)
+    click.echo(f"  language: {detection.language}")
+    click.echo(f"  confidence: {detection.confidence} ({detection.reason})")
+    click.echo(f"  src_dir:  {detection.src_dir}")
+    click.echo(f"  test_dir: {detection.test_dir}")
+    click.echo(f"  test_cmd: {cmds.get('test_cmd', '') or '(not configured)'}")
+    click.echo(f"  lint_cmd: {cmds.get('lint_cmd', '') or '(not configured)'}")
+    setup_lines = _setup_lines(detection.language)
+    setup_cmd = next((line for line in setup_lines if line.startswith("setup_cmd = ")), "")
+    if setup_cmd:
+        click.echo(f"  {setup_cmd}")
     if scope_ignore_files:
         click.echo(f"  scope.ignore_files: {', '.join(scope_ignore_files)}")
+
+
+def _is_git_repo(project_root: Path) -> bool:
+    result = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def _probe_status(result: str) -> tuple[str, str]:
+    lines = result.splitlines()
+    exit_line = lines[-1] if lines else ""
+    stdout = ""
+    if "STDOUT:" in lines:
+        start = lines.index("STDOUT:") + 1
+        end = lines.index("STDERR:") if "STDERR:" in lines else len(lines)
+        stdout = "\n".join(lines[start:end]).strip()
+    if exit_line == "EXIT:0":
+        return "ok", stdout.splitlines()[0] if stdout else ""
+    return "missing", ""
+
+
+def _worker_env_probe(
+    project_root: Path, detection: ProjectDetection
+) -> list[tuple[str, str, str]]:
+    from dgov.workers.atomic import AtomicTools
+    from dgov.workers.config import AtomicConfig
+
+    cmds = _project_commands(detection.language, detection.src_dir, project_root)
+    config = AtomicConfig(
+        language=detection.language,
+        src_dir=detection.src_dir,
+        test_dir=detection.test_dir,
+        test_cmd=cmds.get("test_cmd", ""),
+        lint_cmd=cmds.get("lint_cmd", ""),
+        format_cmd=cmds.get("format_cmd", ""),
+        lint_fix_cmd=cmds.get("lint_fix_cmd", ""),
+        type_check_cmd=cmds.get("type_check_cmd") or None,
+    )
+    tools = AtomicTools(project_root, config)
+    probes = [
+        ("whoami", "whoami"),
+        ("USER", "printenv USER"),
+    ]
+    if detection.language == "swift":
+        probes = [
+            ("xcodegen", "command -v xcodegen"),
+            ("swift-format", "command -v swift-format"),
+            ("xcrun swift-format", "xcrun --find swift-format"),
+            *probes,
+        ]
+    try:
+        return [(name, *_probe_status(tools.run_bash(command))) for name, command in probes]
+    finally:
+        shutil.rmtree(tools._sandbox_home, ignore_errors=True)
+
+
+def _print_init_preflight(project_root: Path, detection: ProjectDetection) -> None:
+    click.echo("Preflight:")
+    commands = ", ".join(sorted(cli.commands))
+    click.echo(f"  dgov: {__version__}")
+    click.echo(f"  commands: {commands}")
+    if "pane" not in cli.commands:
+        click.echo("  pane: unavailable")
+    click.echo(f"  git repo: {'yes' if _is_git_repo(project_root) else 'no'}")
+    click.echo(f"  ledger root: {project_root}")
+    click.echo(f"  project: {detection.language} ({detection.confidence})")
+    click.echo("  worker env:")
+    for name, status, detail in _worker_env_probe(project_root, detection):
+        suffix = f" ({detail})" if detail else ""
+        click.echo(f"    {name}: {status}{suffix}")
+    if detection.confidence == "low":
+        click.echo("  warning: low-confidence detection; rerun with --project-type.")
+
+
+def _confirm_low_confidence(detection: ProjectDetection, yes: bool) -> None:
+    if detection.confidence != "low" or yes or want_json() or not sys.stdin.isatty():
+        return
+    if click.confirm(
+        "Project type detection is low confidence. Continue with language = unknown?",
+        default=False,
+    ):
+        return
+    raise click.exceptions.Exit(code=1)
 
 
 def _should_prompt_for_sentrux_baseline(yes: bool) -> bool:
@@ -756,7 +923,15 @@ def _print_init_next_steps(baseline_path: Path, baseline_created: bool) -> None:
 @cli.command(name="init")
 @click.option("--force", is_flag=True, help="Overwrite bootstrap files")
 @click.option("--yes", "-y", is_flag=True, help="Skip interactive prompts")
-def init_cmd(force: bool, yes: bool) -> None:
+@click.option(
+    "--project-type",
+    type=click.Choice(_PROJECT_TYPE_CHOICES),
+    default="auto",
+    show_default=True,
+    help="Override project type detection",
+)
+@click.option("--preflight", is_flag=True, help="Print bootstrap and worker-environment checks")
+def init_cmd(force: bool, yes: bool, project_type: str, preflight: bool) -> None:
     """Bootstrap .dgov/project.toml and .dgov/governor.md.
 
     Auto-detects language, source directory, and test directory.
@@ -764,10 +939,16 @@ def init_cmd(force: bool, yes: bool) -> None:
     project_root = resolve_project_root()
     dgov_dir = project_root / ".dgov"
     config_path = dgov_dir / "project.toml"
-    language, src_dir, test_dir, extensions = _detect_project(project_root)
-    scope_ignore_files = _detect_scope_ignore_files(project_root, language)
+    detection = _detect_project_details(project_root, project_type=project_type)
+    _confirm_low_confidence(detection, yes)
+    scope_ignore_files = _detect_scope_ignore_files(project_root, detection.language)
     toml_content = _render_project_toml(
-        language, src_dir, test_dir, extensions, scope_ignore_files, project_root
+        detection.language,
+        detection.src_dir,
+        detection.test_dir,
+        detection.extensions,
+        scope_ignore_files,
+        project_root,
     )
 
     _prepare_runtime_dirs(project_root, dgov_dir)
@@ -779,6 +960,8 @@ def init_cmd(force: bool, yes: bool) -> None:
     _print_created_paths(created)
 
     if config_path in created:
-        _print_init_config_summary(language, src_dir, test_dir, scope_ignore_files)
+        _print_init_config_summary(detection, scope_ignore_files, project_root)
         baseline_path, baseline_created = _maybe_create_sentrux_baseline(project_root, yes=yes)
+        if preflight:
+            _print_init_preflight(project_root, detection)
         _print_init_next_steps(baseline_path, baseline_created)

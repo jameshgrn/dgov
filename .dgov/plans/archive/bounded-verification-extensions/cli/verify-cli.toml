@@ -1,0 +1,36 @@
+[tasks.verify-cli]
+summary = "Expose dgov verify for declared project recipes"
+commit_message = "Add verify CLI"
+depends_on = ["core/verify-contract.verify-contract"]
+files.create = [
+  "src/dgov/cli/verify.py",
+  "tests/test_cli_verify.py",
+]
+files.edit = [
+  "src/dgov/cli/__init__.py",
+]
+files.read = [
+  ".dgov/project.toml",
+  "src/dgov/verify.py",
+  "src/dgov/config.py",
+  "src/dgov/cli/preflight.py",
+]
+test_cmd = "uv run pytest -q tests/test_cli_verify.py"
+prompt = '''
+Orient:
+Read src/dgov/cli/__init__.py, src/dgov/cli/preflight.py, src/dgov/verify.py, and tests for existing Click command style before editing. This CLI is a thin surface over declared verify recipes. Do not add built-in language commands.
+
+Edit:
+1. Create src/dgov/cli/verify.py and register a dgov verify command group.
+2. Add dgov verify list to show configured recipe names and descriptions from .dgov/project.toml.
+3. Add dgov verify run <name> to run one recipe, capture logs through src/dgov/verify.py, and print a compact human summary with status, exit code, warning count, duration, and log path.
+4. Support existing DGOV_JSON behavior for machine-readable output.
+5. Import the command module from src/dgov/cli/__init__.py using the existing CLI registration pattern.
+6. Add tests in tests/test_cli_verify.py covering list, run success, run failure, JSON output, and missing recipe diagnostics. Use tmp_path project.toml recipes with simple commands; do not depend on external language toolchains.
+
+Verify:
+uv run pytest -q tests/test_cli_verify.py
+uv run ruff check src/dgov/cli/verify.py src/dgov/cli/__init__.py tests/test_cli_verify.py
+uv run ruff format --check src/dgov/cli/verify.py src/dgov/cli/__init__.py tests/test_cli_verify.py
+uv run ty check src/dgov/cli/verify.py src/dgov/cli/__init__.py
+'''

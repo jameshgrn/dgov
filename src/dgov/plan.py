@@ -97,6 +97,7 @@ class PlanUnit:
     iteration_budget: int | None = None
     test_cmd: str | None = None
     prompt_file: str | None = None
+    sop_mapping: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -161,6 +162,7 @@ def _dag_task_to_plan_unit(
         iteration_budget=task.iteration_budget,
         test_cmd=task.test_cmd,
         prompt_file=task.prompt_file,
+        sop_mapping=task.sop_mapping,
         files=PlanUnitFiles(
             create=task.files.create,
             edit=task.files.edit,
@@ -270,6 +272,7 @@ def _compile_plan_task(
         timeout_s=unit.timeout_s if unit.timeout_s else plan.default_timeout_s,
         iteration_budget=unit.iteration_budget,
         test_cmd=unit.test_cmd,
+        sop_mapping=unit.sop_mapping,
     )
 
 
@@ -494,7 +497,7 @@ def _check_unclaimed_prompt_refs_for_unit(slug: str, unit: PlanUnit) -> list[Pla
     claimed = _claimed_prompt_paths(unit)
     seen: set[str] = set()
     issues: list[PlanIssue] = []
-    for match in _PROMPT_PATH_RE.finditer(unit.prompt):
+    for match in _PROMPT_PATH_RE.finditer(_prompt_reference_body(unit.prompt)):
         ref_path = _normalize_touch_path(match.group(1))
         if ref_path in seen or ref_path in claimed:
             continue
@@ -511,6 +514,14 @@ def _check_unclaimed_prompt_refs_for_unit(slug: str, unit: PlanUnit) -> list[Pla
             )
         )
     return issues
+
+
+def _prompt_reference_body(prompt: str) -> str:
+    """Scan the task body, not SOP text prepended by the compiler."""
+    match = _PROMPT_PHASE_RES["Orient"].search(prompt)
+    if match:
+        return prompt[match.start() :]
+    return prompt
 
 
 def _claimed_prompt_paths(unit: PlanUnit) -> set[str]:

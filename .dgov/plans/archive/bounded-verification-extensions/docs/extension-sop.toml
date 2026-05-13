@@ -1,0 +1,35 @@
+[tasks.extension-sop]
+summary = "Document project-local extension and SOP boundary"
+commit_message = "Document project extension boundary"
+depends_on = [
+  "cli/verify-cli.verify-cli",
+  "cli/scope-cli.scope-cli",
+]
+files.create = [
+  ".dgov/sops/project-extensions.md",
+  "src/dgov/bootstrap_policy_data/sops/project-extensions.md",
+]
+files.edit = [
+  ".dgov/governor.md",
+  "src/dgov/bootstrap_policy_data/governor.md",
+]
+files.read = [
+  ".dgov/project.toml",
+  "src/dgov/cli/init.py",
+  "src/dgov/bootstrap_policy.py",
+  "tests/test_cli.py",
+]
+prompt = '''
+Orient:
+Read .dgov/governor.md, src/dgov/bootstrap_policy_data/governor.md, src/dgov/bootstrap_policy.py, src/dgov/cli/init.py, and tests/test_cli.py before editing. The documentation should make project-local extension authoring the expected path for repeated project-specific verification. Do not add language-specific SOP content beyond neutral examples.
+
+Edit:
+1. Add .dgov/sops/project-extensions.md describing when governors should create project-local verify recipes/SOPs instead of embedding repeated setup/lint/test commands in task prompts.
+2. Add the same SOP to src/dgov/bootstrap_policy_data/sops/project-extensions.md so new repos can be scaffolded with the guidance.
+3. Update .dgov/governor.md and src/dgov/bootstrap_policy_data/governor.md to reference project-local extensions under Operating Rules or Plan Authoring Workflow. Keep AGENTS/CLAUDE/GEMINI synchronization untouched in this task.
+4. Do not edit tests in this task. The existing bootstrap tests should pass because the bootstrap policy pack discovers packaged SOP markdown files dynamically.
+5. Include a neutral example using [verify.test] and [verify.lint] in .dgov/project.toml. Avoid naming Swift/Xcode as built-in core functionality.
+
+Verify:
+uv run pytest -q tests/test_cli.py::test_init_creates_bootstrap_files
+'''

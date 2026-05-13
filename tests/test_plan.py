@@ -1002,6 +1002,21 @@ class TestValidatePlanUnclaimedPromptRefs:
         warnings = self._ref_warnings(validate_plan(plan))
         assert any(".dgov/project.toml" in w.message for w in warnings)
 
+    def test_ignores_paths_in_prepended_sop_blocks(self):
+        plan = self._plan(
+            "[SOP: Project-Local Extensions]\n"
+            "Do:\n"
+            "- Read `.dgov/project.toml` for configured recipes.\n\n"
+            "Orient:\n"
+            "- Read src/foo.py.\n\n"
+            "Edit:\n"
+            "- Update src/foo.py.\n\n"
+            "Verify:\n"
+            "- `uv run ruff check src/foo.py`",
+            edit=("src/foo.py",),
+        )
+        assert self._ref_warnings(validate_plan(plan)) == []
+
     def test_detects_json_path_refs(self):
         plan = self._plan("Load examples/vector-inspect.json for validation.")
         warnings = self._ref_warnings(validate_plan(plan))

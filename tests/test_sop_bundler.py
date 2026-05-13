@@ -385,6 +385,24 @@ class TestTagBasedSopBundler:
         result = TagBasedSopBundler().pick({"a": unit}, sops)
         assert result == {"a": ["rv"]}
 
+    def test_matches_swift_file_to_swift_tag(self) -> None:
+        unit = self._unit_with("a", files=PlanUnitFiles(edit=("Sources/App/main.swift",)))
+        sops = [
+            _sop("swift", "Swift", applies_to=("swift",)),
+            _sop("testing", "Testing", applies_to=("tests",)),
+        ]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": ["swift"]}
+
+    def test_matches_swift_test_suffix_to_testing_tag(self) -> None:
+        unit = self._unit_with("a", files=PlanUnitFiles(edit=("AppFeatureTests.swift",)))
+        sops = [
+            _sop("swift", "Swift", applies_to=("swift",)),
+            _sop("testing", "Testing", applies_to=("tests",)),
+        ]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": ["swift", "testing"]}
+
     def test_reviewer_role_matches_review_tag(self) -> None:
         unit = self._unit_with("a", role="reviewer")
         sops = [_sop("cr", "Code Review", applies_to=("review", "reviewer"))]
@@ -627,6 +645,24 @@ class TestBundleRewrite:
         assert result.plan.units["b"].prompt == expected_b
         assert result.sop_mapping["a"] == ("lint",)
         assert result.sop_mapping["b"] == ("test",)
+
+    def test_source_task_sop_mapping_overrides_bundler(self, tmp_path: Path) -> None:
+        sops_dir = tmp_path / "sops"
+        _write(sops_dir / "swift.md", _sop_md("swift", "Swift", "Use swift-format."))
+        unit = PlanUnit(
+            slug="a",
+            summary="Generic task",
+            prompt="Prompt",
+            commit_message="Commit",
+            files=PlanUnitFiles(),
+            sop_mapping=("swift",),
+        )
+        plan = _flat_plan({"a": unit})
+
+        result = bundle(plan, sops_dir, IdentityBundler())
+
+        assert result.sop_mapping == {"a": ("swift",)}
+        assert "[SOP: Swift]" in result.plan.units["a"].prompt
 
     def test_unknown_sop_name_ignored(self, tmp_path: Path) -> None:
         sops_dir = tmp_path / "sops"

@@ -282,7 +282,9 @@ from dgov.cli import (  # noqa: E402
     plan as plan,
     preflight as preflight,
     run as run,
+    scope as scope,
     sentrux as sentrux,
     tools as tools,
+    verify as verify,
     watch as watch,
 )

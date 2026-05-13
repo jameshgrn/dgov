@@ -354,7 +354,7 @@ def _check_reserved_paths(actual_files: frozenset[str]) -> ReviewResult | None:
     return None
 
 
-def _is_scope_ignored(
+def is_scope_ignored(
     path: str,
     ignored_exact: frozenset[str],
     ignored_prefix_dirs: tuple[str, ...],
@@ -375,7 +375,7 @@ def _is_scope_ignored(
     )
 
 
-def _split_ignore_entries(
+def split_ignore_entries(
     scope_ignore_files: Sequence[str],
 ) -> tuple[frozenset[str], tuple[str, ...], frozenset[str], tuple[str, ...]]:
     """Split ignore entries into exact paths, directory rules, and globs.
@@ -416,19 +416,19 @@ def _add_directory_ignore(entry: str, prefix_dirs: list[str], named_dirs: set[st
         named_dirs.add(stripped)
 
 
-def _compute_unclaimed_files(
+def compute_unclaimed_files(
     actual_files: frozenset[str],
     claimed: frozenset[str],
     scope_ignore_files: Sequence[str],
 ) -> frozenset[str]:
     """Return actual files minus claimed files, filtering out ignored paths."""
-    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = _split_ignore_entries(
+    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = split_ignore_entries(
         scope_ignore_files
     )
     return frozenset(
         f
         for f in actual_files - claimed
-        if not _is_scope_ignored(
+        if not is_scope_ignored(
             f, ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs
         )
     )
@@ -464,7 +464,7 @@ def _read_scope_violation(
     )
 
 
-def _check_scope(
+def check_scope(
     actual_files: frozenset[str],
     claimed_files: Sequence[str] | None,
     scope_ignore_files: Sequence[str] = (),
@@ -485,7 +485,7 @@ def _check_scope(
         return None
 
     claimed = frozenset(claimed_files)
-    unclaimed = _compute_unclaimed_files(actual_files, claimed, scope_ignore_files)
+    unclaimed = compute_unclaimed_files(actual_files, claimed, scope_ignore_files)
     if not unclaimed:
         return None
 
@@ -524,13 +524,18 @@ def _transient_write_path(item: object) -> str | None:
     return None
 
 
-def _collect_transient_write_paths(session_root: str, task_slug: str) -> set[str]:
+def collect_transient_write_paths(
+    session_root: str,
+    task_slug: str,
+    pane_slug: str | None = None,
+) -> set[str]:
     """Collect all transient write paths from worker log activity for a task.
 
-    Reads all events for this task across all panes in the current run.
+    When a current pane is known, scope to that pane. Historical task-wide
+    activity can include abandoned retry attempts and produce false positives.
     """
     transient_paths: set[str] = set()
-    events = read_events(session_root, task_slug=task_slug)
+    events = read_events(session_root, slug=pane_slug, task_slug=task_slug)
     for event in events:
         for item in _worker_log_activity(event):
             path = _transient_write_path(item)
@@ -539,7 +544,7 @@ def _collect_transient_write_paths(session_root: str, task_slug: str) -> set[str
     return transient_paths
 
 
-def _filter_unclaimed_non_ignored(
+def filter_unclaimed_non_ignored(
     paths: set[str],
     claimed: frozenset[str],
     ignored_exact: frozenset[str],
@@ -552,13 +557,13 @@ def _filter_unclaimed_non_ignored(
         p
         for p in paths
         if p not in claimed
-        and not _is_scope_ignored(
+        and not is_scope_ignored(
             p, ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs
         )
     )
 
 
-def _check_transient_scope(
+def check_transient_scope(
     session_root: str | None,
     task_slug: str | None,
     pane_slug: str | None,
@@ -568,9 +573,8 @@ def _check_transient_scope(
 ) -> ReviewResult | None:
     """Reject transient unclaimed writes observed in worker tool activity.
 
-    Checks ALL panes for this task across the current run (not just the current
-    pane). This ensures unclaimed writes from earlier retries are still caught
-    even if a later retry cleans the worktree and succeeds.
+    Checks the active pane when available. Older panes from abandoned attempts
+    are historical evidence, not the candidate currently under review.
 
     Only write-capable activities (write_file, edit_file, apply_patch, revert_file)
     are checked. Read-only activity such as read_file is ignored.
@@ -579,12 +583,12 @@ def _check_transient_scope(
         return None
 
     claimed = frozenset(claimed_files)
-    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = _split_ignore_entries(
+    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = split_ignore_entries(
         scope_ignore_files
     )
 
-    transient_paths = _collect_transient_write_paths(session_root, task_slug)
-    unclaimed = _filter_unclaimed_non_ignored(
+    transient_paths = collect_transient_write_paths(session_root, task_slug, pane_slug)
+    unclaimed = filter_unclaimed_non_ignored(
         transient_paths,
         claimed,
         ignored_exact,
@@ -659,8 +663,8 @@ def _review_policy_failure(
     for result in (
         _check_size(actual_files, max_diff_lines),
         _check_reserved_paths(actual_files),
-        _check_scope(actual_files, claimed_files, scope_ignore_files, read_files),
-        _check_transient_scope(
+        check_scope(actual_files, claimed_files, scope_ignore_files, read_files),
+        check_transient_scope(
             project_root,
             task_slug,
             pane_slug,

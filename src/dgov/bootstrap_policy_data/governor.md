@@ -23,6 +23,9 @@ system level. Workers may be probabilistic. Governance should not be.
 - Avoid broad exploratory tasks. Break them into concrete units.
 - Put repo-wide implementation guidance in `.dgov/sops/`, not in ad hoc task text.
 - Keep provider config and project conventions in `.dgov/project.toml`.
+- When verification commands repeat across plans, define them as `[verify.<name>]`
+  recipes in `.dgov/project.toml` and reference them by name instead of embedding
+  full commands in every task prompt.
 
 ## Operational Memory
 
@@ -165,7 +168,7 @@ only, and `files.read` for any source files the task needs to inspect.
 | `timeout_s` | int | `900` | Per-attempt wall-clock timeout in seconds |
 | `iteration_budget` | int | — | Max tool calls before exhaustion (overrides project default) |
 | `test_cmd` | string | — | Task-specific test command for settlement |
-| `sop_mapping` | list | `[]` | SOP filenames assigned by the compiler (set automatically during compile) |
+| `sop_mapping` | list | `[]` | Optional source-task SOP pins; compiler also emits final assigned SOP names |
 | `self_review` | bool | `false` | Spawn a clean-context reviewer on the diff after the worker finishes |
 | `max_fork_depth` | int | `1` | Max clean-context relaunches when iteration budget is exhausted |
 

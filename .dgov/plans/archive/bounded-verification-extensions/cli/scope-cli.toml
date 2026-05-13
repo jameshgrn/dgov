@@ -1,0 +1,39 @@
+[tasks.scope-cli]
+summary = "Expose dgov scope status for pre-settlement checks"
+commit_message = "Add scope status CLI"
+depends_on = [
+  "core/scope-status.scope-status",
+  "cli/verify-cli.verify-cli",
+]
+files.create = [
+  "src/dgov/cli/scope.py",
+  "tests/test_cli_scope.py",
+]
+files.edit = [
+  "src/dgov/cli/__init__.py",
+]
+files.read = [
+  "src/dgov/scope_status.py",
+  "src/dgov/config.py",
+  "src/dgov/dag_parser.py",
+  "src/dgov/cli/plan.py",
+]
+test_cmd = "uv run pytest -q tests/test_cli_scope.py"
+prompt = '''
+Orient:
+Read src/dgov/cli/__init__.py, src/dgov/cli/plan.py, src/dgov/scope_status.py, and src/dgov/dag_parser.py before editing. The CLI should help workers and governors see what would fail settlement before calling done. It must not mutate files or bypass settlement.
+
+Edit:
+1. Create src/dgov/cli/scope.py and register dgov scope status.
+2. The command should accept explicit --task <slug>, optional --plan <compiled-or-dir>, and optional --pane <slug>. If a plan is supplied, load file claims for the task from _compiled.toml. If no plan is supplied, allow explicit --claim and --read options for ad hoc inspection.
+3. Collect actual modified files from git status/diff in the current project root, excluding configured scope_ignore_files only through the scope_status analysis layer.
+4. Render claimed writable files, claimed read-only files, modified files, transient write files when session/task context is available, ignored files, and blocking failures. Exit non-zero when blocking failures exist.
+5. Support DGOV_JSON output with a stable payload.
+6. Add tests in tests/test_cli_scope.py covering clean scope, unclaimed modified file, read-scope violation, plan-derived claims, and JSON output. Use a tmp_path git repo where needed; keep tests targeted.
+
+Verify:
+uv run pytest -q tests/test_cli_scope.py
+uv run ruff check src/dgov/cli/scope.py src/dgov/cli/__init__.py tests/test_cli_scope.py
+uv run ruff format --check src/dgov/cli/scope.py src/dgov/cli/__init__.py tests/test_cli_scope.py
+uv run ty check src/dgov/cli/scope.py src/dgov/cli/__init__.py
+'''

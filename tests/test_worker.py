@@ -497,6 +497,7 @@ def test_build_system_prompt_injects_task_scope(tmp_path: Path) -> None:
     assert "Retry completion gate" in prompt
     assert "uv run pytest tests/test_existing.py -q" in prompt
     assert "files.create already exists" in prompt
+    assert "scope_status" in prompt
 
 
 def test_done_is_blocked_until_required_retry_tests_pass(

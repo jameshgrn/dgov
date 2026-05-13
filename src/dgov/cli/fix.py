@@ -47,16 +47,81 @@ def _toml_ml_str(value: str) -> str:
     return f'"""\n{safe}\n"""'
 
 
-def _render_fix_plan_toml(prompt: str, files: list[str], commit_message: str) -> str:
+_PROMPT_PHASE_RE = re.compile(r"^\s*(?:#{1,6}\s+)?(?:\*\*)?(orient|edit|verify)", re.I | re.M)
+
+
+def _has_structured_prompt(prompt: str) -> bool:
+    phases = {match.group(1).lower() for match in _PROMPT_PHASE_RE.finditer(prompt)}
+    return {"orient", "edit", "verify"} <= phases
+
+
+def _render_structured_fix_prompt(prompt: str, files: tuple[str, ...]) -> str:
+    """Wrap a one-line fix request in the standard Orient/Edit/Verify shape."""
+    if _has_structured_prompt(prompt):
+        return prompt
+    file_list = "\n".join(f"- `{path}`" for path in files)
+    verify_lines = _fix_verify_lines(files)
+    return (
+        "Orient:\n"
+        f"- Requested fix: {prompt}\n"
+        "- Read the claimed files before editing:\n"
+        f"{file_list}\n"
+        "- Stay inside the declared file claims.\n\n"
+        "Edit:\n"
+        "1. Apply only the requested fix.\n"
+        "2. Keep unrelated cleanup out of the diff.\n\n"
+        "Verify:\n"
+        f"{verify_lines}\n"
+        "- Run `scope_status` and fix any blocking scope issue before done.\n"
+        "- Review `git diff` before calling done."
+    )
+
+
+def _fix_verify_lines(files: tuple[str, ...]) -> str:
+    python_files = [path for path in files if path.endswith(".py")]
+    if not python_files:
+        return "- Run the narrowest project-specific check for the changed file(s)."
+    targets = " ".join(python_files)
+    return f"- `uv run ruff check {targets}`\n- `uv run ruff format --check {targets}`"
+
+
+def _fix_task_summary(prompt: str) -> str:
+    first_line = next((line.strip() for line in prompt.splitlines() if line.strip()), "")
+    return first_line[:100] or "Apply requested fix"
+
+
+def _render_fix_plan_toml(
+    prompt: str,
+    *,
+    create_files: list[str],
+    edit_files: list[str],
+    commit_message: str,
+    summary: str,
+) -> str:
     """Render the single task file for a fix plan tree."""
-    files_str = ", ".join(_toml_str(f) for f in files)
+    create_str = ", ".join(_toml_str(f) for f in create_files)
+    edit_str = ", ".join(_toml_str(f) for f in edit_files)
     return (
         "[tasks.apply]\n"
-        'summary = "Apply requested fix"\n'
+        f"summary = {_toml_str(summary)}\n"
         f"prompt = {_toml_ml_str(prompt)}\n"
         f"commit_message = {_toml_str(commit_message)}\n"
-        f"files = [{files_str}]\n"
+        f"files.create = [{create_str}]\n"
+        f"files.edit = [{edit_str}]\n"
     )
+
+
+def _split_fix_file_claims(
+    project_root: Path, files: tuple[str, ...]
+) -> tuple[list[str], list[str]]:
+    create_files: list[str] = []
+    edit_files: list[str] = []
+    for file in files:
+        if (project_root / file).exists():
+            edit_files.append(file)
+        else:
+            create_files.append(file)
+    return create_files, edit_files
 
 
 def _archive_if_exists(plan_dir: Path) -> None:
@@ -105,6 +170,7 @@ def _allocate_fix_plan_dir(
 
 
 def _create_fix_plan(
+    project_root: Path,
     plan_dir: Path,
     plan_name: str,
     prompt: str,
@@ -114,6 +180,7 @@ def _create_fix_plan(
     plan_dir.mkdir(parents=True)
     fix_section_dir = plan_dir / "fix"
     fix_section_dir.mkdir()
+    structured_prompt = _render_structured_fix_prompt(prompt, files)
 
     root_toml = f'''[plan]
 name = "{plan_name}"
@@ -121,7 +188,14 @@ summary = "Apply requested fix"
 sections = ["fix"]
 '''
     (plan_dir / "_root.toml").write_text(root_toml)
-    main_toml = _render_fix_plan_toml(prompt, list(files), commit_message)
+    create_files, edit_files = _split_fix_file_claims(project_root, files)
+    main_toml = _render_fix_plan_toml(
+        structured_prompt,
+        create_files=create_files,
+        edit_files=edit_files,
+        commit_message=commit_message,
+        summary=_fix_task_summary(prompt),
+    )
     (fix_section_dir / "main.toml").write_text(main_toml)
 
 
@@ -204,7 +278,7 @@ def fix_cmd(
         explicit_name=name,
     )
 
-    _create_fix_plan(plan_dir, plan_name, prompt, file, commit_message)
+    _create_fix_plan(project_root, plan_dir, plan_name, prompt, file, commit_message)
     click.echo(f"Created plan '{plan_name}' at {plan_dir}")
     _compile_fix_plan(plan_dir)
     _finish_fix_plan(plan_dir, _run_fix_plan(plan_dir, project_root))

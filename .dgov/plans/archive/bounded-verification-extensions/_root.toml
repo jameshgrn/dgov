@@ -1,0 +1,4 @@
+[plan]
+name = "bounded-verification-extensions"
+summary = "Add project-local verification and scope introspection extension surfaces."
+sections = ["core", "cli", "docs"]

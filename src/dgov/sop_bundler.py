@@ -101,10 +101,16 @@ def _normalize(word: str) -> str:
 def _looks_like_test_path(path: str) -> bool:
     normalized = path.strip().lstrip("./")
     parts = tuple(part for part in normalized.split("/") if part)
-    if any(part in {"test", "tests"} for part in parts[:-1]):
+    lowered_parts = tuple(part.lower() for part in parts)
+    if any(part in {"test", "tests"} for part in lowered_parts[:-1]):
         return True
-    name = parts[-1] if parts else normalized
-    return name.startswith("test_") or name.endswith("_test.py")
+    name = lowered_parts[-1] if lowered_parts else normalized.lower()
+    return (
+        name.startswith("test_")
+        or name.endswith("_test.py")
+        or name.endswith("test.swift")
+        or name.endswith("tests.swift")
+    )
 
 
 class TagBasedSopBundler:
@@ -156,6 +162,8 @@ class TagBasedSopBundler:
                 tokens.update(("test", "tests"))
             if path.endswith(".py"):
                 tokens.add("python")
+            elif path.endswith(".swift"):
+                tokens.add("swift")
             elif path.endswith((".js", ".jsx", ".ts", ".tsx")):
                 tokens.update(("javascript", "typescript"))
         # Role-based tags
@@ -238,6 +246,26 @@ def _select_mapping(
     return bundler.pick(units, sops)
 
 
+def _apply_manual_sop_mapping(
+    mapping: dict[str, list[str]],
+    units: dict[str, PlanUnit],
+    sop_by_name: dict[str, Sop],
+) -> dict[str, list[str]]:
+    """Apply source-plan SOP pins and reject unknown SOP names."""
+    final = {uid: list(names) for uid, names in mapping.items()}
+    for uid, unit in units.items():
+        if not unit.sop_mapping:
+            continue
+        unknown = [name for name in unit.sop_mapping if name not in sop_by_name]
+        if unknown:
+            raise ValueError(
+                f"Task {uid!r} pins unknown SOP(s): {', '.join(unknown)}. "
+                f"Available SOPs: {', '.join(sorted(sop_by_name))}."
+            )
+        final[uid] = list(dict.fromkeys(unit.sop_mapping))
+    return final
+
+
 def _rewrite_unit_prompt(
     unit: PlanUnit,
     picked_names: list[str],
@@ -291,6 +319,7 @@ def bundle(
     hash_val = compute_sop_set_hash(sops)
     mapping = _select_mapping(hash_val, cached_hash, cached_mapping, plan.units, bundler, sops)
     sop_by_name = {s.name: s for s in sops}
+    mapping = _apply_manual_sop_mapping(mapping, plan.units, sop_by_name)
 
     rewritten, final_mapping = _build_final_mapping(plan.units, mapping, sop_by_name)
 

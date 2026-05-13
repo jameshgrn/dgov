@@ -86,7 +86,11 @@ def _load_root_meta(root_file: Path) -> RootMeta:
 def _section_unit_files(plan_root: Path, section: str) -> tuple[Path, ...]:
     section_dir = plan_root / section
     if not section_dir.is_dir():
-        raise ValueError(f"Declared section '{section}' has no directory at {section_dir}")
+        raise ValueError(
+            f"_root.toml [plan].sections declares section {section!r}, "
+            f"but no section directory exists at {section_dir}. "
+            f"Create {section_dir}, or remove {section!r} from [plan].sections."
+        )
     files = sorted(
         p
         for p in section_dir.iterdir()
@@ -292,6 +296,7 @@ def _unit_from_task(fq_id: str, data: dict[str, Any], source: Path) -> PlanUnit:
         timeout_s=data.get("timeout_s", 0),
         iteration_budget=data.get("iteration_budget"),
         test_cmd=data.get("test_cmd", ""),
+        sop_mapping=_str_list(data.get("sop_mapping", []), "sop_mapping", source),
     )
 
 

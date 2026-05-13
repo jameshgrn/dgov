@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
+import shlex
+import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
@@ -68,7 +71,7 @@ def compile_plan_dir(plan_root: Path, *, dry_run: bool, recompile_sops: bool, gr
         recompile_sops=recompile_sops,
     )
     out_path = _write_compiled_plan(plan_root, bundle_result, resolved)
-    warnings = _validate_compiled_plan(out_path, project_config)
+    warnings = _validate_compiled_plan(out_path, project_config, project_root)
     summary = _build_summary(out_path, resolved, bundle_result, dry_run, warnings)
 
     _print_summary(summary)
@@ -104,7 +107,107 @@ def _merge_plan_tree(tree: PlanTree) -> FlatPlan:
 
 def _ensure_plan_has_units(plan: FlatPlan) -> None:
     if not plan.units:
-        _exit_with_error("Error: plan tree has no units")
+        diagnostic = _empty_plan_tree_diagnostic(plan)
+        _exit_with_error(f"Error: plan tree has no units. {diagnostic}")
+
+
+def _empty_plan_tree_diagnostic(plan: FlatPlan) -> str:
+    declared_sections = set(plan.root_meta.sections)
+    undeclared_sections = _undeclared_task_sections(plan.plan_root, declared_sections)
+    if undeclared_sections:
+        return (
+            "Found task TOML files in undeclared section directories: "
+            f"{', '.join(undeclared_sections)}. Add the section name to _root.toml "
+            "[plan].sections or move the task file into a declared section."
+        )
+    if not declared_sections:
+        return (
+            "_root.toml [plan].sections is empty. Declare at least one section and "
+            "add a depth-1 TOML file containing [tasks.<slug>]."
+        )
+
+    visible_files = _visible_task_toml_files(plan.plan_root, plan.root_meta.sections)
+    if visible_files:
+        return (
+            "Task TOML files were found but no [tasks.<slug>] tables were parsed: "
+            f"{', '.join(visible_files)}."
+        )
+
+    ignored_files = _ignored_task_toml_files(plan.plan_root, plan.root_meta.sections)
+    if ignored_files:
+        return (
+            "Declared sections contain only ignored TOML files: "
+            f"{', '.join(ignored_files)}. Rename a task file without a leading '_' "
+            "or '.' prefix."
+        )
+
+    nested_files = _nested_task_toml_files(plan.plan_root, plan.root_meta.sections)
+    if nested_files:
+        return (
+            "Task TOML files are nested below section directories, but plan trees "
+            f"read only depth-1 files: {', '.join(nested_files)}."
+        )
+
+    return (
+        "Declared sections contain no task TOML files. Add a depth-1 TOML file "
+        "containing [tasks.<slug>] to one of: "
+        f"{', '.join(plan.root_meta.sections)}."
+    )
+
+
+def _visible_task_toml_files(plan_root: Path, sections: tuple[str, ...]) -> list[str]:
+    files: list[str] = []
+    for section in sections:
+        section_dir = plan_root / section
+        if not section_dir.is_dir():
+            continue
+        files.extend(
+            str(path.relative_to(plan_root))
+            for path in sorted(section_dir.iterdir())
+            if path.is_file() and path.suffix == ".toml" and not path.name.startswith((".", "_"))
+        )
+    return files
+
+
+def _ignored_task_toml_files(plan_root: Path, sections: tuple[str, ...]) -> list[str]:
+    files: list[str] = []
+    for section in sections:
+        section_dir = plan_root / section
+        if not section_dir.is_dir():
+            continue
+        files.extend(
+            str(path.relative_to(plan_root))
+            for path in sorted(section_dir.iterdir())
+            if path.is_file() and path.suffix == ".toml" and path.name.startswith((".", "_"))
+        )
+    return files
+
+
+def _nested_task_toml_files(plan_root: Path, sections: tuple[str, ...]) -> list[str]:
+    files: list[str] = []
+    for section in sections:
+        section_dir = plan_root / section
+        if not section_dir.is_dir():
+            continue
+        files.extend(
+            str(path.relative_to(plan_root))
+            for path in sorted(section_dir.rglob("*.toml"))
+            if path.is_file() and path.parent != section_dir
+        )
+    return files
+
+
+def _undeclared_task_sections(plan_root: Path, declared_sections: set[str]) -> list[str]:
+    sections: list[str] = []
+    for path in sorted(plan_root.iterdir()):
+        if (
+            path.is_dir()
+            and path.name not in declared_sections
+            and path.name != "archive"
+            and _visible_task_toml_files(plan_root, (path.name,))
+        ):
+            sections.append(path.name)
+    return sections
 
 
 def _resolve_plan_refs(plan: FlatPlan) -> FlatPlan:
@@ -205,12 +308,47 @@ def _print_sop_assignments(result: BundleResult, *, dry_run: bool) -> None:
     for uid, names in sorted(result.sop_mapping.items()):
         if names:
             click.echo(f"  SOPs: {uid.split('.')[-1]} → {', '.join(names)}", err=True)
-    no_sop_units = [uid for uid, names in result.sop_mapping.items() if not names]
+    no_sop_units = [
+        uid
+        for uid, names in result.sop_mapping.items()
+        if not names and _unit_needs_sop_attention(result.plan.units[uid])
+    ]
     if no_sop_units:
         click.echo(
             f"  WARNING: {len(no_sop_units)} unit(s) matched zero SOPs",
             err=True,
         )
+        for uid in no_sop_units[:5]:
+            click.echo(
+                "  WARNING"
+                f" [{uid}]: zero SOP match. The deterministic matcher uses summary words, "
+                "file extensions, test paths, and role. Add matching applies_to tags or set "
+                'sop_mapping = ["sop-name"] in the source task.',
+                err=True,
+            )
+        if len(no_sop_units) > 5:
+            click.echo(f"  WARNING: ... and {len(no_sop_units) - 5} more", err=True)
+
+
+_SOP_ATTENTION_EXTENSIONS = (".py", ".swift", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go")
+
+
+def _unit_needs_sop_attention(unit) -> bool:
+    paths = (
+        *unit.files.create,
+        *unit.files.edit,
+        *unit.files.touch,
+        *unit.files.delete,
+    )
+    return any(_path_needs_sop_attention(path) for path in paths)
+
+
+def _path_needs_sop_attention(path: str) -> bool:
+    normalized = path.strip().lstrip("./").lower()
+    parts = tuple(part for part in normalized.split("/") if part)
+    return normalized.endswith(_SOP_ATTENTION_EXTENSIONS) or any(
+        part in {"test", "tests"} for part in parts[:-1]
+    )
 
 
 def _write_compiled_plan(
@@ -229,11 +367,15 @@ def _write_compiled_plan(
 def _validate_compiled_plan(
     out_path: Path,
     project_config: ProjectConfig,
+    project_root: Path,
 ) -> tuple[PlanIssue, ...]:
     from dgov.plan import parse_plan_file, validate_plan
 
     compiled_spec = parse_plan_file(str(out_path))
     plan_issues = validate_plan(compiled_spec, departments=project_config.departments)
+    plan_issues.extend(_setup_cmd_warnings(compiled_spec, project_config, project_root))
+    plan_issues.extend(_prompt_tool_warnings(compiled_spec, project_config, project_root))
+    plan_issues.extend(_archive_ignore_warnings(project_root))
     plan_errors = tuple(i for i in plan_issues if i.severity == "error")
     plan_warnings = tuple(i for i in plan_issues if i.severity == "warning")
 
@@ -243,6 +385,250 @@ def _validate_compiled_plan(
         raise click.exceptions.Exit(code=1) from None
 
     return plan_warnings
+
+
+_SETUP_PATH_RE = re.compile(r"(?<![\w/.-])([\w.-]+\.(?:yml|yaml|json|toml|xcodeproj|xcworkspace))")
+
+
+def _setup_cmd_warnings(
+    plan,
+    project_config: ProjectConfig,
+    project_root: Path,
+) -> list[PlanIssue]:
+    from dgov.plan import PlanIssue
+
+    setup_cmd = (project_config.setup_cmd or "").strip()
+    if not setup_cmd:
+        return []
+    created = {
+        path
+        for unit in plan.units.values()
+        for path in (*unit.files.create, *unit.files.touch)
+        if path.strip()
+    }
+    warnings: list[PlanIssue] = []
+    for path in sorted(set(_SETUP_PATH_RE.findall(setup_cmd))):
+        if _setup_cmd_guards_path(setup_cmd, path) or (project_root / path).exists():
+            continue
+        if path in created:
+            message = (
+                f"setup_cmd references {path!r}, which this plan creates. setup_cmd runs before "
+                "the first worker task. Guard it, for example: "
+                f"`if [ -f {path} ]; then ...; fi`."
+            )
+        else:
+            message = (
+                f"setup_cmd references missing input {path!r}. "
+                "Worker preparation will fail unless the command guards the missing file "
+                "or the file exists before run."
+            )
+        warnings.append(PlanIssue(severity="warning", message=message))
+    return warnings
+
+
+def _setup_cmd_guards_path(setup_cmd: str, path: str) -> bool:
+    return f"[ -f {path} ]" in setup_cmd or f"test -f {path}" in setup_cmd
+
+
+_PROMPT_COMMAND_RE = re.compile(r"`([^`\n]+)`")
+_PROMPT_HEADING_RE = re.compile(r"^\s*(?:#{1,6}\s+)?(?:\*\*)?(orient|edit|verify)\b", re.I)
+_PROMPT_ORIENT_RE = re.compile(r"^\s*(?:#{1,6}\s+)?(?:\*\*)?orient\b", re.I | re.M)
+_MARKDOWN_HEADING_RE = re.compile(r"^\s*#{1,6}\s+\S+")
+_VERIFY_COMMAND_TOOLS = {
+    "actionlint",
+    "bun",
+    "cargo",
+    "dgov",
+    "git",
+    "go",
+    "make",
+    "npm",
+    "npx",
+    "pnpm",
+    "python",
+    "python3",
+    "pytest",
+    "rg",
+    "ruff",
+    "shellcheck",
+    "shfmt",
+    "swift",
+    "ty",
+    "uv",
+    "xcodebuild",
+    "xcrun",
+}
+_SHELL_BUILTINS = {
+    "[",
+    "cd",
+    "command",
+    "echo",
+    "export",
+    "false",
+    "if",
+    "printf",
+    "pwd",
+    "set",
+    "test",
+    "then",
+    "true",
+}
+
+
+def _prompt_tool_warnings(
+    plan,
+    project_config: ProjectConfig,
+    project_root: Path,
+) -> list[PlanIssue]:
+    from dgov.plan import PlanIssue
+
+    worker_path = _worker_path(project_root, project_config)
+    warnings: list[PlanIssue] = []
+    for unit_id, unit in plan.units.items():
+        seen: set[str] = set()
+        for command in _verify_prompt_commands(unit.prompt):
+            tool = _verification_tool(command)
+            if not tool or tool in seen or _tool_available(tool, worker_path, project_root):
+                continue
+            seen.add(tool)
+            warnings.append(
+                PlanIssue(
+                    severity="warning",
+                    unit=unit_id,
+                    message=(
+                        f"Verify command references tool {tool!r}, which is not available "
+                        "in the worker PATH. Configure the tool in .dgov/project.toml "
+                        "or use an available wrapper."
+                    ),
+                )
+            )
+    return warnings
+
+
+def _worker_path(project_root: Path, project_config: ProjectConfig) -> str:
+    from dgov.workers.atomic import AtomicTools
+
+    tools = AtomicTools(project_root, project_config)
+    try:
+        return tools._sandbox_env()["PATH"]
+    finally:
+        shutil.rmtree(tools._sandbox_home, ignore_errors=True)
+
+
+def _verify_prompt_commands(prompt: str) -> list[str]:
+    commands: list[str] = []
+    in_verify = False
+    for line in _task_prompt_body(prompt).splitlines():
+        if heading := _PROMPT_HEADING_RE.match(line):
+            in_verify = heading.group(1).lower() == "verify"
+            continue
+        if _MARKDOWN_HEADING_RE.match(line):
+            in_verify = False
+            continue
+        if not in_verify:
+            continue
+        commands.extend(
+            command
+            for match in _PROMPT_COMMAND_RE.finditer(line)
+            if (command := match.group(1).strip()) and _looks_like_verify_command(command)
+        )
+    return [command for command in commands if command]
+
+
+def _task_prompt_body(prompt: str) -> str:
+    """Return worker-authored task instructions, excluding prepended SOP blocks."""
+    match = _PROMPT_ORIENT_RE.search(prompt)
+    return prompt[match.start() :] if match else prompt
+
+
+def _looks_like_verify_command(command: str) -> bool:
+    """Classify command-like snippets conservatively.
+
+    Verify sections often contain API names and filenames in backticks. The
+    warning pass should only inspect snippets that look like shell commands,
+    otherwise SOP prose such as `.get()` or `project.toml` becomes noise.
+    """
+    if "(" in command or ")" in command:
+        return False
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    while tokens and _is_env_assignment(tokens[0]):
+        tokens.pop(0)
+    if not tokens:
+        return False
+    if len(tokens) >= 2 and tokens[1] == "=":
+        return False
+    tool = tokens[0]
+    if tool in _VERIFY_COMMAND_TOOLS or _looks_like_executable_path(tool):
+        return True
+    if len(tokens) == 1:
+        return False
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_.+-]*", tool):
+        return False
+    return any(_looks_like_command_argument(arg) for arg in tokens[1:])
+
+
+def _looks_like_executable_path(token: str) -> bool:
+    return token.startswith(("./", "../", "/"))
+
+
+def _looks_like_command_argument(token: str) -> bool:
+    return token.startswith(("-", "./", "../", "/")) or "/" in token or Path(token).suffix != ""
+
+
+def _verification_tool(command: str) -> str:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return ""
+    while tokens and _is_env_assignment(tokens[0]):
+        tokens.pop(0)
+    if not tokens:
+        return ""
+    tool = tokens[0]
+    return "" if tool in _SHELL_BUILTINS else tool
+
+
+def _is_env_assignment(token: str) -> bool:
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token))
+
+
+def _tool_available(tool: str, worker_path: str, project_root: Path) -> bool:
+    if "/" in tool:
+        path = Path(tool)
+        return path.exists() if path.is_absolute() else (project_root / path).exists()
+    return shutil.which(tool, path=worker_path) is not None
+
+
+def _archive_ignore_warnings(project_root: Path) -> list[PlanIssue]:
+    from dgov.plan import PlanIssue
+
+    ignored_by = [
+        path
+        for path in (project_root / ".dgov" / ".gitignore", project_root / ".gitignore")
+        if _ignores_plan_archive(path)
+    ]
+    if not ignored_by:
+        return []
+    files = ", ".join(str(path.relative_to(project_root)) for path in ignored_by)
+    return [
+        PlanIssue(
+            severity="warning",
+            message=(
+                f"{files} ignores .dgov/plans/archive. Automatic archive moves can leave "
+                "tracked plan deletions without tracked archived source."
+            ),
+        )
+    ]
+
+
+def _ignores_plan_archive(ignore_file: Path) -> bool:
+    if not ignore_file.exists():
+        return False
+    ignored_patterns = {"plans/archive/", "/plans/archive/", ".dgov/plans/archive/"}
+    return any(line.strip() in ignored_patterns for line in ignore_file.read_text().splitlines())
 
 
 def _print_plan_errors(plan_errors: tuple[PlanIssue, ...]) -> None:
