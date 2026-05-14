@@ -7,7 +7,6 @@
 _compiled.toml
 !.dgov/sops/
 .dgov/runs.log
-.sentrux/
 .venv/
 __pycache__/
 *.pyc
