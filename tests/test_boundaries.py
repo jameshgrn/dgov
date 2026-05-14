@@ -11,9 +11,12 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 import dgov  # noqa: F401 — primes sys.modules to avoid rogue root __init__.py
 
 _SRC = Path(__file__).resolve().parent.parent / "src" / "dgov"
+pytestmark = pytest.mark.unit
 
 
 def _get_imports(filepath: Path) -> set[str]:
