@@ -1136,38 +1136,12 @@ class AtomicTools:
         return frozenset(files)
 
     def _format_scope_status(self, status: object) -> str:
-        def _paths(values: object) -> str:
-            if not isinstance(values, frozenset):
-                return "(none)"
-            return ", ".join(sorted(values)) or "(none)"
+        from dgov.scope_status import ScopeStatus, render_scope_status_lines
 
-        blocking = getattr(status, "blocking_failure", None)
-        lines = [
-            f"scope_status: {'fail' if blocking else 'pass'}",
-            f"claimed_writable: {_paths(getattr(status, 'claimed_writable', frozenset()))}",
-            f"claimed_readonly: {_paths(getattr(status, 'claimed_readonly', frozenset()))}",
-            f"modified_files: {_paths(getattr(status, 'actual_files', frozenset()))}",
-        ]
-        transient = getattr(status, "transient_write_paths", frozenset())
-        if transient:
-            lines.append(f"transient_writes: {_paths(transient)}")
-        ignored_actual = getattr(status, "ignored_actual_paths", frozenset())
-        if ignored_actual:
-            lines.append(f"ignored_modified: {_paths(ignored_actual)}")
-        ignored_transient = getattr(status, "ignored_transient_paths", frozenset())
-        if ignored_transient:
-            lines.append(f"ignored_transient: {_paths(ignored_transient)}")
-        unclaimed_actual = getattr(status, "unclaimed_actual_paths", frozenset())
-        if unclaimed_actual:
-            lines.append(f"unclaimed_modified: {_paths(unclaimed_actual)}")
-        unclaimed_transient = getattr(status, "unclaimed_transient_paths", frozenset())
-        if unclaimed_transient:
-            lines.append(f"unclaimed_transient: {_paths(unclaimed_transient)}")
-        if blocking:
-            error = getattr(blocking, "error", "") or "scope check failed"
-            lines.append(f"blocking: {error}")
-        else:
-            lines.append("blocking: (none)")
+        if not isinstance(status, ScopeStatus):
+            return "Error: invalid scope status."
+        lines: list[str] = [f"scope_status: {'fail' if status.blocking_failure else 'pass'}"]
+        lines.extend(render_scope_status_lines(status))
         return "\n".join(lines)
 
     def lint_check(self, file: str = "") -> str:

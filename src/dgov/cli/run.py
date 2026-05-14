@@ -477,6 +477,44 @@ def _parse_sentrux_gate_output(output: str) -> tuple[bool, int | None]:
     return degradation, quality_after
 
 
+def _head_structural_offenders(scan_dir: Path, project_root: str) -> dict[str, object] | None:
+    try:
+        return likely_structural_offenders(
+            scan_dir,
+            cache_root=Path(project_root),
+        )
+    except Exception:
+        return None
+
+
+def _assess_head_sentrux_degradation(
+    *,
+    scan_dir: Path,
+    project_root: str,
+    baseline_path: Path,
+    output: str,
+    returncode: int,
+    base_ref: str | None,
+    config: ProjectConfig | None,
+) -> SentruxGateAssessment:
+    pc = config or ProjectConfig()
+    changed_files = (
+        changed_files_since(Path(project_root), base_ref, pc.source_extensions) if base_ref else []
+    )
+    return assess_sentrux_gate(
+        scan_root=scan_dir,
+        project_root=Path(project_root),
+        baseline_path=baseline_path,
+        sentrux_output=output,
+        sentrux_returncode=returncode,
+        changed_files=changed_files,
+        base_ref=base_ref,
+        mode=pc.sentrux_mode,
+        stale_commits=pc.sentrux_stale_commits,
+        stale_days=pc.sentrux_stale_days,
+    )
+
+
 def _scan_head_against_sentrux_baseline(
     project_root: str,
     baseline_path: Path,
@@ -494,35 +532,19 @@ def _scan_head_against_sentrux_baseline(
             shutil.rmtree(scan_sentrux_dir)
         shutil.copytree(baseline_path.parent, scan_sentrux_dir)
         result = run_sentrux(["gate", str(scan_dir)], timeout=30.0, check=False)
-        offenders: dict[str, object] | None = None
-        try:
-            offenders = likely_structural_offenders(
-                scan_dir,
-                cache_root=Path(project_root),
-            )
-        except Exception:
-            offenders = None
+        offenders = _head_structural_offenders(scan_dir, project_root)
         output = (result.stdout or "") + (result.stderr or "")
         degradation, _ = _parse_sentrux_gate_output(output)
         assessment = None
         if degradation:
-            pc = config or ProjectConfig()
-            changed_files = (
-                changed_files_since(Path(project_root), base_ref, pc.source_extensions)
-                if base_ref
-                else []
-            )
-            assessment = assess_sentrux_gate(
-                scan_root=scan_dir,
-                project_root=Path(project_root),
+            assessment = _assess_head_sentrux_degradation(
+                scan_dir=scan_dir,
+                project_root=project_root,
                 baseline_path=baseline_path,
-                sentrux_output=output,
-                sentrux_returncode=result.returncode,
-                changed_files=changed_files,
+                output=output,
+                returncode=result.returncode,
                 base_ref=base_ref,
-                mode=pc.sentrux_mode,
-                stale_commits=pc.sentrux_stale_commits,
-                stale_days=pc.sentrux_stale_days,
+                config=config,
             )
         return result, offenders, assessment
 
@@ -597,6 +619,52 @@ def _complete_sentrux_gate_result(
     return gate_result
 
 
+def _normalize_sentrux_assessment(
+    assessment: SentruxGateAssessment | None,
+    offenders: dict[str, object] | None,
+    degradation: bool,
+) -> tuple[bool, dict[str, object] | None, str | None, str | None]:
+    """Return normalized degradation, offenders, error and warning from assessment."""
+    if assessment is None:
+        return degradation, offenders, None, None
+    return (
+        assessment.should_fail,
+        assessment.current_report or offenders,
+        assessment.error if assessment.should_fail else None,
+        assessment.warning,
+    )
+
+
+def _build_sentrux_gate_result_from_scan(
+    gate_result: dict[str, object],
+    result: subprocess.CompletedProcess[str],
+    offenders: dict[str, object] | None,
+    assessment: SentruxGateAssessment | None,
+) -> dict[str, object]:
+    """Build final gate result from raw sentrux scan output, or None if process failed outright."""
+    output = (result.stdout or "") + (result.stderr or "")
+    degradation, quality_after = _parse_sentrux_gate_output(output)
+    failed_result = _failed_sentrux_process_result(
+        gate_result,
+        result=result,
+        output=output,
+        degradation=degradation,
+    )
+    if failed_result is not None:
+        return failed_result
+    degradation, offenders, error, warning = _normalize_sentrux_assessment(
+        assessment, offenders, degradation
+    )
+    return _complete_sentrux_gate_result(
+        gate_result,
+        degradation=degradation,
+        quality_after=quality_after,
+        offenders=offenders,
+        error=error,
+        warning=warning,
+    )
+
+
 def _sentrux_compare(
     project_root: str,
     baseline_quality: int | None,
@@ -632,27 +700,7 @@ def _sentrux_compare(
             echo=f"[sentrux] Gate comparison failed: {e}",
         )
 
-    output = (result.stdout or "") + (result.stderr or "")
-    degradation, quality_after = _parse_sentrux_gate_output(output)
-    failed_result = _failed_sentrux_process_result(
-        gate_result,
-        result=result,
-        output=output,
-        degradation=degradation,
-    )
-    if failed_result is not None:
-        return failed_result
-    if assessment is not None:
-        offenders = assessment.current_report or offenders
-        degradation = assessment.should_fail
-    return _complete_sentrux_gate_result(
-        gate_result,
-        degradation=degradation,
-        quality_after=quality_after,
-        offenders=offenders,
-        error=assessment.error if assessment and assessment.should_fail else None,
-        warning=assessment.warning if assessment else None,
-    )
+    return _build_sentrux_gate_result_from_scan(gate_result, result, offenders, assessment)
 
 
 def _branch_verification_base(project_root: str) -> str | None:

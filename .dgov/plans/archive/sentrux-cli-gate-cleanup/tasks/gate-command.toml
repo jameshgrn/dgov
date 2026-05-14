@@ -1,0 +1,24 @@
+[tasks.simplify-sentrux-gate-command]
+summary = "Extract helpers from the Sentrux gate CLI command."
+prompt = """
+Orient:
+1. Read `src/dgov/cli/sentrux.py` and the Sentrux CLI tests in `tests/test_cli.py` before editing.
+2. The goal is to reduce cyclomatic complexity in the `sentrux_gate` click command while preserving command output and exit behavior.
+3. Keep using public `dgov.cli.run` helpers `run_sentrux` and `sentrux_available`; do not import underscore helpers from sibling CLI command modules.
+4. Keep `assess_sentrux_gate` in `dgov.sentrux_gate` as the policy implementation.
+
+Edit:
+1. In `src/dgov/cli/sentrux.py`, extract small helpers around gate output classification, assessment construction, warning/error emission, and final failure handling.
+2. Leave the click command signature and options unchanged.
+3. Preserve behavior for `--fail-on-degradation`, non-degradation sentrux failures, structural offender reporting, and warn-only assessment output.
+4. Update `tests/test_cli.py` only if assertions need to follow preserved output more explicitly.
+
+Verify:
+1. Run `uv run pytest -q tests/test_cli.py -k sentrux_gate`.
+2. Run `uv run ruff check src/dgov/cli/sentrux.py tests/test_cli.py`.
+3. Run `uv run ruff format --check src/dgov/cli/sentrux.py tests/test_cli.py`.
+"""
+commit_message = "Simplify Sentrux gate CLI flow"
+files.edit = ["src/dgov/cli/sentrux.py", "tests/test_cli.py"]
+test_cmd = "uv run pytest -q tests/test_cli.py -k sentrux_gate"
+

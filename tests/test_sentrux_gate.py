@@ -11,6 +11,12 @@ from typing import Any
 import pytest
 
 from dgov.config import ProjectConfig
+from dgov.sentrux_gate import (
+    _paths_from_mapping,
+    _paths_from_object,
+    _paths_from_sequence,
+    _paths_from_string,
+)
 from dgov.settlement import validate_sandbox
 
 
@@ -193,3 +199,73 @@ def test_strict_sentrux_mode_keeps_absolute_quality_rejection(
     assert result.passed is False
     assert result.error is not None
     assert "Sentrux architectural degradation" in result.error
+
+
+@pytest.mark.unit
+def test_paths_from_object_extracts_from_string() -> None:
+    assert _paths_from_object("src/foo.py") == {"src/foo.py"}
+
+
+@pytest.mark.unit
+def test_paths_from_object_expands_module_string() -> None:
+    result = _paths_from_object("dgov.sentrux_gate")
+    assert "dgov/sentrux_gate.py" in result
+    assert "src/dgov/sentrux_gate.py" in result
+
+
+@pytest.mark.unit
+def test_paths_from_object_extracts_from_mapping_path_keys() -> None:
+    value = {"path": "a/b.py", "file": "c/d.py", "module": "e.f", "name": "g.h"}
+    result = _paths_from_object(value)
+    assert "a/b.py" in result
+    assert "c/d.py" in result
+    assert "e/f.py" in result
+    assert "src/e/f.py" in result
+    assert "g/h.py" in result
+    assert "src/g/h.py" in result
+
+
+@pytest.mark.unit
+def test_paths_from_object_extracts_from_nested_mapping_values() -> None:
+    value = {"details": {"path": "nested.py"}, "other": {"inner": ["x.py"]}}
+    result = _paths_from_object(value)
+    assert "nested.py" in result
+    assert "x.py" in result
+
+
+@pytest.mark.unit
+def test_paths_from_object_extracts_from_sequence() -> None:
+    value = ["a.py", "b.py"]
+    assert _paths_from_object(value) == {"a.py", "b.py"}
+
+
+@pytest.mark.unit
+def test_paths_from_object_extracts_deeply_nested() -> None:
+    value = [{"cycles": [{"path": "loop.py"}]}, ["flat.py"]]
+    result = _paths_from_object(value)
+    assert "loop.py" in result
+    assert "flat.py" in result
+
+
+@pytest.mark.unit
+def test_paths_from_object_returns_empty_for_unknown_types() -> None:
+    assert _paths_from_object(42) == set()
+    assert _paths_from_object(None) == set()
+
+
+@pytest.mark.unit
+def test_paths_from_string_delegates_to_candidates() -> None:
+    assert _paths_from_string("foo.py") == {"foo.py"}
+
+
+@pytest.mark.unit
+def test_paths_from_mapping_skips_non_path_scalar_values() -> None:
+    value = {"count": 42, "ratio": 0.5, "ok": True}
+    assert _paths_from_mapping(value) == set()
+
+
+@pytest.mark.unit
+def test_paths_from_sequence_ignores_non_path_items() -> None:
+    value = [42, None, {"path": "found.py"}]
+    result = _paths_from_sequence(value)
+    assert "found.py" in result

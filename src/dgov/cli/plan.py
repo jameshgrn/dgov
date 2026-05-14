@@ -1227,26 +1227,39 @@ def _render_deployed_unit(unit) -> None:
     click.echo("")
 
 
-def _render_integration_telemetry(unit) -> None:
-    """Render integration risk and candidate validation telemetry if present."""
+def _render_integration_risk(unit) -> None:
+    """Render integration risk level and overlap detection line."""
     has_risk_level = unit.integration_risk_level and unit.integration_risk_level != "none"
-    if has_risk_level or unit.integration_risk_detected:
-        if has_risk_level:
-            risk_label = unit.integration_risk_level
-            if unit.integration_risk_detected:
-                risk_label += ", overlap detected"
-            click.echo(click.style(f"    integration  risk={risk_label}", fg="yellow"))
-        else:
-            click.echo(click.style("    integration  overlap detected", fg="yellow"))
+    if not has_risk_level and not unit.integration_risk_detected:
+        return
+    if has_risk_level:
+        risk_label = unit.integration_risk_level
+        if unit.integration_risk_detected:
+            risk_label += ", overlap detected"
+        click.echo(click.style(f"    integration  risk={risk_label}", fg="yellow"))
+    else:
+        click.echo(click.style("    integration  overlap detected", fg="yellow"))
+
+
+def _render_integration_paths(unit) -> None:
+    """Render claimed and changed file path lists."""
     if unit.integration_claimed_files:
         _render_path_list("claimed     ", unit.integration_claimed_files)
     if unit.integration_changed_files:
         _render_path_list("changed     ", unit.integration_changed_files)
+
+
+def _render_integration_candidate(unit) -> None:
+    """Render candidate validation result."""
     if unit.integration_candidate_passed is True:
         click.echo("    candidate    passed")
     elif unit.integration_candidate_passed is False:
         fc = unit.integration_failure_class or "failed"
         click.echo(click.style(f"    candidate    {fc}", fg="red"))
+
+
+def _render_integration_details(unit) -> None:
+    """Render gate name, error reason, and evidence lines."""
     if unit.integration_gate_name:
         click.echo(click.style(f"    gate         {unit.integration_gate_name}", fg="yellow"))
     if unit.integration_error:
@@ -1257,6 +1270,14 @@ def _render_integration_telemetry(unit) -> None:
             "\n".join(unit.integration_evidence),
             max_lines=6,
         )
+
+
+def _render_integration_telemetry(unit) -> None:
+    """Render integration risk and candidate validation telemetry if present."""
+    _render_integration_risk(unit)
+    _render_integration_paths(unit)
+    _render_integration_candidate(unit)
+    _render_integration_details(unit)
 
 
 def _render_failed_unit(unit) -> None:

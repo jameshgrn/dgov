@@ -1,0 +1,5 @@
+[plan]
+name = "sentrux-cli-gate-cleanup"
+summary = "Reduce complexity in the dgov sentrux gate command flow."
+sections = ["tasks"]
+

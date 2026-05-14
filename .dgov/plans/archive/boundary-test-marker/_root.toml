@@ -1,0 +1,4 @@
+[plan]
+name = "boundary-test-marker"
+summary = "Mark architectural boundary tests as unit tests so src-change verification runs them."
+sections = ["tests"]

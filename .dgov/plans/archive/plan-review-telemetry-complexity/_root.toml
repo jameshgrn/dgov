@@ -1,0 +1,4 @@
+[plan]
+name = "plan-review-telemetry-complexity"
+summary = "Reduce complexity in plan review integration telemetry rendering without changing output."
+sections = ["cli"]

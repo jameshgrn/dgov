@@ -1,0 +1,5 @@
+[plan]
+name = "sentrux-run-compare-cleanup"
+summary = "Reduce complexity in run-time Sentrux baseline comparison."
+sections = ["tasks"]
+

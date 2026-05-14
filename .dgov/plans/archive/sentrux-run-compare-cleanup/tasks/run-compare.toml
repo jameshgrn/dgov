@@ -1,0 +1,26 @@
+[tasks.simplify-run-sentrux-compare]
+summary = "Split run-time Sentrux compare into focused result helpers."
+prompt = """
+Orient:
+1. Read `src/dgov/cli/run.py`, `src/dgov/sentrux_gate.py`, and `tests/test_cli_run_strict.py` before editing.
+2. The goal is to reduce cyclomatic complexity in `_sentrux_compare` while preserving its signature and returned dictionary shape.
+3. Keep Sentrux policy in `dgov.sentrux_gate`; this task is only about run command orchestration and result assembly.
+4. Do not change plan execution, branch verification, baseline bootstrap, or public `run_sentrux` behavior.
+
+Edit:
+1. In `src/dgov/cli/run.py`, extract small helpers that normalize assessment output and final gate-result fields from `_scan_head_against_sentrux_baseline`.
+2. Keep `_sentrux_compare(project_root, baseline_quality, base_ref=None, config=None)` behavior-compatible for existing monkeypatched tests.
+3. Preserve human output messages and JSON payload fields for clean, failed, timed-out, degraded, and warning cases.
+4. Update `tests/test_cli_run_strict.py` only if a focused assertion is needed to lock an extracted behavior.
+
+Verify:
+1. Run `uv run pytest -q tests/test_cli_run_strict.py -k sentrux`.
+2. Run `uv run pytest -q tests/test_cli.py -k run_only`.
+3. Run `uv run ruff check src/dgov/cli/run.py tests/test_cli_run_strict.py tests/test_cli.py`.
+4. Run `uv run ruff format --check src/dgov/cli/run.py tests/test_cli_run_strict.py tests/test_cli.py`.
+"""
+commit_message = "Simplify run Sentrux comparison"
+files.edit = ["src/dgov/cli/run.py", "tests/test_cli_run_strict.py"]
+files.read = ["src/dgov/sentrux_gate.py", "tests/test_cli.py"]
+test_cmd = "uv run pytest -q tests/test_cli_run_strict.py -k sentrux"
+

@@ -19,6 +19,7 @@ from dgov.semantic_settlement import (
     FailureClass,
     IntegrationCandidateVerdict,
     IntegrationRiskRecord,
+    OverlapEvidence,
     RiskLevel,
     SemanticGateVerdict,
     SignatureDrift,
@@ -59,6 +60,59 @@ class MockEmit:
 def mock_emit():
     """Create a mock emit function that captures calls."""
     return MockEmit()
+
+
+_EvidenceCase = tuple[tuple[OverlapEvidence, ...], RiskLevel]
+
+
+def _signature_drift(symbol_name: str) -> SignatureDrift:
+    return SignatureDrift(
+        symbol_name=symbol_name,
+        file_path="module.py",
+        base_signature=f"def {symbol_name}(value)",
+        integrated_signature=f"def {symbol_name}(value, default)",
+    )
+
+
+def _symbol_overlap(symbol_name: str) -> SymbolOverlap:
+    return SymbolOverlap(
+        symbol_name=symbol_name,
+        symbol_type="function",
+        file_path="module.py",
+    )
+
+
+def _duplicate_definition(symbol_name: str) -> DuplicateDefinition:
+    return DuplicateDefinition(
+        symbol_name=symbol_name,
+        symbol_type="function",
+        file_paths=("a.py", "b.py"),
+    )
+
+
+def _risk_level_evidence_cases() -> tuple[_EvidenceCase, ...]:
+    private_drift = _signature_drift("_process")
+    public_drift = _signature_drift("process")
+    private_overlap = _symbol_overlap("_process")
+    public_overlap = _symbol_overlap("process")
+    private_duplicate = _duplicate_definition("_process")
+    public_duplicate = _duplicate_definition("process")
+    syntax = SyntaxConflict(file_path="module.py", error_message="invalid syntax")
+    text = TextConflict(file_path="module.py", conflict_markers=2)
+
+    return (
+        ((), RiskLevel.NONE),
+        ((private_drift,), RiskLevel.LOW),
+        ((public_drift,), RiskLevel.HIGH),
+        ((private_overlap,), RiskLevel.MEDIUM),
+        ((public_overlap,), RiskLevel.HIGH),
+        ((private_duplicate,), RiskLevel.MEDIUM),
+        ((public_duplicate,), RiskLevel.HIGH),
+        ((syntax,), RiskLevel.CRITICAL),
+        ((text,), RiskLevel.CRITICAL),
+        ((private_drift, private_drift, private_drift, private_drift), RiskLevel.LOW),
+        ((private_drift, public_overlap), RiskLevel.HIGH),
+    )
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -1217,60 +1271,10 @@ def process(value, default):
         assert {evidence.symbol_name for evidence in overlaps} == {"process"}
 
     def test_risk_level_scoring_uses_evidence_severity(self, tmp_path: Path):
-        from dgov.config import ProjectConfig
-        from dgov.settlement_flow import SettlementFlow
+        flow = self._make_settlement_flow(tmp_path)
 
-        flow = SettlementFlow(
-            session_root=str(tmp_path),
-            plan_name="test-plan",
-            project_config=ProjectConfig(),
-        )
-        private_drift = SignatureDrift(
-            symbol_name="_process",
-            file_path="module.py",
-            base_signature="def _process(value)",
-            integrated_signature="def _process(value, default)",
-        )
-        public_drift = SignatureDrift(
-            symbol_name="process",
-            file_path="module.py",
-            base_signature="def process(value)",
-            integrated_signature="def process(value, default)",
-        )
-        private_overlap = SymbolOverlap(
-            symbol_name="_process",
-            symbol_type="function",
-            file_path="module.py",
-        )
-        public_overlap = SymbolOverlap(
-            symbol_name="process",
-            symbol_type="function",
-            file_path="module.py",
-        )
-        private_duplicate = DuplicateDefinition(
-            symbol_name="_process",
-            symbol_type="function",
-            file_paths=("a.py", "b.py"),
-        )
-        public_duplicate = DuplicateDefinition(
-            symbol_name="process",
-            symbol_type="function",
-            file_paths=("a.py", "b.py"),
-        )
-        syntax = SyntaxConflict(file_path="module.py", error_message="invalid syntax")
-        text = TextConflict(file_path="module.py", conflict_markers=2)
-
-        assert flow._risk_level_from_evidence(()) == RiskLevel.NONE
-        assert flow._risk_level_from_evidence((private_drift,)) == RiskLevel.LOW
-        assert flow._risk_level_from_evidence((public_drift,)) == RiskLevel.HIGH
-        assert flow._risk_level_from_evidence((private_overlap,)) == RiskLevel.MEDIUM
-        assert flow._risk_level_from_evidence((public_overlap,)) == RiskLevel.HIGH
-        assert flow._risk_level_from_evidence((private_duplicate,)) == RiskLevel.MEDIUM
-        assert flow._risk_level_from_evidence((public_duplicate,)) == RiskLevel.HIGH
-        assert flow._risk_level_from_evidence((syntax,)) == RiskLevel.CRITICAL
-        assert flow._risk_level_from_evidence((text,)) == RiskLevel.CRITICAL
-        assert flow._risk_level_from_evidence((private_drift,) * 4) == RiskLevel.LOW
-        assert flow._risk_level_from_evidence((private_drift, public_overlap)) == RiskLevel.HIGH
+        for evidence, expected in _risk_level_evidence_cases():
+            assert flow._risk_level_from_evidence(evidence) == expected
 
     def test_semantic_gate_rejection_message_includes_evidence(self, tmp_path: Path):
         from dgov.config import ProjectConfig

@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from dgov.persistence.events import emit_event
-from dgov.scope_status import analyze_scope_status
+from dgov.scope_status import (
+    ScopeStatus,
+    analyze_scope_status,
+    format_scope_paths,
+    render_scope_status_lines,
+)
 
 
 def _emit_worker_result_activity(
@@ -248,3 +253,60 @@ class TestAnalyzeScopeStatus:
         assert status.ignored_transient_paths == frozenset({"uv.lock"})
         assert status.unclaimed_transient_paths == frozenset()
         assert status.blocking_failure is None
+
+
+@pytest.mark.unit
+class TestFormatScopePaths:
+    def test_empty_returns_none(self) -> None:
+        assert format_scope_paths(frozenset()) == "(none)"
+
+    def test_sorted_comma_separated(self) -> None:
+        paths = frozenset({"b.py", "a.py"})
+        assert format_scope_paths(paths) == "a.py, b.py"
+
+
+@pytest.mark.unit
+class TestRenderScopeStatusLines:
+    def test_basic_lines(self) -> None:
+        status = ScopeStatus(
+            claimed_writable=frozenset({"src/a.py"}),
+            claimed_readonly=frozenset(),
+            actual_files=frozenset({"src/a.py"}),
+            transient_write_paths=frozenset(),
+            ignored_actual_paths=frozenset(),
+            ignored_transient_paths=frozenset(),
+            unclaimed_actual_paths=frozenset(),
+            unclaimed_transient_paths=frozenset(),
+            blocking_failure=None,
+        )
+        lines = render_scope_status_lines(status)
+        assert lines == [
+            "claimed_writable: src/a.py",
+            "claimed_readonly: (none)",
+            "modified_files: src/a.py",
+            "blocking: (none)",
+        ]
+
+    def test_conditional_lines_present(self) -> None:
+        from dgov.settlement import ReviewResult
+
+        failure = ReviewResult(passed=False, verdict="scope_violation", error="bad.py")
+        status = ScopeStatus(
+            claimed_writable=frozenset(),
+            claimed_readonly=frozenset(),
+            actual_files=frozenset(),
+            transient_write_paths=frozenset({"t.py"}),
+            ignored_actual_paths=frozenset({"i.py"}),
+            ignored_transient_paths=frozenset({"it.py"}),
+            unclaimed_actual_paths=frozenset({"u.py"}),
+            unclaimed_transient_paths=frozenset({"ut.py"}),
+            blocking_failure=failure,
+        )
+        lines = render_scope_status_lines(status)
+        assert "claimed_writable: (none)" in lines
+        assert "transient_writes: t.py" in lines
+        assert "ignored_modified: i.py" in lines
+        assert "ignored_transient: it.py" in lines
+        assert "unclaimed_modified: u.py" in lines
+        assert "unclaimed_transient: ut.py" in lines
+        assert "blocking: bad.py" in lines

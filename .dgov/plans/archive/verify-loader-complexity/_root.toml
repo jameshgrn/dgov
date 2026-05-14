@@ -1,0 +1,4 @@
+[plan]
+name = "verify-loader-complexity"
+summary = "Reduce structural complexity in the verify recipe loader without changing behavior."
+sections = ["verify"]

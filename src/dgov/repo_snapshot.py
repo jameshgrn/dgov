@@ -343,6 +343,13 @@ def _report_header(report: dict[str, object]) -> str:
     return "Likely structural offenders:"
 
 
+def _empty_report_message(report: dict[str, object]) -> str:
+    commit_sha = str(report.get("commit_sha", "")).strip()
+    if commit_sha:
+        return f"No structural offenders found at {commit_sha[:12]}."
+    return "No structural offenders found."
+
+
 def _section_lines(
     items: object,
     *,
@@ -375,6 +382,8 @@ def format_structural_offender_report(report: dict[str, object]) -> str:
         ("long_functions", "Long functions", "line_count"),
     ):
         sections.extend(_section_lines(report.get(key), label=label, metric=metric))
+    if len(sections) == 1:
+        return _empty_report_message(report)
     return "\n".join(sections)
 
 

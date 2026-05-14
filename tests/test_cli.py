@@ -132,6 +132,37 @@ def _patched_load_review(monkeypatch, **overrides):
     monkeypatch.setattr("dgov.plan_review.load_review", _fake)
 
 
+def _json_integration_review():
+    from dgov.plan_review import DiffStat, PlanReview, UnitReview
+
+    unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="deployed",
+        commit_sha="abc1234",
+        commit_message="feat: a",
+        diff_stat=DiffStat(files_changed=1, insertions=2, deletions=0),
+        landed_files=("src/a.py",),
+        settlement="ok",
+        integration_risk_level="medium",
+        integration_risk_detected=True,
+        integration_candidate_passed=True,
+        integration_failure_class=None,
+        integration_claimed_files=("src/a.py",),
+        integration_changed_files=("src/a.py",),
+        integration_gate_name=None,
+        integration_error=None,
+        integration_evidence=("same-symbol edit: function foo in src/a.py",),
+    )
+    return PlanReview(
+        plan_name="p",
+        source_dir=None,
+        last_run_ts=None,
+        last_run_duration_s=None,
+        units=[unit],
+    )
+
+
 def _patched_run_envelope(monkeypatch, **overrides):
     """Stub load_run_envelope to return a fixed run-level snapshot."""
     from dgov.plan_review import RunEnvelope
@@ -690,6 +721,20 @@ def test_sentrux_gate_prints_structural_offender_report_on_degradation(
 
     assert result.exit_code == 0
     assert "Likely structural offenders:" in result.output
+
+
+def test_sentrux_offenders_reports_clean_empty_state(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "dgov.cli.sentrux._structural_offender_report",
+        lambda target: "No structural offenders found at abcdef123456.",
+    )
+
+    result = runner.invoke(cli, ["sentrux", "offenders"])
+
+    assert result.exit_code == 0
+    assert result.output == "No structural offenders found at abcdef123456.\n"
 
 
 def test_sentrux_gate_treats_degraded_output_as_degradation(
@@ -1933,34 +1978,7 @@ class TestReviewIntegrationTelemetry:
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """JSON output should include integration telemetry fields."""
-        from dgov.plan_review import DiffStat, PlanReview, UnitReview
-
-        unit = UnitReview(
-            unit="tasks/main.a",
-            summary="do a",
-            status="deployed",
-            commit_sha="abc1234",
-            commit_message="feat: a",
-            diff_stat=DiffStat(files_changed=1, insertions=2, deletions=0),
-            landed_files=("src/a.py",),
-            settlement="ok",
-            integration_risk_level="medium",
-            integration_risk_detected=True,
-            integration_candidate_passed=True,
-            integration_failure_class=None,
-            integration_claimed_files=("src/a.py",),
-            integration_changed_files=("src/a.py",),
-            integration_gate_name=None,
-            integration_error=None,
-            integration_evidence=("same-symbol edit: function foo in src/a.py",),
-        )
-        review = PlanReview(
-            plan_name="p",
-            source_dir=None,
-            last_run_ts=None,
-            last_run_duration_s=None,
-            units=[unit],
-        )
+        review = _json_integration_review()
         plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
         _patched_load_review(monkeypatch, review=review)
         monkeypatch.chdir(tmp_path)

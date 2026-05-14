@@ -1072,6 +1072,25 @@ def _task_python_files(
     return _unique_paths((*touched_python, *task_changed))
 
 
+def _semantic_python_file_list(
+    *,
+    project_root: str,
+    task_base_sha: str,
+    task_commit_sha: str | None,
+    target_head_sha: str,
+    touched_files: tuple[str, ...],
+) -> list[str]:
+    return list(
+        _semantic_python_files(
+            project_root=project_root,
+            task_base_sha=task_base_sha,
+            task_commit_sha=task_commit_sha,
+            target_head_sha=target_head_sha,
+            touched_files=touched_files,
+        )
+    )
+
+
 def _candidate_rel_path(root: Path | None, file_path: Path) -> str:
     if root is None:
         return str(file_path)
@@ -1093,19 +1112,17 @@ def collect_python_overlap_evidence(
     """Collect deterministic Python overlap evidence for integration-risk scoring."""
     if not py_files or not target_head_sha or not task_commit_sha:
         return ()
-
-    file_paths = list(
-        _semantic_python_files(
-            project_root=project_root,
-            task_base_sha=task_base_sha,
-            task_commit_sha=task_commit_sha,
-            target_head_sha=target_head_sha,
-            touched_files=py_files,
-        )
+    file_paths = _semantic_python_file_list(
+        project_root=project_root,
+        task_base_sha=task_base_sha,
+        task_commit_sha=task_commit_sha,
+        target_head_sha=target_head_sha,
+        touched_files=py_files,
     )
     task_base_symbols = _get_symbol_table_at_commit(project_root, task_base_sha, file_paths)
     task_commit_symbols = _get_symbol_table_at_commit(project_root, task_commit_sha, file_paths)
     target_head_symbols = _get_symbol_table_at_commit(project_root, target_head_sha, file_paths)
+    candidate_files = _existing_candidate_python_files(candidate_root, file_paths)
     touched_set = set(py_files)
 
     evidence: list[OverlapEvidence] = []
@@ -1120,11 +1137,7 @@ def collect_python_overlap_evidence(
     evidence.extend(_check_signature_drift(task_base_symbols, task_commit_symbols, touched_set))
     evidence.extend(
         _introduced_duplicate_definitions(
-            candidate_files=[
-                candidate_root / path
-                for path in file_paths
-                if (candidate_root / path).exists() and (candidate_root / path).is_file()
-            ],
+            candidate_files=candidate_files,
             candidate_path=candidate_root,
             base_symbols=task_base_symbols,
             target_head_symbols=target_head_symbols,
@@ -1408,6 +1421,30 @@ def _run_python_symbol_checks(
     return verdict if verdict is not None else _semantic_gate_pass(task_slug)
 
 
+def _semantic_gate_file_sets(
+    *,
+    project_root: str,
+    task_base_sha: str,
+    task_commit_sha: str | None,
+    target_head_sha: str,
+    touched_files: tuple[str, ...],
+) -> tuple[tuple[str, ...], list[str]]:
+    task_py_files = _task_python_files(
+        project_root=project_root,
+        task_base_sha=task_base_sha,
+        task_commit_sha=task_commit_sha,
+        touched_files=touched_files,
+    )
+    py_files = _semantic_python_file_list(
+        project_root=project_root,
+        task_base_sha=task_base_sha,
+        task_commit_sha=task_commit_sha,
+        target_head_sha=target_head_sha,
+        touched_files=touched_files,
+    )
+    return task_py_files, py_files
+
+
 def run_python_semantic_gate(
     candidate_path: Path,
     project_root: str,
@@ -1418,20 +1455,12 @@ def run_python_semantic_gate(
     task_slug: str,
 ) -> SemanticGateVerdict:
     """Run deterministic Python semantic checks on an integration candidate."""
-    task_py_files = _task_python_files(
+    task_py_files, py_files = _semantic_gate_file_sets(
         project_root=project_root,
         task_base_sha=task_base_sha,
         task_commit_sha=task_commit_sha,
+        target_head_sha=target_head_sha,
         touched_files=touched_files,
-    )
-    py_files = list(
-        _semantic_python_files(
-            project_root=project_root,
-            task_base_sha=task_base_sha,
-            task_commit_sha=task_commit_sha,
-            target_head_sha=target_head_sha,
-            touched_files=touched_files,
-        )
     )
     task_candidate_files, early_verdict = _load_candidate_python_files(
         candidate_path,

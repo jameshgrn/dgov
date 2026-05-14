@@ -1,0 +1,5 @@
+[plan]
+name = "sentrux-object-path-cleanup"
+summary = "Reduce Sentrux current.json path extraction complexity."
+sections = ["tasks"]
+

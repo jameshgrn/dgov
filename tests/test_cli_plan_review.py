@@ -84,6 +84,62 @@ def _default_plan_review() -> PlanReview:
     )
 
 
+def _semantic_overlap_payload() -> dict[str, object]:
+    return {
+        "_kind": "SymbolOverlap",
+        "symbol_name": "foo",
+        "symbol_type": "function",
+        "file_path": "src/a.py",
+        "task_line_range": None,
+        "target_line_range": None,
+    }
+
+
+def _emit_semantic_evidence_events(
+    root: str,
+    *,
+    plan_name: str,
+    task_slug: str,
+    overlap: dict[str, object],
+) -> None:
+    from dgov.persistence import emit_event
+
+    emit_event(root, "run_start", "runner", plan_name=plan_name)
+    emit_event(root, "dag_task_dispatched", "pane-a", plan_name=plan_name, task_slug=task_slug)
+    emit_event(
+        root,
+        "integration_risk_scored",
+        "pane-a",
+        plan_name=plan_name,
+        task_slug=task_slug,
+        risk_level="high",
+        claimed_files=["src/a.py"],
+        changed_files=["src/a.py", "tests/test_a.py"],
+        python_overlap_detected=True,
+        overlap_evidence=[overlap],
+    )
+    emit_event(
+        root,
+        "semantic_gate_rejected",
+        "pane-a",
+        plan_name=plan_name,
+        task_slug=task_slug,
+        gate_name="same_symbol_edit",
+        passed=False,
+        failure_class="same_symbol_edit",
+        error_message="concurrent edit detected",
+        evidence=[overlap],
+    )
+    emit_event(
+        root,
+        "task_merge_failed",
+        "pane-a",
+        plan_name=plan_name,
+        task_slug=task_slug,
+        error="settlement rejected",
+    )
+
+
 def _patched_load_review(monkeypatch, **overrides):
     """Return a helper that stubs load_review to return a fixed PlanReview."""
     review = overrides.get("review", _default_plan_review())
@@ -135,52 +191,14 @@ def test_review_renders_deployed_unit(
 def test_review_renders_semantic_evidence_from_event_log(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.persistence import emit_event
-
     plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "do a"})
     root = str(tmp_path)
     task_slug = "tasks/main.a"
-    overlap = {
-        "_kind": "SymbolOverlap",
-        "symbol_name": "foo",
-        "symbol_type": "function",
-        "file_path": "src/a.py",
-        "task_line_range": None,
-        "target_line_range": None,
-    }
-    emit_event(root, "run_start", "runner", plan_name="p")
-    emit_event(root, "dag_task_dispatched", "pane-a", plan_name="p", task_slug=task_slug)
-    emit_event(
+    _emit_semantic_evidence_events(
         root,
-        "integration_risk_scored",
-        "pane-a",
         plan_name="p",
         task_slug=task_slug,
-        risk_level="high",
-        claimed_files=["src/a.py"],
-        changed_files=["src/a.py", "tests/test_a.py"],
-        python_overlap_detected=True,
-        overlap_evidence=[overlap],
-    )
-    emit_event(
-        root,
-        "semantic_gate_rejected",
-        "pane-a",
-        plan_name="p",
-        task_slug=task_slug,
-        gate_name="same_symbol_edit",
-        passed=False,
-        failure_class="same_symbol_edit",
-        error_message="concurrent edit detected",
-        evidence=[overlap],
-    )
-    emit_event(
-        root,
-        "task_merge_failed",
-        "pane-a",
-        plan_name="p",
-        task_slug=task_slug,
-        error="settlement rejected",
+        overlap=_semantic_overlap_payload(),
     )
     monkeypatch.chdir(tmp_path)
 

@@ -550,16 +550,36 @@ def _looks_like_verify_command(command: str) -> bool:
     """
     if "(" in command or ")" in command:
         return False
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
+    tokens = _shell_tokens(command)
+    if tokens is None:
         return False
-    while tokens and _is_env_assignment(tokens[0]):
-        tokens.pop(0)
+    tokens = _drop_env_assignments(tokens)
     if not tokens:
         return False
-    if len(tokens) >= 2 and tokens[1] == "=":
+    if _is_assignment_snippet(tokens):
         return False
+    return _tokens_look_like_command(tokens)
+
+
+def _shell_tokens(command: str) -> list[str] | None:
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return None
+
+
+def _drop_env_assignments(tokens: list[str]) -> list[str]:
+    idx = 0
+    while idx < len(tokens) and _is_env_assignment(tokens[idx]):
+        idx += 1
+    return tokens[idx:]
+
+
+def _is_assignment_snippet(tokens: list[str]) -> bool:
+    return len(tokens) >= 2 and tokens[1] == "="
+
+
+def _tokens_look_like_command(tokens: list[str]) -> bool:
     tool = tokens[0]
     if tool in _VERIFY_COMMAND_TOOLS or _looks_like_executable_path(tool):
         return True

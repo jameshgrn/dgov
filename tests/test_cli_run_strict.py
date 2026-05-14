@@ -471,30 +471,13 @@ def test_run_reports_degraded_when_final_sentrux_compare_degrades(
     plan_dir = _write_plan_tree(tmp_path, "compiled")
     _write_compiled(plan_dir, "compiled")
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=tmp_path, check=True)
-    (tmp_path / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
-
-    class _Runner:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        @property
-        def task_errors(self):
-            return {}
-
-        @property
-        def task_durations(self):
-            return {"a": 0.1}
-
-        async def run(self) -> dict[str, str]:
-            return {"a": "merged"}
+    _init_committed_repo(tmp_path)
 
     monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
-    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
+    monkeypatch.setattr(
+        "dgov.cli.run.EventDagRunner",
+        _fake_event_runner({"a": "merged"}, task_durations={"a": 0.1}),
+    )
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
@@ -599,6 +582,36 @@ def test_run_reports_structural_offenders_when_sentrux_degrades(
 
     assert result.exit_code == 0
     assert "Likely structural offenders at abc123" in result.output
+
+
+def test_normalize_sentrux_assessment() -> None:
+    """_normalize_sentrux_assessment should map assessment fields correctly."""
+    from dgov.cli.run import _normalize_sentrux_assessment
+
+    class FakeAssessment:
+        def __init__(self) -> None:
+            self.should_fail = True
+            self.warning = "warn"
+            self.error = "err"
+            self.current_report = {"b": 2}
+
+    degradation, offenders, error, warning = _normalize_sentrux_assessment(
+        FakeAssessment(),  # type: ignore
+        {"a": 1},
+        False,
+    )
+    assert degradation is True
+    assert offenders == {"b": 2}
+    assert error == "err"
+    assert warning == "warn"
+
+    degradation2, offenders2, error2, warning2 = _normalize_sentrux_assessment(
+        None, {"a": 1}, True
+    )
+    assert degradation2 is True
+    assert offenders2 == {"a": 1}
+    assert error2 is None
+    assert warning2 is None
 
 
 def test_clean_head_worktree_isolates_from_dirty_state(tmp_path: Path) -> None:
