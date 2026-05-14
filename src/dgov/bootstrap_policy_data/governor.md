@@ -46,7 +46,9 @@ to fill a stale session.
 ### Failure-to-task catalog
 
 Each entry maps observable evidence to a typed next task. Use these when a
-run ends in a known failure shape.
+run ends in a known failure shape. Run `dgov diagnose` to evaluate the
+mechanical entries against live repo state; entries marked as having no
+mechanical signal must be checked by hand.
 
 **archive_policy_drift**
 - Evidence: `git check-ignore .dgov/plans/archive/<plan>/_root.toml` matches
