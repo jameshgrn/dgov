@@ -1,0 +1,152 @@
+# CLI surface for `dgov diagnose` + its smoke tests.
+
+[tasks.command]
+summary = "Add `dgov diagnose` CLI command wired to dgov.diagnose.CHECKS."
+prompt = """
+## Orient
+
+Wire the diagnostic checks from `src/dgov/diagnose.py` into a `dgov diagnose`
+CLI command. The core checks already exist; this task adds the user-facing
+command and its smoke tests.
+
+Read first:
+- `src/dgov/diagnose.py` — the registry you are calling. Use `CHECKS`, not
+  the individual functions, so adding a fourth check later requires no CLI
+  change.
+- `src/dgov/cli/verify.py` (full file) for the CLI module pattern: group +
+  subcommands + `want_json()` for `--json` output.
+- `src/dgov/cli/__init__.py` lines 270-291 for the import-block registration
+  pattern. New modules are added to the `from dgov.cli import (...)` block
+  alphabetically.
+- `src/dgov/project_root.py` for `resolve_project_root`.
+- `src/dgov/persistence/schema.py` for `STATE_DIR` (the session-root path
+  segment, typically `.dgov`).
+
+Do NOT:
+- Add subcommands. `dgov diagnose` is a single bare command, not a group.
+- Add a `--strict` exit-nonzero flag. Default is informational. Defer.
+- Touch anything outside the claimed files.
+
+## Edit
+
+1. Create `src/dgov/cli/diagnose.py`:
+
+   ```python
+   '''CLI surface for `dgov diagnose` — report known failure shapes.'''
+
+   from __future__ import annotations
+
+   import json
+   from pathlib import Path
+
+   import click
+
+   from dgov.cli import cli, want_json
+   from dgov.diagnose import CHECKS, DiagnosisFinding
+   from dgov.project_root import resolve_project_root
+
+
+   @cli.command(name="diagnose")
+   @click.option("--root", "-r", default=".", help="Project root")
+   def diagnose_cmd(root: str) -> None:
+       '''Report known governor failure shapes from the Failure-to-Task catalog.
+
+       Reads current repo state (gitignore rules, recent settlement events)
+       and prints typed next-action cards for any matched failure shape.
+       See `.dgov/governor.md` for the catalog.
+       '''
+       project_root = resolve_project_root(Path(root))
+       session_root = project_root / ".dgov"
+       findings: list[DiagnosisFinding] = []
+       for check in CHECKS:
+           # Each check takes the kwargs it needs and ignores the rest.
+           kwargs = {"project_root": project_root, "session_root": session_root}
+           try:
+               sig_params = check.__code__.co_varnames[: check.__code__.co_argcount]
+               accepted = {k: v for k, v in kwargs.items() if k in sig_params}
+               findings.extend(check(**accepted))
+           except Exception as exc:  # never let one check break the whole run
+               click.echo(f"warning: check {check.__name__} failed: {exc}", err=True)
+       _emit(findings)
+
+
+   def _emit(findings: list[DiagnosisFinding]) -> None:
+       if want_json():
+           payload = {
+               "findings": [
+                   {
+                       "name": f.name,
+                       "intent_class": f.intent_class,
+                       "evidence": f.evidence,
+                       "next_action": f.next_action,
+                       "do_not": f.do_not,
+                   }
+                   for f in findings
+               ]
+           }
+           click.echo(json.dumps(payload, indent=2))
+           return
+       if not findings:
+           click.echo("No failure shapes matched current repo state.")
+           return
+       for f in findings:
+           click.echo(f"\\n{f.name}  [{f.intent_class}]")
+           click.echo(f"  evidence: {f.evidence}")
+           click.echo(f"  next:     {f.next_action}")
+           click.echo(f"  do not:   {f.do_not}")
+   ```
+
+   Notes:
+   - The kwargs-filter trick lets each check declare only the arguments it
+     needs (some take `project_root`, others `session_root`) without the CLI
+     knowing per-check signatures. Forward-compatible.
+   - One failing check must not break the run; print to stderr and continue.
+
+2. Edit `src/dgov/cli/__init__.py`: add `diagnose as diagnose,` to the
+   alphabetical import block at the bottom (currently lines 275-290). Use
+   `edit_file` — do NOT rewrite this 1000+ line file. The line goes between
+   `coverage as coverage,` and `fix as fix,`.
+
+3. Create `tests/test_cli_diagnose.py`. Use `click.testing.CliRunner`. Tests:
+   - `test_diagnose_clean_repo`: `tmp_path` with `git init` and no `.dgov/`;
+     invoke `cli` with `["diagnose", "--root", str(tmp_path)]`; assert exit
+     code 0 and stdout contains "No failure shapes matched".
+   - `test_diagnose_reports_archive_drift`: `tmp_path` with `git init` and
+     `.dgov/.gitignore` containing `plans/archive/`; invoke; assert exit 0
+     and stdout contains `archive_policy_drift`.
+   - `test_diagnose_json_output`: same setup as the drift test, but with
+     `--json` flag (env var or option per how `want_json` resolves; check
+     existing test_cli_verify for the pattern). Assert stdout parses as JSON
+     with a `findings` list of length ≥ 1.
+
+   For the JSON test, mirror exactly what `tests/test_cli_verify.py` does to
+   trigger `want_json()`. Read that file first to copy the idiom.
+
+## Verify
+
+```
+uv run pytest -q tests/test_cli_diagnose.py
+uv run ruff check src/dgov/cli/diagnose.py src/dgov/cli/__init__.py tests/test_cli_diagnose.py
+uv run ty check src/dgov/cli/diagnose.py
+```
+
+Then run `dgov diagnose --root .` in the worktree and confirm it executes
+without error. The output may be empty or non-empty depending on local state;
+either is acceptable as long as the command does not crash.
+
+Call `scope_status` before `done` to confirm only the three claimed files
+are modified.
+"""
+commit_message = "Wire dgov diagnose CLI command"
+depends_on = ["core/checks.checks"]
+files.create = ["src/dgov/cli/diagnose.py", "tests/test_cli_diagnose.py"]
+files.edit = ["src/dgov/cli/__init__.py"]
+files.read = [
+    "src/dgov/diagnose.py",
+    "src/dgov/cli/verify.py",
+    "src/dgov/project_root.py",
+    "src/dgov/persistence/schema.py",
+    ".dgov/governor.md",
+    "tests/test_cli_verify.py",
+]
+self_review = true
