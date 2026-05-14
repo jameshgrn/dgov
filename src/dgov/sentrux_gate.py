@@ -27,6 +27,7 @@ _SENTRUX_HARD_FAIL = re.compile(
     r"(quality.*dropped|cycles increased|god files increased)",
     re.IGNORECASE,
 )
+_DGOV_BASELINE_META_NAME = "dgov-baseline.json"
 _FUNCTION_SECTIONS = (
     ("complex_functions", "Complex functions", "cyclomatic", True),
     ("cog_complex_functions", "Cognitive hotspots", "cognitive", True),
@@ -285,14 +286,26 @@ def _stale_baseline_warning(
     return (
         "WARNING: Sentrux baseline is stale "
         f"({baseline_age.describe()}); no diff-attributable structural offenders "
-        "were found. Run `dgov sentrux gate-save` if this drift is intentional."
+        "were found. A clean complete full-plan `dgov run` refreshes accepted "
+        "baseline metadata automatically; run `dgov sentrux gate-save` only "
+        "when this drift is intentional outside a full plan run."
     )
 
 
 def sentrux_baseline_age(project_root: Path, baseline_path: Path) -> SentruxBaselineAge:
-    baseline_commit = _baseline_commit(project_root, baseline_path)
-    commits_behind = _commits_behind(project_root, baseline_commit)
-    timestamp = _baseline_timestamp(baseline_path)
+    root = project_root.resolve()
+    baseline = baseline_path.resolve()
+    meta_path = _dgov_baseline_meta_path(baseline)
+    meta_commit = _dgov_baseline_meta_head(meta_path)
+    meta_commits_behind = _commits_behind(root, meta_commit)
+    if meta_commit is not None and meta_commits_behind is not None:
+        baseline_commit = meta_commit
+        commits_behind = meta_commits_behind
+        timestamp = _dgov_baseline_meta_timestamp(meta_path) or _baseline_timestamp(baseline)
+    else:
+        baseline_commit = _baseline_commit(root, baseline)
+        commits_behind = _commits_behind(root, baseline_commit)
+        timestamp = _baseline_timestamp(baseline)
     seconds_old = max(0.0, time.time() - timestamp) if timestamp is not None else None
     return SentruxBaselineAge(
         baseline_commit=baseline_commit,
@@ -331,6 +344,40 @@ def _baseline_commit(project_root: Path, baseline_path: Path) -> str | None:
         rel_path = baseline_path.resolve().relative_to(project_root.resolve()).as_posix()
         output = _git_stdout(project_root, ["log", "-1", "--format=%H", "--", rel_path])
         return output or None
+    return None
+
+
+def _dgov_baseline_meta_path(baseline_path: Path) -> Path:
+    return baseline_path.with_name(_DGOV_BASELINE_META_NAME)
+
+
+def _dgov_baseline_meta(meta_path: Path) -> dict[str, object] | None:
+    try:
+        data = json.loads(meta_path.read_text())
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _dgov_baseline_meta_head(meta_path: Path) -> str | None:
+    data = _dgov_baseline_meta(meta_path)
+    if data is None:
+        return None
+    accepted_head = data.get("accepted_head")
+    if isinstance(accepted_head, str) and accepted_head.strip():
+        return accepted_head.strip()
+    return None
+
+
+def _dgov_baseline_meta_timestamp(meta_path: Path) -> float | None:
+    data = _dgov_baseline_meta(meta_path)
+    if data is None:
+        return None
+    timestamp = data.get("timestamp")
+    if isinstance(timestamp, (int, float)):
+        return float(timestamp)
     return None
 
 

@@ -65,11 +65,15 @@ Tasks live inside section TOMLs such as `tasks/main.toml`.
 |-------|------|----------|---------|-------------|
 | `slug` | string | Yes (implicit) | — | Task identifier (from the table key) |
 | `summary` | string | Yes | — | Short description used by logs and UI |
-| `prompt` | string | Yes | — | Instructions sent to the worker |
+| `prompt` | string | Worker/researcher: Yes | — | Instructions sent to the worker |
+| `prompt_file` | string | No | — | Prompt text file, resolved relative to the compiled plan file |
 | `agent` | string | No | plan/project default | Model/router override for this task |
 | `depends_on` | array of strings | No | `[]` | Slugs that must complete first |
 | `commit_message` | string | Yes | — | Git commit message on success |
-| `timeout_s` | integer | No | 600 | Seconds before the task aborts (plan-level `default_timeout_s`) |
+| `timeout_s` | integer | No | 900 | Seconds before the task aborts |
+| `iteration_budget` | integer | No | project config | Per-task worker model-turn budget |
+| `test_cmd` | string | No | project config | Task-specific settlement test command |
+| `sop_mapping` | array of strings | No | compiler-assigned | SOP names assigned during compile |
 | `role` | string | No | `worker` | One of `worker`, `researcher`, `reviewer` |
 
 Slug grammar: `^[A-Za-z0-9_-]+$`. Compiled unit IDs are

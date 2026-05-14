@@ -1,4 +1,4 @@
-"""Policy drift checks for the dgov source repository."""
+"""Policy source drift checks for the dgov source repository."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ _EXPECTED_BOOTSTRAP_FORCE_INCLUDE = {
 
 
 def find_policy_drift(project_root: Path) -> list[str]:
-    """Return policy/canon drift issues visible in the current source tree."""
+    """Return policy source/canon drift issues visible in the current source tree."""
     issues: list[str] = []
     issues.extend(_guidance_file_drift(project_root))
     issues.extend(_bootstrap_policy_drift(project_root))

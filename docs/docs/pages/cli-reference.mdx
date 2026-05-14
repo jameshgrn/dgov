@@ -20,8 +20,11 @@ Every `dgov` command and flag, grouped by purpose.
 | [`dgov status`](#dgov-status) | Observability | Event-derived live state |
 | [`dgov watch`](#dgov-watch) | Observability | Stream events live |
 | [`dgov tools audit`](#dgov-tools-audit) | Observability | Worker tool-call telemetry |
+| [`dgov diagnose`](#dgov-diagnose) | Observability | Match known failure shapes to next actions |
 | [`dgov ledger`](#dgov-ledger) | Observability | Record bugs, rules, decisions, debt |
 | [`dgov preflight`](#dgov-preflight) | Gates | Run settlement gates on local changes |
+| [`dgov verify`](#dgov-verify) | Gates | Run project-local verification recipes |
+| [`dgov scope status`](#dgov-scope-status) | Gates | Preview settlement scope status |
 | [`dgov sentrux check`](#dgov-sentrux-check) | Gates | Run a sentrux architectural check |
 | [`dgov sentrux gate-save`](#dgov-sentrux-gate-save) | Gates | Save or refresh the sentrux baseline |
 | [`dgov sentrux gate`](#dgov-sentrux-gate) | Gates | Compare current state against the baseline |
@@ -43,12 +46,16 @@ Auto-detects language, source directory, test directory, and toolchain.
 ```bash
 dgov init
 dgov init --force
+dgov init --project-type python
+dgov init --preflight
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--force` | Overwrite existing bootstrap files |
 | `-y, --yes` | Skip interactive prompts |
+| `--project-type` | Override project detection (`auto`, `unknown`, `python`, `javascript`, `rust`, `go`, `swift`) |
+| `--preflight` | Print bootstrap and worker-environment checks |
 
 `dgov init` is idempotent for missing files: re-running it scaffolds whatever
 is missing without overwriting existing project config.
@@ -227,9 +234,13 @@ If the repo has no commits yet and only `.dgov` bootstrap files exist, `dgov
 run` creates the bootstrap snapshot automatically. With other uncommitted
 files present, it asks first.
 
-`dgov run` requires `.sentrux/baseline.json`. Create or refresh it with
-`dgov sentrux gate-save`. The baseline is governor-owned state; workers
-cannot edit it.
+`dgov run` requires sentrux to be installed. If `.sentrux/baseline.json` is
+missing, `dgov run` bootstraps it once before dispatch. A clean complete
+full-plan run refreshes accepted sentrux baseline metadata automatically after
+the post-run comparison passes. Refresh it explicitly with `dgov sentrux
+gate-save` when the baseline drift is intentional outside a full plan run.
+The baseline is governor-owned state; worker edits to `.sentrux/baseline.json`
+and `.sentrux/dgov-baseline.json` are rejected during review.
 
 #### JSON output
 
@@ -344,6 +355,21 @@ dgov tools audit --plan my-plan --role worker --limit 20
 | `--limit INTEGER` | Cap the rendered tool rows. `0` means all |
 | `-r, --root TEXT` | Project root |
 
+### `dgov diagnose`
+
+Report known governor failure shapes from the Failure-to-Task catalog in
+`.dgov/governor.md`. The command reads current repo state and recent
+settlement events, then prints typed next-action cards for matched failures.
+
+```bash
+dgov diagnose
+dgov diagnose --root /path/to/project
+```
+
+| Flag | Description |
+|------|-------------|
+| `-r, --root TEXT` | Project root |
+
 ### `dgov ledger`
 
 Operational ledger — record and query operational entries: bugs, fixes,
@@ -381,11 +407,57 @@ dgov ledger resolve 3                       # mark entry #3 resolved
 
 Run the settlement acceptance gates against the local working tree without
 spawning a worker. The result tells you whether the current checkout would
-pass the gates a dispatched task has to clear.
+pass the gates a dispatched task has to clear. It also checks dgov source
+policy drift: guidance mirrors and bootstrap policy packaging must match the
+canonical repo files.
 
 ```bash
 dgov preflight
 ```
+
+### `dgov verify`
+
+Run named verification recipes from `.dgov/project.toml`.
+
+```bash
+dgov verify list
+dgov verify run unit
+dgov --json verify list
+```
+
+Recipe shape:
+
+```toml
+[verify.unit]
+description = "Run unit tests"
+command = "uv run pytest -q -m unit"
+```
+
+| Command | Description |
+|---------|-------------|
+| `dgov verify list` | List configured recipes |
+| `dgov verify run <name>` | Run one recipe by name |
+
+Both subcommands accept `-r, --root TEXT`.
+
+### `dgov scope status`
+
+Preview the same file-claim scope status settlement uses for a task. With
+`--plan`, claims are loaded from a compiled plan or plan directory. Without
+`--plan`, use `--claim` and `--read` for ad hoc inspection.
+
+```bash
+dgov scope status --task tasks/main.a --plan .dgov/plans/my-plan/
+dgov scope status --task my-task --claim src/a.py --read tests/test_a.py
+```
+
+| Flag | Description |
+|------|-------------|
+| `--task TEXT` | Task slug to inspect |
+| `--plan PATH` | Compiled plan file or plan directory |
+| `--pane TEXT` | Pane slug for transient write filtering |
+| `--claim TEXT` | Writable file claim for ad hoc mode |
+| `--read TEXT` | Read-only file claim for ad hoc mode |
 
 ### `dgov sentrux check`
 
@@ -398,8 +470,10 @@ dgov sentrux check /path/to/project
 
 ### `dgov sentrux gate-save`
 
-Save or refresh `.sentrux/baseline.json`. The baseline is the reference
-point every `dgov run` compares against.
+Save or refresh `.sentrux/baseline.json`. In a git repo with no non-baseline
+working-tree changes, this also records `.sentrux/dgov-baseline.json` so
+stale-baseline checks know which commit was accepted. Commit both files when
+the refresh is intentional.
 
 ```bash
 dgov sentrux gate-save
@@ -407,8 +481,9 @@ dgov sentrux gate-save
 
 ### `dgov sentrux gate`
 
-Compare the current sentrux state against the saved baseline. Exits nonzero
-if degradation is detected.
+Compare the current sentrux state against the saved baseline. By default it
+prints degradation output without forcing a nonzero exit; pass
+`--fail-on-degradation` to make degradation fail the command.
 
 ```bash
 dgov sentrux gate
@@ -437,15 +512,16 @@ Outputs `sentrux: installed and available` or `sentrux: not found in PATH`.
 
 ### `dgov coverage-baseline`
 
-Save or refresh the line-coverage baseline at `.coverage-baseline/`. Required
-when `coverage_cmd` is set in `project.toml`.
+Save or refresh the line-coverage baseline at `.coverage-baseline/`. This
+baseline is needed for settlement to compare coverage when `coverage_cmd` is
+set in `project.toml`.
 
 ```bash
 dgov coverage-baseline
 ```
 
-After a baseline exists, `dgov run` fails the run if line coverage drops by
-more than `coverage_threshold` percentage points.
+After a baseline exists, settlement rejects changed files whose measured
+line coverage drops by more than `coverage_threshold` percentage points.
 
 ---
 

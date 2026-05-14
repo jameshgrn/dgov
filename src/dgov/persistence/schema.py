@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from dgov.persistence.sql import (
+    _CREATE_DISPATCH_RUNS_TABLE_SQL,
     _CREATE_EVENTS_TABLE_SQL,
     _CREATE_LEDGER_TABLE_SQL,
     _CREATE_SLUG_HISTORY_TABLE_SQL,
@@ -22,7 +23,7 @@ from dgov.types import TaskState
 
 STATE_DIR = ".dgov"
 _STATE_FILE = "state.db"
-_SCHEMA_VERSION = 8  # Added ledger table
+_SCHEMA_VERSION = 9  # Added dispatch_runs table
 
 TASK_STATES = frozenset(TaskState)
 
@@ -217,6 +218,7 @@ __all__ = [
     "TASK_STATES",
     "VALID_EVENTS",
     "VALID_TRANSITIONS",
+    "_CREATE_DISPATCH_RUNS_TABLE_SQL",
     "_CREATE_EVENTS_TABLE_SQL",
     "_CREATE_LEDGER_TABLE_SQL",
     "_CREATE_SLUG_HISTORY_TABLE_SQL",

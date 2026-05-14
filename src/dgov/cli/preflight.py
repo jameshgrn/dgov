@@ -13,7 +13,7 @@ from dgov.settlement import GateResult, preflight_sandbox
 def _merge_preflight_results(settlement_result: GateResult, policy_drift: list[str]) -> GateResult:
     errors: list[str] = []
     if policy_drift:
-        errors.append("Policy drift:\n" + "\n".join(f"- {issue}" for issue in policy_drift))
+        errors.append("Policy source drift:\n" + "\n".join(f"- {issue}" for issue in policy_drift))
     if not settlement_result.passed:
         errors.append(settlement_result.error or "Settlement preflight failed")
     if errors:

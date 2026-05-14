@@ -1,7 +1,9 @@
 """Tests for dgov.types module.
 
-Only TaskState, WorkerExit, and Worktree remain after dead code removal.
-Basic smoke tests to verify they still work.
+Covers the legacy core types `TaskState`, `WorkerExit`, and `Worktree`.
+The `DispatchRun`, `DispatchRunState`, and `WatermasterId` names that
+`types.py` re-exports from `dgov.dispatch_run` (Brief 9, 2026-05-14) have
+their own dedicated test module at `tests/test_dispatch_run.py`.
 """
 
 from pathlib import Path

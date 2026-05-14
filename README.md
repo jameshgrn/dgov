@@ -14,7 +14,13 @@ Docs: https://sandfrom.space/dgov/
 
 ## Install
 
-`dgov` is not published on PyPI yet. Install from source:
+`dgov` is not published on PyPI yet. Install from Git:
+
+```bash
+uv tool install --from git+https://github.com/jameshgrn/dgov dgov
+```
+
+For a local checkout:
 
 ```bash
 git clone https://github.com/jameshgrn/dgov
@@ -47,8 +53,8 @@ dgov compile .dgov/plans/my-plan/
 
 # 6. Run the compiled plan
 # If the repo has no commits yet, dgov will create a bootstrap snapshot.
-# If the repo has no .sentrux/baseline.json yet, dgov run bootstraps it once,
-# then keeps using explicit baseline comparison on subsequent runs.
+# If the repo has no .sentrux/baseline.json yet, dgov run bootstraps it once.
+# Clean complete full-plan runs refresh the accepted baseline after comparison.
 dgov run .dgov/plans/my-plan/
 
 # 7. Monitor progress in another terminal
@@ -65,15 +71,16 @@ and execute it immediately.
 
 - Create or refresh it explicitly with `dgov sentrux gate-save`
 - `dgov run` auto-bootstraps a missing baseline once in a fresh repo or clean worktree
-- worker tasks must not edit `.sentrux/baseline.json`
-- a run fails if the final post-run sentrux comparison reports degradation
+- clean complete full-plan runs refresh accepted sentrux baseline metadata automatically
+- worker edits to `.sentrux/baseline.json` and `.sentrux/dgov-baseline.json` are rejected during review
+- post-run sentrux degradation marks the run `degraded` and prints a warning
 
 ## Project configuration
 
 `.dgov/project.toml` carries everything repo-scoped: language, toolchain
-commands, LLM endpoint, tool policy, and coverage knobs. `dgov init`
-auto-detects most of it. Task-level `agent = "..."` overrides the model/router
-name only.
+commands, LLM endpoint, tool policy, verification recipes, and coverage knobs.
+`dgov init` auto-detects most of it. Task-level `agent = "..."`
+overrides the model/router name only.
 
 ### LLM endpoint
 
@@ -113,12 +120,24 @@ require_uv_run = true
 ### Coverage
 
 Optional. When `coverage_cmd` is set, `dgov coverage-baseline` records a
-baseline and the settlement gate fails a run if line coverage drops by more
-than `coverage_threshold` percentage points.
+baseline. If a baseline and coverage output are available during settlement,
+the gate rejects changed files whose line coverage drops by more than
+`coverage_threshold` percentage points.
 
 ```toml
 coverage_cmd = "uv run pytest --cov=src --cov-report=json:{output} -q"
 coverage_threshold = 2.0
+```
+
+### Verification recipes
+
+Repeated project-local checks belong in `[verify.<name>]` recipes. Run them
+directly with `dgov verify run <name>` or list them with `dgov verify list`.
+
+```toml
+[verify.unit]
+description = "Run unit tests"
+command = "uv run pytest -q -m unit"
 ```
 
 ## SOP Format
@@ -166,14 +185,19 @@ dgov archive-plan <name>   # Move a plan to .dgov/plans/archive/
 # Observability
 dgov watch                 # Stream events live
 dgov tools audit           # Summarize worker tool-call telemetry
+dgov diagnose              # Report matched failure shapes and next actions
 dgov ledger add <cat>      # Record bug, rule, pattern, decision, or debt
 
 # Gates
 dgov preflight             # Run settlement gates against local changes
+dgov verify list           # List project-local verification recipes
+dgov verify run <name>     # Run one verification recipe
+dgov scope status          # Preview claim/scope settlement status
 dgov sentrux check         # Run architectural quality check
 dgov sentrux gate-save     # Create or refresh the architectural baseline
 dgov sentrux gate          # Compare current state against the baseline
 dgov sentrux offenders     # List long/complex function offenders
+dgov sentrux status        # Check whether sentrux is available
 dgov coverage-baseline     # Record or refresh the coverage baseline
 
 # Maintenance
@@ -189,7 +213,7 @@ Plans are authored as plan trees under `.dgov/plans/<name>/` and compiled to DAG
 # .dgov/plans/example/_root.toml
 [plan]
 name = "example"
-summary = "Add a feature safely"
+summary = "Add a feature"
 sections = ["tasks"]
 
 # .dgov/plans/example/tasks/main.toml
@@ -227,6 +251,7 @@ uv run pytest -q tests/test_foo.py
 commit_message = "test: add tests for feature"
 files.create = ["tests/test_foo.py"]
 files.read = ["src/foo.py"]
+test_cmd = "uv run pytest -q tests/test_foo.py"
 depends_on = ["add-feature"]
 ```
 
@@ -240,10 +265,10 @@ depends_on = ["add-feature"]
 | `workers/` | Worker tools (read, write, edit, run_bash, grep, etc.) |
 | `planner.py` | Auto-plan generator agent (powers `dgov plan create`) |
 | `researcher.py` | Read-only research role driver |
-| `settlement.py`, `settlement_flow.py` | ruff auto-fix + lint gate + sentrux + coverage gate |
-| `semantic_settlement.py` | LLM-driven semantic verdict on worker output |
+| `settlement.py`, `settlement_flow.py` | ruff auto-fix, lint, type-check, tests, sentrux, coverage, integration candidates |
+| `semantic_settlement.py` | Deterministic Python semantic checks on integration candidates |
 | `tool_policy.py`, `tool_audit.py` | Worker tool allow/deny policy + telemetry audit |
-| `policy_drift.py` | Detect drift between policy and observed worker behavior |
+| `policy_drift.py` | Detect drift between canonical policy sources and packaged mirrors |
 | `worktree.py` | Git worktree create/merge/remove |
 | `plan.py`, `plan_tree.py`, `dag_parser.py` | TOML plan parsing, tree walk, DAG compilation |
 | `plan_review.py` | Post-hoc debrief surface for `dgov plan review` |
@@ -260,8 +285,8 @@ depends_on = ["add-feature"]
 
 ```bash
 uv sync --group dev
-uv run ruff check src/ tests/
-uv run ruff format src/ tests/
+uv run ruff check .
+uv run ruff format --check .
 uv run ty check
 uv run pytest -q -m unit
 uv run pytest -q tests/test_plan.py

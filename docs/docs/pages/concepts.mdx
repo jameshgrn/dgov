@@ -3,36 +3,40 @@
 `dgov` is a local governor for AI coding work. It behaves more like a
 compiler than like an autonomous assistant: planning, ordering, retries, file
 claims, settlement, and merges are explicit state transitions over an event
-log. The worker can be probabilistic. The governor is not.
+log. The worker can be probabilistic; the core lifecycle state machine is not.
 
 ## Philosophy
 
 ### Determinism over vibes
 
 Planning, task ordering, retry policy, file claims, settlement, and merge
-decisions are explicit state transitions. Orchestration is inspectable and
-reproducible even when the model itself is not.
+decisions are explicit state transitions. Orchestration is inspectable even
+when the model output itself is not reproducible.
 
 ### Isolation through git worktrees
 
 Each task runs in its own git worktree rooted at a specific commit. This is
-the main safety boundary, not an implementation detail. Concurrent tasks
-cannot stomp the same checkout, every attempt has a concrete filesystem
-snapshot, and rejected work never contaminates main.
+the main safety boundary, not an implementation detail. Concurrent tasks do
+not share the same checkout, every attempt has a concrete filesystem
+snapshot, and rejected work does not merge to main through `dgov`.
 
 ### Validation over trust
 
-A worker is not trusted because it sounds confident. Every candidate passes
-through scope checks, ruff auto-fix, lint, type-check, targeted tests,
-sentrux architectural comparison, and an optional coverage gate before
-merge. The sentrux baseline at `.sentrux/baseline.json` is governor-owned
-state — workers are judged against it; they do not rewrite it.
+A worker is not trusted because it sounds confident. Worker candidates pass
+through scope checks, ruff auto-fix, and configured validation gates before
+merge. Those gates can include lint, type-check, targeted tests, sentrux
+comparison, and coverage when the corresponding project config and baselines
+are present. The sentrux baseline at `.sentrux/baseline.json` is
+governor-owned state; worker edits to `.sentrux/baseline.json` and
+`.sentrux/dgov-baseline.json` are rejected during review. A clean complete
+full-plan run refreshes accepted sentrux baseline metadata only after the
+post-run sentrux comparison passes.
 
 ### Explicit claims over implicit intent
 
-Every task declares the files it will create, edit, delete, or read. Without
-file claims, parallel execution is guesswork. With claims, `dgov` rejects
-invalid plans at compile time and can explain why two tasks cannot safely
+Worker tasks declare the files they will create, edit, delete, or read.
+Without file claims, parallel execution is guesswork. With claims, `dgov`
+rejects invalid plans at compile time and can explain why two tasks cannot
 run in parallel.
 
 ## What dgov is
@@ -40,7 +44,7 @@ run in parallel.
 - a DAG execution engine for AI coding tasks
 - a local git-worktree orchestrator
 - a settlement layer around model output
-- a tool for reproducible, inspectable automation in real repos
+- a tool for inspectable, event-backed automation in real repos
 
 ## What dgov is not
 
@@ -63,10 +67,10 @@ is for cases where structure and auditability matter.
 | `planner.py` | Auto-plan generator that powers `dgov plan create` |
 | `researcher.py` | Read-only research role driver |
 | `worktree.py` | Snapshot isolation through git worktrees |
-| `settlement.py`, `settlement_flow.py` | ruff auto-fix, lint, sentrux, coverage gate |
-| `semantic_settlement.py` | LLM-driven semantic verdict on integration candidates |
+| `settlement.py`, `settlement_flow.py` | ruff auto-fix, lint, type-check, tests, sentrux, coverage, integration candidates |
+| `semantic_settlement.py` | Deterministic Python semantic checks on integration candidates |
 | `tool_policy.py`, `tool_audit.py` | Worker tool allow/deny policy and telemetry audit |
-| `policy_drift.py` | Detects drift between policy and observed worker behavior |
+| `policy_drift.py` | Detects drift between canonical policy sources and packaged mirrors |
 | `plan.py`, `plan_tree.py`, `dag_parser.py` | TOML plan parsing, tree walk, DAG compilation |
 | `plan_review.py` | Post-hoc debrief that powers `dgov plan review` |
 | `sop_bundler.py`, `prompt_builder.py` | SOP loading and final prompt assembly |
@@ -85,10 +89,10 @@ actions, and nothing else. The runner does the messy part.
 
 That separation buys:
 
-- unit-testability without mocks
+- easier unit testing of lifecycle transitions
 - crash recovery through event replay
 - explicit failure boundaries
-- no hidden side effects in orchestration code
+- fewer hidden side effects in the kernel path
 
 ## Authorities
 
@@ -116,21 +120,37 @@ GitHub, but it does need local git state.
 
 The worker implements. Settlement judges. The sequence:
 
-1. fast review checks (scope, claim integrity)
+1. fast review checks (scope, claim integrity, transient tool activity)
 2. mechanical cleanup (ruff auto-fix, format)
-3. validation gates (lint, type-check, tests, sentrux, coverage)
-4. merge or reject
+3. isolated validation gates (lint/format plus configured type-check, tests, sentrux, coverage)
+4. shadow integration candidate creation
+5. deterministic Python semantic checks on the candidate
+6. integrated-candidate validation with the same settlement gates
+7. merge or reject
 
 Collapsing these roles produces a system that is harder to reason about and
 easier to fool. Keeping them split lets the kernel record exactly which gate
 rejected a candidate.
 
+### Gate map
+
+| Gate | When it runs | What it sees | Mutates? | Failure shape |
+|------|--------------|--------------|----------|---------------|
+| Structural review | Before worker commit | Worker git status, file claims, tool activity log | No | scope, reserved path, empty diff, review hook |
+| Autofix | Before worker commit | Worker-changed Python files | Yes | autofix command failure |
+| Isolated validation | After worker commit | Worker branch alone | No | lint/format failure; configured type, test, coverage, or sentrux failure |
+| Integration candidate | After isolated validation | Task commit replayed onto target `HEAD` | Temporary workspace only | text conflict |
+| Python semantic gate | On integration candidate | Candidate Python files plus base/task/target symbol tables | No | same-symbol edit, duplicate definition, signature drift, syntax conflict |
+| Candidate validation | After semantic gate | Integrated candidate | No | behavioral mismatch |
+| Final merge | After all gates pass | Target worktree and task branch | Yes | git merge failure |
+
 ## Semantic settlement
 
-A clean `git merge` is necessary but not sufficient. The semantic layer
-checks whether the integrated result still works — not just whether git
-could replay the commit. It catches cases where two valid tasks combine
-into an invalid result.
+A clean `git merge` is necessary but not sufficient. The semantic layer is
+deterministic and Python-scoped: it checks the integrated candidate with AST
+and symbol-table evidence, not an LLM verdict. It catches a subset of
+Python-level integration conflicts where valid isolated task commits combine
+poorly.
 
 ### Failure taxonomy
 
@@ -143,11 +163,12 @@ When semantic settlement rejects a candidate, it classifies the failure:
 | `SAME_SYMBOL_EDIT` | Both sides changed the same Python symbol |
 | `DUPLICATE_DEFINITION` | The integrated code defines the same symbol in multiple files |
 | `SIGNATURE_DRIFT` | A public callable changed its signature relative to base or target |
-| `ORDERING_CONFLICT` | Operations are valid individually but invalid in integrated order |
 | `BEHAVIORAL_MISMATCH` | Parse-level checks pass but settlement gates fail |
 
 The class drives remediation: `SAME_SYMBOL_EDIT` points at coordination,
-`SIGNATURE_DRIFT` points at a stale task base.
+`SIGNATURE_DRIFT` points at a stale task base. `ORDERING_CONFLICT` exists in
+the taxonomy for future gates but is not emitted by the current Python
+semantic gate.
 
 ### Risk levels
 
@@ -155,14 +176,14 @@ Before attempting integration, `dgov` scores risk:
 
 | Level | Meaning | Action |
 |-------|---------|--------|
-| `NONE` / `LOW` | No or minimal risk | Standard settlement gates |
-| `MEDIUM` | Elevated risk | Shadow-mode validation recommended |
-| `HIGH` | Significant risk | Integrated candidate validation required |
-| `CRITICAL` | Near-certain conflict | Reject without full integration attempt |
+| `NONE` / `LOW` | No or minimal detected risk | Continue to integration candidate |
+| `MEDIUM` | Elevated detected risk | Continue to integration candidate |
+| `HIGH` | Significant detected risk | Continue to integration candidate |
+| `CRITICAL` | Near-certain conflict signal | Reject before candidate creation |
 
-Risk scoring considers Python symbol overlap, file-claim intersections, and
-the recency of the task base relative to target HEAD. `CRITICAL` rejects
-early to avoid wasting compute on doomed integrations.
+Risk scoring currently considers deterministic Python overlap evidence
+collected from the task commit, task base, and target `HEAD`. Non-critical
+risk is telemetry; `CRITICAL` risk rejects before candidate creation.
 
 ### Symbol overlap as evidence
 
@@ -176,8 +197,8 @@ Task B both edited `process_order()` in `checkout.py` — Task A at lines
 
 The semantic layer builds ephemeral integration candidates before the real
 merge: a temporary workspace rooted at target HEAD, the task commit replayed
-onto it, the full settlement pipeline run against the result. Only
-candidates that pass this shadow integration proceed to the recorded merge.
+onto it, and the settlement pipeline run against the result. Worker commits
+that pass this shadow integration proceed to the recorded merge.
 
 ## Plans as control surfaces
 
@@ -211,8 +232,8 @@ chat box. The payoff is that the system operates on your real repo with
 real validation.
 
 **More structure up front.** Plans, file claims, and a compile step add
-ceremony. The ceremony buys safer concurrency, replayable execution, and
-fewer silent footguns.
+ceremony. The ceremony buys explicit concurrency, event-derived execution
+state, and fewer silent footguns.
 
 **Narrower provider model.** `dgov` supports OpenAI-compatible endpoints
 rather than every provider-native API shape. Deliberate. It keeps the
@@ -221,16 +242,18 @@ and similar APIs.
 
 ## Failure model
 
-`dgov` fails closed:
+`dgov` treats these as hard failures:
 
 - invalid plan references stop at compile time
 - a missing API key fails before dispatch
 - out-of-scope edits fail review
-- failing tests fail settlement
+- configured test failures fail settlement
 - rejected work does not merge
 
-Failing closed is the design, not a limitation.
+Post-run sentrux degradation is reported separately as a `degraded` run
+status so the operator can remediate landed work. Degraded, partial, failed,
+or `--only` runs do not refresh the accepted baseline.
 
 ## Mental model
 
-A deterministic governor around a probabilistic worker.
+A deterministic kernel around a probabilistic worker.

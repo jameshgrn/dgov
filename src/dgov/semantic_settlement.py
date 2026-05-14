@@ -70,22 +70,22 @@ class FailureClass(StrEnum):
 
 
 class RiskLevel(StrEnum):
-    """Integration risk classification for telemetry and review."""
+    """Integration risk classification for telemetry and early rejection."""
 
     NONE = "none"
     """No detectable integration risk."""
 
     LOW = "low"
-    """Minimal risk; standard settlement gates sufficient."""
+    """Minimal detected risk."""
 
     MEDIUM = "medium"
-    """Elevated risk; shadow-mode validation recommended."""
+    """Elevated detected risk."""
 
     HIGH = "high"
-    """Significant risk; integrated candidate validation required."""
+    """Significant detected risk."""
 
     CRITICAL = "critical"
-    """Near-certain conflict; reject without full integration attempt."""
+    """Near-certain conflict signal; reject before candidate creation."""
 
 
 # -----------------------------------------------------------------------------

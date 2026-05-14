@@ -22,7 +22,11 @@ from dgov.workers.config import (
 
 _DEFAULT_AGENT = "accounts/fireworks/routers/kimi-k2p6-turbo"
 _DEFAULT_SCOPE_IGNORE_FILES = (".venv", "uv.lock", "__pycache__", "*.pyc")
-_RESERVED_SCOPE_IGNORE_PATHS = (".sentrux/baseline.json", ".coverage-baseline/")
+_RESERVED_SCOPE_IGNORE_PATHS = (
+    ".sentrux/baseline.json",
+    ".sentrux/dgov-baseline.json",
+    ".coverage-baseline/",
+)
 
 
 @dataclass(frozen=True)

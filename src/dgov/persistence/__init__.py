@@ -10,6 +10,12 @@ from dgov.persistence.connection import (
     _get_db,
     clear_connection_cache,
 )
+from dgov.persistence.dispatch_runs import (
+    get_dispatch_run,
+    get_dispatch_runs_for_unit,
+    list_dispatch_runs,
+    save_dispatch_run,
+)
 from dgov.persistence.events import (
     emit_event,
     latest_event_id,
@@ -47,10 +53,13 @@ __all__ = [
     "add_ledger_entry",
     "clear_connection_cache",
     "emit_event",
+    "get_dispatch_run",
+    "get_dispatch_runs_for_unit",
     "get_runtime_artifact",
     "get_runtime_artifacts",
     "get_slug_history",
     "latest_event_id",
+    "list_dispatch_runs",
     "list_ledger_entries",
     "list_runtime_artifacts",
     "prune_runtime_artifact_history",
@@ -61,6 +70,7 @@ __all__ = [
     "reset_plan_state",
     "reset_task_state",
     "resolve_ledger_entry",
+    "save_dispatch_run",
     "set_runtime_artifact_metadata",
     "state_path",
     "update_runtime_artifact_state",

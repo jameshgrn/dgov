@@ -254,6 +254,20 @@ class TestScopeIgnoreFiles:
             assert ".sentrux/baseline.json" in str(exc)
         assert raised, "expected ValueError on reserved path in scope.ignore_files"
 
+    def test_rejects_dgov_sentrux_metadata_scope_ignore(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            '[project]\n\n[scope]\nignore_files = [".sentrux/dgov-baseline.json"]\n'
+        )
+        raised = False
+        try:
+            load_project_config(tmp_path)
+        except ValueError as exc:
+            raised = True
+            assert ".sentrux/dgov-baseline.json" in str(exc)
+        assert raised, "expected ValueError on reserved path in scope.ignore_files"
+
     def test_missing_section_yields_empty(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"
         dgov_dir.mkdir()

@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -697,6 +698,89 @@ def test_sentrux_check_passes_requested_path_without_chdir(
     assert calls == [(["check", "src"], None)]
 
 
+def _init_cli_git_repo(tmp_path: Path) -> str:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("init\n")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def _mock_sentrux_gate_save(
+    tmp_path: Path,
+    *,
+    assert_canonical_target: bool,
+) -> Callable[..., subprocess.CompletedProcess[str]]:
+    def _mock_run(
+        args: list[str],
+        cwd: str | None = None,
+        timeout: float = 30.0,
+        check: bool = True,
+    ):
+        if assert_canonical_target:
+            assert args == ["gate", "--save", str(tmp_path.resolve())]
+        sentrux_dir = tmp_path / ".sentrux"
+        sentrux_dir.mkdir()
+        (sentrux_dir / "baseline.json").write_text('{"quality": 42}\n')
+        return subprocess.CompletedProcess(
+            ["sentrux", *args], 0, stdout="Quality: 42\n", stderr=""
+        )
+
+    return _mock_run
+
+
+def test_sentrux_gate_save_records_dgov_metadata(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    head = _init_cli_git_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dgov.cli.sentrux.sentrux_available", lambda: True)
+    monkeypatch.setattr(
+        "dgov.cli.sentrux.run_sentrux",
+        _mock_sentrux_gate_save(tmp_path, assert_canonical_target=True),
+    )
+
+    result = runner.invoke(cli, ["sentrux", "gate-save"], catch_exceptions=False)
+
+    metadata = json.loads((tmp_path / ".sentrux" / "dgov-baseline.json").read_text())
+    assert result.exit_code == 0
+    assert "Baseline metadata saved" in result.output
+    assert metadata["accepted_head"] == head
+    assert metadata["quality"] == 42
+
+
+def test_sentrux_gate_save_skips_metadata_for_dirty_source_tree(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_cli_git_repo(tmp_path)
+    (tmp_path / "README.md").write_text("dirty\n")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dgov.cli.sentrux.sentrux_available", lambda: True)
+    monkeypatch.setattr(
+        "dgov.cli.sentrux.run_sentrux",
+        _mock_sentrux_gate_save(tmp_path, assert_canonical_target=False),
+    )
+
+    result = runner.invoke(cli, ["sentrux", "gate-save"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "Baseline metadata not recorded" in result.output
+    assert not (tmp_path / ".sentrux" / "dgov-baseline.json").exists()
+
+
 def test_sentrux_gate_fail_on_degradation_uses_command_output(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -831,7 +915,7 @@ def test_preflight_command_reports_failure(
     assert "Lint failure" in result.output
 
 
-def test_preflight_command_reports_policy_drift(
+def test_preflight_command_reports_policy_source_drift(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from dgov.settlement import GateResult
@@ -849,7 +933,7 @@ def test_preflight_command_reports_policy_drift(
     result = runner.invoke(cli, ["preflight"])
 
     assert result.exit_code == 1
-    assert "Policy drift:" in result.output
+    assert "Policy source drift:" in result.output
     assert "AGENTS.md differs from CLAUDE.md" in result.output
 
 

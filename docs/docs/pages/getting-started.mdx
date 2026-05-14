@@ -2,7 +2,7 @@
 
 `dgov` is a local CLI that drives AI coding agents through a deterministic
 plan/compile/run/review loop. Each task runs in its own git worktree, lands
-through scoped settlement gates, and leaves an event log you can replay.
+through scoped settlement gates, and leaves an event log you can inspect.
 
 This page walks from a fresh repo to a finished run.
 
@@ -22,18 +22,18 @@ Structure does.
 
 - **The orchestrator is a compiler, not an agent.** Planning, retries, file
   claims, and merge decisions are explicit state transitions over an event
-  log. You can read what happened. You can replay it.
+  log. You can read what happened and derive current state from it.
 - **Workers are subprocesses, not collaborators.** They live in disposable
-  git worktrees, get judged by settlement gates, and merge only when every
-  gate passes. No shared state, no implicit trust.
-- **A clean merge is not a clean integration.** Semantic settlement asks
-  whether the integrated result still works — not just whether git could
+  git worktrees, get judged by settlement gates, and merge only after task
+  settlement passes. No shared checkout, no implicit trust.
+- **A clean merge is not a clean integration.** Shadow integration candidates
+  ask whether the integrated result still works — not just whether git could
   replay the commit.
 - **Plans are contracts.** File claims declare legal concurrency;
-  dependencies declare legal order. The kernel rejects plans that violate
-  them before any worker runs.
-- **Failing closed is the point.** Out-of-scope edits fail review. Failing
-  tests fail settlement. A missing API key fails before dispatch.
+  dependencies declare legal order. Compile-time validation rejects
+  conflicting independent claims before any worker runs.
+- **Hard gates stop merges.** Out-of-scope edits fail review. Configured
+  test failures fail settlement. A missing API key fails before dispatch.
 
 `dgov` assumes you know what you want to change. It gives you the structure
 to change it without granting the model unchecked authority over the merge.
@@ -50,7 +50,13 @@ different tool will suit you better.
 
 ## Install
 
-`dgov` is not on PyPI yet. Install from source:
+`dgov` is not on PyPI yet. Install from Git:
+
+```bash
+uv tool install --from git+https://github.com/jameshgrn/dgov dgov
+```
+
+For a local checkout:
 
 ```bash
 git clone https://github.com/jameshgrn/dgov
@@ -78,6 +84,7 @@ git rev-parse --is-inside-work-tree >/dev/null || git init
 export FIREWORKS_API_KEY=your-key-here    # or whichever provider you use
 
 dgov init
+dgov init --preflight   # optional: print bootstrap and worker-environment checks
 ```
 
 `dgov init` writes three things and detects most of them from the repo:
@@ -97,12 +104,16 @@ init` offers to create the baseline now. Otherwise run it later:
 dgov sentrux gate-save
 ```
 
-The baseline is governor-owned state. Workers cannot edit it; a run fails if
-the post-run sentrux comparison shows degradation.
+The baseline is governor-owned state. Worker edits to `.sentrux/baseline.json`
+and `.sentrux/dgov-baseline.json` are rejected during review; a post-run
+sentrux degradation marks the run `degraded` and prints a warning. After a
+clean complete full-plan run, `dgov run` refreshes the accepted sentrux
+baseline metadata automatically.
 
 `dgov init` is idempotent for missing files. Re-running it scaffolds whatever
 is missing without overwriting existing project config. Pass `--force` to
-overwrite.
+overwrite. Pass `--project-type` when auto-detection needs an explicit
+language hint.
 
 ## 2. Author a plan
 
@@ -153,6 +164,7 @@ uv run pytest -q tests/test_limiter.py
 commit_message = "test: rate limiter coverage"
 files.create = ["tests/test_limiter.py"]
 files.read = ["src/limiter.py"]
+test_cmd = "uv run pytest -q tests/test_limiter.py"
 depends_on = ["add-feature"]
 ```
 
@@ -190,9 +202,10 @@ dgov run .dgov/plans/my-plan/
 
 `dgov run` recompiles current source, then dispatches each ready task to a
 worker subprocess in its own git worktree. Settlement runs after each task:
-ruff auto-fix, lint, type-check, scope check, sentrux comparison, optional
-coverage gate, optional semantic settlement. Only candidates that pass
-settlement merge to the integration branch.
+scope review, ruff auto-fix, lint, type-check, targeted tests, sentrux
+comparison, optional coverage, deterministic Python semantic checks, and
+integrated-candidate validation. Only candidates that pass settlement merge
+to the integration branch.
 
 Useful flags:
 
@@ -282,12 +295,27 @@ require_uv_run = true
 ```
 
 **Coverage** — optional gate on line-coverage drop. When `coverage_cmd` is
-set, run `dgov coverage-baseline` once; subsequent runs fail if coverage drops
-by more than `coverage_threshold` percentage points.
+set, run `dgov coverage-baseline` once. With a baseline and coverage output
+available, settlement rejects changed files whose coverage drops by more than
+`coverage_threshold` percentage points.
 
 ```toml
 coverage_cmd = "uv run pytest --cov=src --cov-report=json:{output} -q"
 coverage_threshold = 2.0
+```
+
+**Verification recipes** — named project-local checks that can be run directly
+or referenced in task prompts:
+
+```toml
+[verify.unit]
+description = "Run unit tests"
+command = "uv run pytest -q -m unit"
+```
+
+```bash
+dgov verify list
+dgov verify run unit
 ```
 
 ## SOP format
@@ -304,4 +332,4 @@ coverage_threshold = 2.0
 - [Concepts](/concepts) — the kernel model, settlement, semantic integration
 - [CLI Reference](/cli-reference) — every command and flag
 - [Plan Reference](/plan-reference) — full plan-tree schema
-- [LLM Providers](/llm-providers) — Fireworks, OpenAI, OpenRouter, custom
+- [LLM Providers](/llm-providers) — Fireworks and other OpenAI-compatible endpoints

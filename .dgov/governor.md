@@ -84,8 +84,11 @@ mechanical signal must be checked by hand.
   whose offender list is entirely pre-existing functions not touched by
   the current diff.
 - Class: Governance repair.
-- Next action: Run `dgov sentrux gate-save` to refresh the baseline if the
-  drift is intentional; commit the refreshed `.sentrux/baseline.json`.
+- Next action: Let a clean complete full-plan `dgov run` refresh accepted
+  sentrux baseline metadata after the post-run comparison passes. Outside a
+  full plan run, run `dgov sentrux gate-save` only if the drift is intentional
+  and commit the refreshed `.sentrux/baseline.json` plus
+  `.sentrux/dgov-baseline.json`.
 - Do not: Game the import graph (dynamic imports, indirection) to satisfy
   the metric. Refactor real coupling when it exists, not when the baseline
   has drifted.

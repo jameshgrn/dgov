@@ -581,6 +581,18 @@ class TestReviewSandbox:
         assert ".sentrux/baseline.json" in (result.error or "")
 
     @pytest.mark.unit
+    def test_unclaimed_dgov_sentrux_metadata_fails_scope(self, tmp_path: Path):
+        """Governor-owned sentrux metadata is rejected before scope checks."""
+        _init_repo(tmp_path)
+        sx_dir = tmp_path / ".sentrux"
+        sx_dir.mkdir()
+        (sx_dir / "dgov-baseline.json").write_text('{"accepted_head": "abc"}')
+        result = review_sandbox(tmp_path, claimed_files=["src.py"])
+        assert not result.passed
+        assert result.verdict == "reserved_path"
+        assert ".sentrux/dgov-baseline.json" in (result.error or "")
+
+    @pytest.mark.unit
     def test_claimed_dgov_file_passes_scope(self, tmp_path: Path):
         """Explicitly claimed .dgov/ files pass scope enforcement."""
         _init_repo(tmp_path)

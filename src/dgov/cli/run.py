@@ -29,6 +29,11 @@ from dgov.plan import PlanSpec, compile_plan, parse_plan_file
 from dgov.project_root import resolve_project_root
 from dgov.repo_snapshot import format_structural_offender_report, likely_structural_offenders
 from dgov.runner import EventDagRunner
+from dgov.sentrux_baseline import (
+    SentruxBaselineRefreshError,
+    refresh_sentrux_baseline_after_clean_run,
+    sentrux_baseline_path,
+)
 from dgov.sentrux_gate import SentruxGateAssessment, assess_sentrux_gate, changed_files_since
 
 
@@ -393,7 +398,7 @@ def _ensure_git_ready(project_root: str, yes: bool = False) -> None:
 
 
 def _sentrux_baseline_path(project_root: str) -> Path:
-    return Path(project_root) / ".sentrux" / "baseline.json"
+    return sentrux_baseline_path(project_root)
 
 
 def _read_sentrux_baseline_quality(project_root: str) -> int | None:
@@ -431,9 +436,10 @@ def _baseline_from_empty_project(baseline_path: Path) -> bool:
 
 def _bootstrap_sentrux_baseline(project_root: str, baseline_path: Path) -> int | None:
     """Create a missing baseline once so fresh repos/worktrees can run."""
+    root = str(Path(project_root).resolve())
     click.echo(f"[sentrux] No baseline found at {baseline_path}; bootstrapping baseline...")
     try:
-        run_sentrux(["gate", "--save", project_root], timeout=30.0)
+        run_sentrux(["gate", "--save", root], timeout=30.0)
     except subprocess.CalledProcessError as exc:
         details = (exc.stderr or exc.stdout or str(exc)).strip()
         click.echo(f"Error: failed to create sentrux baseline at {baseline_path}.", err=True)
@@ -445,11 +451,12 @@ def _bootstrap_sentrux_baseline(project_root: str, baseline_path: Path) -> int |
         raise click.exceptions.Exit(code=1) from exc
 
     click.echo(f"[sentrux] Baseline saved at {baseline_path}")
-    return _read_sentrux_baseline_quality(project_root)
+    return _read_sentrux_baseline_quality(root)
 
 
 def _require_sentrux_baseline(project_root: str) -> int | None:
     """Ensure sentrux is installed and a baseline exists for comparison."""
+    root = str(Path(project_root).resolve())
     if not sentrux_available():
         click.echo(
             "Error: sentrux not found. Install: https://github.com/sentrux/sentrux",
@@ -457,11 +464,11 @@ def _require_sentrux_baseline(project_root: str) -> int | None:
         )
         raise click.exceptions.Exit(code=1)
 
-    baseline_path = _sentrux_baseline_path(project_root)
+    baseline_path = _sentrux_baseline_path(root)
     if not baseline_path.exists():
-        return _bootstrap_sentrux_baseline(project_root, baseline_path)
+        return _bootstrap_sentrux_baseline(root, baseline_path)
 
-    return _read_sentrux_baseline_quality(project_root)
+    return _read_sentrux_baseline_quality(root)
 
 
 def _parse_sentrux_gate_output(output: str) -> tuple[bool, int | None]:
@@ -672,17 +679,18 @@ def _sentrux_compare(
     config: ProjectConfig | None = None,
 ) -> dict[str, object]:
     """Run `sentrux gate` and build a gate_result dict comparing against baseline."""
+    root = str(Path(project_root).resolve())
     gate_result = _initial_sentrux_gate_result(baseline_quality)
     if not want_json():
         click.echo("[sentrux] Comparing against baseline...")
 
-    baseline_path = _sentrux_baseline_path(project_root)
+    baseline_path = _sentrux_baseline_path(root)
     if _baseline_from_empty_project(baseline_path):
         return _empty_baseline_sentrux_result(gate_result)
 
     try:
         result, offenders, assessment = _scan_head_against_sentrux_baseline(
-            project_root,
+            root,
             baseline_path,
             base_ref=base_ref,
             config=config,
@@ -1126,6 +1134,64 @@ def _emit_post_run_hint(
     )
 
 
+def _refresh_sentrux_baseline_after_clean_run(project_root: str) -> None:
+    root = Path(project_root).resolve()
+    root_str = str(root)
+    if not want_json():
+        click.echo("[sentrux] Refreshing accepted baseline after clean run...")
+
+    try:
+        committed = refresh_sentrux_baseline_after_clean_run(root_str, run_sentrux=run_sentrux)
+    except SentruxBaselineRefreshError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if not want_json():
+        status = "committed" if committed else "already current"
+        click.echo(f"[sentrux] Accepted baseline refreshed ({status}).")
+
+
+def _should_refresh_sentrux_baseline(
+    *,
+    summary: PlanRunSummary,
+    artifacts: PlanRunArtifacts,
+    only: str | None,
+    plan_dir: Path | None,
+    project_root: str,
+    dag: DagDefinition,
+) -> bool:
+    root = str(Path(project_root).resolve())
+    return (
+        summary.run_status == "complete"
+        and only is None
+        and plan_dir is not None
+        and not _sentrux_failed(artifacts.gate_result)
+        and not _branch_verification_failed(artifacts.branch_result)
+        and is_plan_complete(root, dag.name, set(dag.tasks))
+    )
+
+
+def _maybe_refresh_sentrux_baseline(
+    *,
+    summary: PlanRunSummary,
+    artifacts: PlanRunArtifacts,
+    only: str | None,
+    plan_dir: Path | None,
+    project_root: str,
+    dag: DagDefinition,
+) -> None:
+    root = str(Path(project_root).resolve())
+    if not _should_refresh_sentrux_baseline(
+        summary=summary,
+        artifacts=artifacts,
+        only=only,
+        plan_dir=plan_dir,
+        project_root=root,
+        dag=dag,
+    ):
+        return
+    _refresh_sentrux_baseline_after_clean_run(root)
+
+
 def _maybe_archive_completed_plan(
     *,
     run_status: str,
@@ -1134,17 +1200,18 @@ def _maybe_archive_completed_plan(
     project_root: str,
     dag: DagDefinition,
 ) -> None:
+    root = str(Path(project_root).resolve())
     if (
         run_status != "complete"
         or only is not None
         or plan_dir is None
-        or not is_plan_complete(project_root, dag.name, set(dag.tasks))
+        or not is_plan_complete(root, dag.name, set(dag.tasks))
     ):
         return
     dest = archive_plan(plan_dir)
     if not want_json():
         click.echo(f"Plan fully deployed → archived to {dest}")
-        _warn_if_archive_left_git_changes(project_root)
+        _warn_if_archive_left_git_changes(root)
 
 
 def _warn_if_archive_left_git_changes(project_root: str) -> None:
@@ -1488,6 +1555,14 @@ def _finalize_plan_run(
 ) -> str:
     """Summarize, emit, record, and validate a completed plan run."""
     summary = _summarize_plan_run(artifacts)
+    _maybe_refresh_sentrux_baseline(
+        summary=summary,
+        artifacts=artifacts,
+        only=only,
+        plan_dir=plan_dir,
+        project_root=project_root,
+        dag=dag,
+    )
     _emit_plan_run_summary(
         summary=summary,
         artifacts=artifacts,

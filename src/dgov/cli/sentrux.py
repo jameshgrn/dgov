@@ -12,6 +12,10 @@ from dgov.cli import _output, cli, want_json
 from dgov.cli.run import run_sentrux, sentrux_available
 from dgov.config import load_project_config
 from dgov.repo_snapshot import format_structural_offender_report, likely_structural_offenders
+from dgov.sentrux_baseline import (
+    record_sentrux_baseline_metadata,
+    sentrux_baseline_path,
+)
 from dgov.sentrux_gate import assess_sentrux_gate
 
 
@@ -159,7 +163,8 @@ def sentrux_gate_save(path: Path | None) -> None:
     """
     _require_sentrux()
 
-    target = str(path) if path else "."
+    target_path = (path if path else Path()).resolve()
+    target = str(target_path)
     try:
         result = run_sentrux(["gate", "--save", target])
     except subprocess.CalledProcessError as e:
@@ -177,7 +182,17 @@ def sentrux_gate_save(path: Path | None) -> None:
                 quality = int(line.split(":", 1)[1].strip())
             break
 
-    click.echo(f"Baseline saved at {Path(target) / '.sentrux' / 'baseline.json'}")
+    metadata_path = record_sentrux_baseline_metadata(target, output)
+
+    click.echo(f"Baseline saved at {sentrux_baseline_path(target)}")
+    if metadata_path is not None:
+        click.echo(f"Baseline metadata saved at {metadata_path}")
+    else:
+        click.echo(
+            "Baseline metadata not recorded; rerun from a git repo with no "
+            "non-baseline working-tree changes.",
+            err=True,
+        )
     click.echo(f"Quality: {quality}")
 
 

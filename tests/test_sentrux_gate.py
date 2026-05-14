@@ -16,6 +16,7 @@ from dgov.sentrux_gate import (
     _paths_from_object,
     _paths_from_sequence,
     _paths_from_string,
+    sentrux_baseline_age,
 )
 from dgov.settlement import validate_sandbox
 
@@ -172,7 +173,53 @@ def test_stale_sentrux_baseline_warns_without_failing_clean_diff(
     captured = capsys.readouterr()
     assert result.passed is True
     assert "WARNING: Sentrux baseline is stale" in captured.err
+    assert "clean complete full-plan `dgov run` refreshes" in captured.err
     assert "dgov sentrux gate-save" in captured.err
+
+
+@pytest.mark.unit
+def test_dgov_sentrux_metadata_records_current_accepted_head(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _save_sentrux_baseline(tmp_path)
+    for idx in range(11):
+        _commit_file(tmp_path, f"notes/{idx}.txt", f"{idx}\n", f"advance {idx}")
+
+    head = _git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+    meta_path = tmp_path / ".sentrux" / "dgov-baseline.json"
+    meta_path.write_text(
+        json.dumps({
+            "accepted_head": head,
+            "timestamp": time.time(),
+        })
+    )
+
+    age = sentrux_baseline_age(tmp_path, tmp_path / ".sentrux" / "baseline.json")
+
+    assert age.baseline_commit == head
+    assert age.commits_behind == 0
+    assert not age.stale(commit_threshold=10, day_threshold=14)
+
+
+@pytest.mark.unit
+def test_invalid_dgov_sentrux_metadata_falls_back_to_baseline_commit(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    baseline_head = _save_sentrux_baseline(tmp_path)
+    for idx in range(11):
+        _commit_file(tmp_path, f"notes/{idx}.txt", f"{idx}\n", f"advance {idx}")
+
+    meta_path = tmp_path / ".sentrux" / "dgov-baseline.json"
+    meta_path.write_text(
+        json.dumps({
+            "accepted_head": "not-a-real-commit",
+            "timestamp": time.time(),
+        })
+    )
+
+    age = sentrux_baseline_age(tmp_path, tmp_path / ".sentrux" / "baseline.json")
+
+    assert age.baseline_commit == baseline_head
+    assert age.commits_behind == 11
+    assert age.stale(commit_threshold=10, day_threshold=14)
 
 
 @pytest.mark.unit

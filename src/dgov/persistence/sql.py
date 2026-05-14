@@ -60,3 +60,31 @@ CREATE TABLE IF NOT EXISTS ledger (
     affected_paths TEXT DEFAULT NULL, -- JSON array of affected file paths
     affected_tags TEXT DEFAULT NULL -- JSON array of tags
 )"""
+
+_CREATE_DISPATCH_RUNS_TABLE_SQL = """\
+CREATE TABLE IF NOT EXISTS dispatch_runs (
+    id TEXT PRIMARY KEY,
+    from_plan_id TEXT NOT NULL,
+    unit_slug TEXT NOT NULL,
+    worktree_id TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    base_commit TEXT NOT NULL,
+    agent_model TEXT NOT NULL,
+    effective_sop_set_hash TEXT NOT NULL,
+    drift_against_plan INTEGER NOT NULL,
+    drift_evidence TEXT NOT NULL DEFAULT '[]',
+    retried_from TEXT,
+    forked_from TEXT,
+    retry_index INTEGER NOT NULL DEFAULT 0,
+    fork_depth INTEGER NOT NULL DEFAULT 0,
+    dispatched_by TEXT NOT NULL,
+    dispatched_at TEXT NOT NULL,
+    state TEXT NOT NULL,
+    exit_code INTEGER,
+    last_error TEXT NOT NULL DEFAULT '',
+    output_dir TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    iteration_count INTEGER NOT NULL DEFAULT 0,
+    terminated_at TEXT
+)"""

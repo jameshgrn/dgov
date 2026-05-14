@@ -34,9 +34,10 @@ from dgov.typecheck_diagnostics import parse_diagnostic_identities
 logger = logging.getLogger(__name__)
 
 _SENTRUX_BASELINE = ".sentrux/baseline.json"
+_DGOV_SENTRUX_BASELINE = ".sentrux/dgov-baseline.json"
 _COVERAGE_BASELINE_DIR = ".coverage-baseline"
 _COVERAGE_BASELINE = f"{_COVERAGE_BASELINE_DIR}/coverage.json"
-_RESERVED_PATHS = (_SENTRUX_BASELINE, _COVERAGE_BASELINE_DIR + "/")
+_RESERVED_PATHS = (_SENTRUX_BASELINE, _DGOV_SENTRUX_BASELINE, _COVERAGE_BASELINE_DIR + "/")
 _WRITE_ACTIVITY_KINDS = frozenset({"write_file", "edit_file", "apply_patch", "revert_file"})
 _WRITE_ACTIVITY_MODES = frozenset({"create", "edit", "patch", "revert"})
 

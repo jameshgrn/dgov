@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -20,10 +21,12 @@ import pytest
 from dgov.actions import InterruptGovernor, MergeTask
 from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
+from dgov.dispatch_run import DispatchRun
 from dgov.kernel import DagState
 from dgov.persistence import add_ledger_entry, clear_connection_cache
+from dgov.persistence.dispatch_runs import get_dispatch_run, save_dispatch_run
 from dgov.runner import EventDagRunner, _test_failure_command
-from dgov.types import TaskState, Worktree
+from dgov.types import TaskState, WorkerExit, Worktree
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -521,6 +524,148 @@ class TestWorkerFailure:
             results = asyncio.run(runner.run())
             assert results["a"] == "failed"
             assert runner.kernel.max_retries == 0
+
+
+class TestDispatchRunRecording:
+    def test_mint_dispatch_run_records_active_row(self, tmp_path: Path):
+        dag = _dag({"a": _task("a")}).model_copy(
+            update={"name": "plan-a", "session_root": str(tmp_path), "project_root": str(tmp_path)}
+        )
+        runner = EventDagRunner(dag, session_root=str(tmp_path), dispatched_by="watermaster:test")
+        wt = Worktree(path=tmp_path / "wt-a", branch="dgov/a", commit="abc123")
+
+        dispatch_run = runner._mint_dispatch_run(
+            task_slug="a",
+            wt=wt,
+            agent="codex",
+            ctx=runner._ctx("a"),
+        )
+        row = get_dispatch_run(str(tmp_path), dispatch_run.id)
+
+        assert row is not None
+        assert row["state"] == "active"
+        assert row["from_plan_id"] == "plan-a"
+        assert row["unit_slug"] == "a"
+        assert row["dispatched_by"] == "watermaster:test"
+
+    def test_terminal_dispatch_run_records_timed_out(self, tmp_path: Path):
+        dag = _dag({"a": _task("a")}).model_copy(
+            update={"name": "plan-a", "session_root": str(tmp_path), "project_root": str(tmp_path)}
+        )
+        runner = EventDagRunner(dag, session_root=str(tmp_path))
+        ctx = runner._ctx("a")
+        wt = Worktree(path=tmp_path / "wt-a", branch="dgov/a", commit="abc123")
+        dispatch_run = runner._mint_dispatch_run(task_slug="a", wt=wt, agent="codex", ctx=ctx)
+        ctx.prompt_tokens = 3
+        ctx.completion_tokens = 5
+        ctx.call_count = 7
+        exit_event = WorkerExit(
+            task_slug="a",
+            pane_slug="pane-a",
+            exit_code=1,
+            output_dir="/tmp/out",
+            last_error="Timed out after 10s",
+        )
+
+        runner._record_terminal_dispatch_run(
+            exit_event=exit_event,
+            ctx=ctx,
+            state=runner._dispatch_terminal_state(exit_event, will_fork=False),
+        )
+        row = get_dispatch_run(str(tmp_path), dispatch_run.id)
+
+        assert row is not None
+        assert row["state"] == "timed_out"
+        assert row["exit_code"] is None
+        assert row["prompt_tokens"] == 3
+        assert row["completion_tokens"] == 5
+        assert row["iteration_count"] == 7
+
+    def test_retry_lineage_records_prior_dispatch_run(self, tmp_path: Path):
+        dag = _dag({"a": _task("a")}).model_copy(
+            update={"name": "plan-a", "session_root": str(tmp_path), "project_root": str(tmp_path)}
+        )
+        runner = EventDagRunner(dag, session_root=str(tmp_path))
+        ctx = runner._ctx("a")
+        first = runner._mint_dispatch_run(
+            task_slug="a",
+            wt=Worktree(path=tmp_path / "wt-a", branch="dgov/a", commit="abc123"),
+            agent="codex",
+            ctx=ctx,
+        )
+
+        action = runner._interrupt_governor_action(
+            InterruptGovernor("a", "pane-a", "failed"),
+            attempts=0,
+            error_detail="failed",
+        )
+        second = runner._mint_dispatch_run(
+            task_slug="a",
+            wt=Worktree(path=tmp_path / "wt-a-retry", branch="dgov/a-retry", commit="def456"),
+            agent="codex",
+            ctx=ctx,
+        )
+
+        assert action.value == "retry"
+        assert second.retried_from == first.id
+        assert second.retry_index == 1
+
+    def test_fork_lineage_records_prior_dispatch_run(self, tmp_path: Path):
+        dag = _dag({"a": _task("a")}).model_copy(
+            update={"name": "plan-a", "session_root": str(tmp_path), "project_root": str(tmp_path)}
+        )
+        runner = EventDagRunner(dag, session_root=str(tmp_path))
+        ctx = runner._ctx("a")
+        first = runner._mint_dispatch_run(
+            task_slug="a",
+            wt=Worktree(path=tmp_path / "wt-a", branch="dgov/a", commit="abc123"),
+            agent="codex",
+            ctx=ctx,
+        )
+
+        ctx.forked_from_dispatch_run_id = first.id
+        ctx.fork_depth = 1
+        second = runner._mint_dispatch_run(
+            task_slug="a",
+            wt=Worktree(path=tmp_path / "wt-a", branch="dgov/a", commit="abc123"),
+            agent="codex",
+            ctx=ctx,
+        )
+
+        assert second.forked_from == first.id
+        assert second.fork_depth == 1
+
+    def test_continue_resume_reuses_latest_dispatch_run_for_retry_lineage(self, tmp_path: Path):
+        dag = _dag({"a": _task("a")}).model_copy(
+            update={"name": "plan-a", "session_root": str(tmp_path), "project_root": str(tmp_path)}
+        )
+        prior = DispatchRun(
+            from_plan_id="plan-a",
+            unit_slug="a",
+            worktree_id=str(tmp_path / "wt-a"),
+            branch="dgov/a",
+            base_commit="abc123",
+            agent_model="codex",
+            effective_sop_set_hash="",
+            drift_against_plan=False,
+            dispatched_by="watermaster:test",
+            dispatched_at=datetime.now(UTC),
+        ).start_active()
+        save_dispatch_run(str(tmp_path), prior)
+
+        runner = EventDagRunner(dag, session_root=str(tmp_path))
+        runner.kernel.task_states["a"] = TaskState.FAILED
+        runner._resume_single_task("a", TaskState.FAILED)
+        second = runner._mint_dispatch_run(
+            task_slug="a",
+            wt=Worktree(path=tmp_path / "wt-a-retry", branch="dgov/a-retry", commit="def456"),
+            agent="codex",
+            ctx=runner._ctx("a"),
+        )
+
+        assert runner._ctx("a").current_dispatch_run_id == second.id
+        assert second.retried_from == prior.id
+        assert second.retry_index == 1
 
 
 class TestPreflight:

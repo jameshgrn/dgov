@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Callable
+from datetime import timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import click
 import pytest
@@ -463,6 +464,157 @@ def test_run_bootstraps_missing_sentrux_baseline(
     assert "baseline saved" in result.output.lower()
     assert "[sentrux] baseline quality: 9100" in result.output.lower()
     assert (tmp_path / ".sentrux" / "baseline.json").exists()
+
+
+def _commit_sentrux_baseline(tmp_path: Path) -> tuple[Path, str]:
+    _init_committed_repo(tmp_path)
+    sentrux_dir = tmp_path / ".sentrux"
+    sentrux_dir.mkdir()
+    (sentrux_dir / "baseline.json").write_text('{"quality": 100}\n')
+    subprocess.run(["git", "add", ".sentrux/baseline.json"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "save baseline"], cwd=tmp_path, check=True)
+    return sentrux_dir, _git_head(tmp_path)
+
+
+def _mock_clean_sentrux_save(
+    sentrux_dir: Path,
+    captured: dict[str, object],
+) -> Callable[..., subprocess.CompletedProcess[str]]:
+    def _mock_run_sentrux(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["args"] = args
+        captured["timeout"] = kwargs.get("timeout")
+        (sentrux_dir / "baseline.json").write_text('{"quality": 100}\n')
+        return subprocess.CompletedProcess(
+            ["sentrux", *args],
+            0,
+            stdout="Quality: 100\n",
+            stderr="",
+        )
+
+    return _mock_run_sentrux
+
+
+def _latest_commit_subject(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "log", "-1", "--format=%s"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def test_refresh_sentrux_baseline_after_clean_run_commits_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dgov.cli.run import _refresh_sentrux_baseline_after_clean_run
+
+    sentrux_dir, accepted_head = _commit_sentrux_baseline(tmp_path)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "dgov.cli.run.run_sentrux", _mock_clean_sentrux_save(sentrux_dir, captured)
+    )
+    monkeypatch.chdir(tmp_path)
+
+    _refresh_sentrux_baseline_after_clean_run(".")
+
+    assert captured["args"] == ["gate", "--save", str(tmp_path.resolve())]
+    assert captured["timeout"] == 30.0
+
+    metadata = json.loads((sentrux_dir / "dgov-baseline.json").read_text())
+    assert metadata["accepted_head"] == accepted_head
+    assert metadata["quality"] == 100
+    assert _latest_commit_subject(tmp_path) == "chore: refresh sentrux baseline"
+
+
+def _clean_complete_artifacts() -> object:
+    from dgov.cli.run import PlanRunArtifacts
+
+    class _Runner:
+        def __init__(self) -> None:
+            self.task_errors: dict[str, str] = {}
+            self.task_durations: dict[str, float] = {}
+
+    return PlanRunArtifacts(
+        runner=cast(Any, _Runner()),
+        results={"a": "merged"},
+        duration=timedelta(seconds=1),
+        gate_result={"degradation": False},
+        branch_result={"status": "clean"},
+        completed_gate_result={
+            "degradation": False,
+            "branch_verification": {"status": "clean"},
+        },
+        token_usage={},
+        total_prompt_tokens=0,
+        total_completion_tokens=0,
+    )
+
+
+def _compiled_test_dag(plan_dir: Path) -> object:
+    from dgov.dag_parser import DagDefinition, DagTaskSpec
+
+    return DagDefinition(
+        name="compiled",
+        dag_file=str(plan_dir / "_compiled.toml"),
+        tasks={"a": DagTaskSpec(slug="a", summary="do a")},
+    )
+
+
+def _install_finalize_refresh_patches(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    calls: list[tuple[str, str]],
+) -> None:
+    monkeypatch.setattr(
+        "dgov.cli.run.is_plan_complete",
+        lambda project_root, plan_name, tasks: (
+            project_root == str(tmp_path.resolve()) and plan_name == "compiled" and tasks == {"a"}
+        ),
+    )
+    monkeypatch.setattr(
+        "dgov.cli.run._refresh_sentrux_baseline_after_clean_run",
+        lambda project_root: calls.append(("refresh", project_root)),
+    )
+    monkeypatch.setattr(
+        "dgov.cli.run.archive_plan",
+        lambda archive_target: (
+            calls.append(("archive", str(archive_target))) or archive_target / "archive"
+        ),
+    )
+
+
+def test_finalize_refreshes_sentrux_baseline_before_archiving(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dgov.cli.run import _finalize_plan_run
+
+    plan_dir = _write_plan_tree(tmp_path, "compiled")
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.chdir(tmp_path)
+    _install_finalize_refresh_patches(monkeypatch, tmp_path, calls)
+    monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr("dgov.cli.run.emit_event", lambda *args, **kwargs: None)
+
+    status = _finalize_plan_run(
+        cast(Any, _clean_complete_artifacts()),
+        dag=cast(Any, _compiled_test_dag(plan_dir)),
+        project_root=".",
+        plan_file=str(plan_dir / "_compiled.toml"),
+        only=None,
+        plan_dir=plan_dir,
+        verbose=False,
+        stream=False,
+    )
+
+    assert status == "complete"
+    assert calls[:2] == [
+        ("refresh", str(tmp_path.resolve())),
+        ("archive", str(plan_dir)),
+    ]
 
 
 def test_run_reports_degraded_when_final_sentrux_compare_degrades(

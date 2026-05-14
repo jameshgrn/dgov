@@ -16,6 +16,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,12 @@ from dgov.actions import (
     TaskWaitDone,
 )
 from dgov.dag_parser import DagDefinition, DagTaskSpec
+from dgov.dispatch_run import (
+    DispatchRun,
+    DispatchRunState,
+    _dispatch_run_from_row_dict,
+    derive_drift_evidence,
+)
 from dgov.event_types import (
     DgovEvent,
     EvtTaskDispatched,
@@ -65,6 +72,11 @@ from dgov.persistence import (
     emit_event,
     record_runtime_artifact,
     update_runtime_artifact_state,
+)
+from dgov.persistence.dispatch_runs import (
+    get_dispatch_run,
+    get_dispatch_runs_for_unit,
+    save_dispatch_run,
 )
 from dgov.persistence.schema import TaskState, WorkerTask
 from dgov.prompt_builder import PromptBuilder, build_baseline_diag_note, load_review_sop_blocks
@@ -145,6 +157,9 @@ class TaskContext:
     review_file_count: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    current_dispatch_run_id: str | None = None
+    retried_from_dispatch_run_id: str | None = None
+    forked_from_dispatch_run_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +179,7 @@ class EventDagRunner:
         on_event: Callable[[str, str, object], None] | None = None,
         restart: bool = False,
         continue_failed: bool = False,
+        dispatched_by: str = "watermaster:unknown",
     ) -> None:
         from dgov.config import load_project_config
         from dgov.persistence import reset_plan_state
@@ -171,6 +187,7 @@ class EventDagRunner:
         self.dag = dag
         self.session_root = session_root
         self.on_event = on_event
+        self._dispatched_by = dispatched_by
         self.project_config = load_project_config(session_root)
         self.deps = {slug: tuple(t.depends_on) for slug, t in dag.tasks.items()}
         self._tasks: dict[str, TaskContext] = {}
@@ -342,6 +359,9 @@ class EventDagRunner:
     def _resume_single_task(self, slug: str, prior_state: TaskState) -> None:
         """Resume a single failed/abandoned task. Extracted for testability."""
         logger.info("Resuming task: %s (prior state: %s)", slug, prior_state)
+        ctx = self._ctx(slug)
+        ctx.attempts += 1
+        ctx.retried_from_dispatch_run_id = ctx.current_dispatch_run_id
         self.kernel.handle(TaskGovernorResumed(slug, GovernorAction.RETRY))
         emit_event(
             self.session_root,
@@ -369,6 +389,14 @@ class EventDagRunner:
                 continue
             typed_event = deserialize_event(ev)
             self._apply_rehydrate_event(typed_event)
+        self._rehydrate_dispatch_run_contexts()
+
+    def _rehydrate_dispatch_run_contexts(self) -> None:
+        """Restore latest DispatchRun ids for retry/fork lineage after process restart."""
+        for slug in self.dag.tasks:
+            rows = get_dispatch_runs_for_unit(self.session_root, slug)
+            if rows:
+                self._ctx(slug).current_dispatch_run_id = rows[-1]["id"]
 
     def _apply_rehydrate_event(self, event: DgovEvent) -> None:
         """Apply a single event during rehydration. Extracted for testability."""
@@ -733,7 +761,13 @@ class EventDagRunner:
         self._record_worker_exit(ctx, exit_event)
 
         task = self.dag.tasks[exit_event.task_slug]
-        if self._should_fork_after_exit(exit_event, ctx, task):
+        will_fork = self._should_fork_after_exit(exit_event, ctx, task)
+        self._record_terminal_dispatch_run(
+            exit_event=exit_event,
+            ctx=ctx,
+            state=self._dispatch_terminal_state(exit_event, will_fork=will_fork),
+        )
+        if will_fork:
             self._start_iteration_fork(exit_event, ctx, task)
             return []
 
@@ -772,6 +806,7 @@ class EventDagRunner:
         task: DagTaskSpec,
     ) -> None:
         ctx.fork_depth += 1
+        ctx.forked_from_dispatch_run_id = ctx.current_dispatch_run_id
         ctx.call_count = 0
         ctx.start_time = time.time()
         self._pending_dispatches.add(exit_event.task_slug)
@@ -874,6 +909,12 @@ class EventDagRunner:
         push_exit = self._fork_worker_exit_callback()
 
         try:
+            self._mint_dispatch_run(
+                task_slug=task_slug,
+                wt=wt,
+                agent=self._resolved_task_agent(task),
+                ctx=ctx,
+            )
             await self._run_forked_worker(task_slug, wt, fork_pane, task, ctx, push_exit)
         except TimeoutError:
             logger.error("Forked worker %s timed out after %ds", task_slug, task.timeout_s)
@@ -1420,10 +1461,22 @@ class EventDagRunner:
         error_detail: str,
     ) -> list[DagAction]:
         self._shutdown_interrupted = True
+        ctx = self._ctx(action.task_slug)
         logger.warning(
             "Task %s interrupted during shutdown — marking ABANDONED: %s",
             action.task_slug,
             error_detail or action.reason,
+        )
+        self._record_terminal_dispatch_run(
+            exit_event=WorkerExit(
+                task_slug=action.task_slug,
+                pane_slug=action.pane_slug or "runner",
+                exit_code=1,
+                output_dir="",
+                last_error=error_detail or action.reason or "shutdown",
+            ),
+            ctx=ctx,
+            state="abandoned",
         )
         emit_event(
             self.session_root,
@@ -1456,7 +1509,9 @@ class EventDagRunner:
             )
             return GovernorAction.FAIL
         if attempts < self.kernel.max_retries:
-            self._ctx(action.task_slug).attempts = attempts + 1
+            ctx = self._ctx(action.task_slug)
+            ctx.attempts = attempts + 1
+            ctx.retried_from_dispatch_run_id = ctx.current_dispatch_run_id
             logger.info(
                 "Task %s failed — retry %d/%d: %s",
                 action.task_slug,
@@ -1588,6 +1643,139 @@ class EventDagRunner:
         latest = max((records[dep] for dep in upstream), key=lambda record: record.ts)
         return latest.sha
 
+    def _effective_sop_set_hash(self) -> str:
+        """Hash the worker SOP bundle loaded for this dispatch."""
+        from dgov.sop_bundler import compute_sop_set_hash, load_sops
+
+        sops_dir = Path(self.session_root) / ".dgov" / "sops"
+        try:
+            effective_sops = load_sops(sops_dir)
+            return compute_sop_set_hash(effective_sops) if effective_sops else ""
+        except (FileNotFoundError, ValueError) as exc:
+            logger.warning("Effective SOP bundle could not be loaded at dispatch: %s", exc)
+            return ""
+
+    def _mint_dispatch_run(
+        self,
+        *,
+        task_slug: str,
+        wt: Worktree,
+        agent: str,
+        ctx: TaskContext,
+    ) -> DispatchRun:
+        effective_sop_set_hash = self._effective_sop_set_hash()
+        plan_hash = self.dag.sop_set_hash or None
+        retried_from = ctx.retried_from_dispatch_run_id
+        forked_from = ctx.forked_from_dispatch_run_id
+        dispatch_run = DispatchRun(
+            from_plan_id=self.dag.name,
+            unit_slug=task_slug,
+            worktree_id=str(wt.path),
+            branch=wt.branch,
+            base_commit=wt.commit,
+            agent_model=agent,
+            effective_sop_set_hash=effective_sop_set_hash,
+            drift_against_plan=(plan_hash is not None and plan_hash != effective_sop_set_hash),
+            drift_evidence=derive_drift_evidence(
+                plan_hash=plan_hash,
+                effective_hash=effective_sop_set_hash,
+            ),
+            retried_from=retried_from,
+            forked_from=forked_from,
+            retry_index=ctx.attempts if retried_from is not None else 0,
+            fork_depth=ctx.fork_depth if forked_from is not None else 0,
+            dispatched_by=self._dispatched_by,
+            dispatched_at=datetime.now(UTC),
+        ).start_active()
+        save_dispatch_run(self.session_root, dispatch_run)
+        ctx.current_dispatch_run_id = dispatch_run.id
+        ctx.retried_from_dispatch_run_id = None
+        ctx.forked_from_dispatch_run_id = None
+        return dispatch_run
+
+    def _record_terminal_dispatch_run(
+        self,
+        *,
+        exit_event: WorkerExit,
+        ctx: TaskContext,
+        state: str,
+    ) -> None:
+        prior = self._current_dispatch_run(ctx)
+        if prior is None:
+            return
+        terminal = self._complete_terminal_dispatch_run(
+            prior=prior,
+            exit_event=exit_event,
+            ctx=ctx,
+            state=state,
+            terminated_at=datetime.now(UTC),
+        )
+        save_dispatch_run(self.session_root, terminal)
+
+    def _current_dispatch_run(self, ctx: TaskContext) -> DispatchRun | None:
+        if ctx.current_dispatch_run_id is None:
+            return None
+        current_dispatch_run = get_dispatch_run(self.session_root, ctx.current_dispatch_run_id)
+        if current_dispatch_run is None:
+            return None
+        return _dispatch_run_from_row_dict(current_dispatch_run)
+
+    def _complete_terminal_dispatch_run(
+        self,
+        *,
+        prior: DispatchRun,
+        exit_event: WorkerExit,
+        ctx: TaskContext,
+        state: str,
+        terminated_at: datetime,
+    ) -> DispatchRun:
+        common: dict[str, Any] = {
+            "output_dir": exit_event.output_dir,
+            "prompt_tokens": ctx.prompt_tokens,
+            "completion_tokens": ctx.completion_tokens,
+            "iteration_count": ctx.call_count,
+            "terminated_at": terminated_at,
+        }
+        if state == "done":
+            return prior.complete_done(
+                exit_code=exit_event.exit_code,
+                **common,
+            )
+        if state == "timed_out":
+            return prior.complete_timed_out(
+                last_error=exit_event.last_error or self._ITERATION_EXHAUSTED_MARKER,
+                **common,
+            )
+        if state == "abandoned":
+            return prior.complete_abandoned(
+                last_error=exit_event.last_error or "Dispatch abandoned",
+                **common,
+            )
+        return prior.complete_failed(
+            exit_code=exit_event.exit_code,
+            last_error=exit_event.last_error or f"Worker exited with code {exit_event.exit_code}",
+            **common,
+        )
+
+    def _dispatch_terminal_state(
+        self,
+        exit_event: WorkerExit,
+        *,
+        will_fork: bool,
+    ) -> DispatchRunState:
+        if exit_event.exit_code == 0:
+            return "done"
+        error = exit_event.last_error or ""
+        error_lower = error.lower()
+        if (
+            will_fork
+            or self._ITERATION_EXHAUSTED_MARKER in error
+            or "timed out after" in error_lower
+            or "wall-clock timeout" in error_lower
+        ):
+            return "timed_out"
+        return "failed"
+
     async def _dispatch(self, action: DispatchTask) -> list[DagAction]:
         """Dispatch task to Atomic Headless Worker (Pillar #2)."""
         task = self.dag.tasks[action.task_slug]
@@ -1607,6 +1795,12 @@ class EventDagRunner:
             self._pending_dispatches.add(action.task_slug)
             ctx.start_time = time.time()
             task_scope = self._task_scope_payload(action.task_slug, task, pane_slug)
+            self._mint_dispatch_run(
+                task_slug=action.task_slug,
+                wt=wt,
+                agent=agent,
+                ctx=ctx,
+            )
             self._record_dispatch_artifact(action, task, wt, prompt, agent)
             kernel_actions = self.kernel.handle(TaskDispatched(action.task_slug, pane_slug))
             self._emit_task_dispatched(action, pane_slug, agent)
@@ -1806,6 +2000,17 @@ class EventDagRunner:
         logger.error("Dispatch failed for %s after worktree creation: %s", task_slug, exc)
         ctx.error = str(exc)
         self._pending_dispatches.discard(task_slug)
+        self._record_terminal_dispatch_run(
+            exit_event=WorkerExit(
+                task_slug=task_slug,
+                pane_slug=ctx.pane_slug or "dispatch",
+                exit_code=1,
+                output_dir="",
+                last_error=str(exc),
+            ),
+            ctx=ctx,
+            state="failed",
+        )
         try:
             await asyncio.to_thread(remove_worktree, self.session_root, wt)
         except Exception as cleanup_exc:

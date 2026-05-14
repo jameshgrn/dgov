@@ -7,6 +7,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import NamedTuple
 
+from dgov.dispatch_run import DispatchRun, DispatchRunState, WatermasterId
+
 
 class ConstitutionalViolation(ValueError):
     """Raised when a plan unit violates department ownership boundaries.
@@ -61,3 +63,14 @@ class Worktree(NamedTuple):
     path: Path
     branch: str
     commit: str
+
+
+__all__ = [
+    "ConstitutionalViolation",
+    "DispatchRun",
+    "DispatchRunState",
+    "TaskState",
+    "WatermasterId",
+    "WorkerExit",
+    "Worktree",
+]

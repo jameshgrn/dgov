@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from dgov.persistence.schema import (
+    _CREATE_DISPATCH_RUNS_TABLE_SQL,
     _CREATE_EVENTS_TABLE_SQL,
     _CREATE_TABLE_SQL,
     state_path,
@@ -54,6 +55,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
 
     conn.execute(_CREATE_TABLE_SQL)
     conn.execute(_CREATE_EVENTS_TABLE_SQL)
+    conn.execute(_CREATE_DISPATCH_RUNS_TABLE_SQL)
     conn.execute(_CREATE_SLUG_HISTORY_TABLE_SQL)
     conn.execute(_CREATE_LEDGER_TABLE_SQL)
 
