@@ -1,0 +1,61 @@
+[tasks.telemetry]
+summary = "Split plan review integration telemetry rendering into focused helpers."
+prompt = """
+## Orient
+
+Reduce the Sentrux complexity of `src/dgov/cli/plan.py`'
+`_render_integration_telemetry` without changing human or JSON plan review
+output.
+
+Read first:
+- `src/dgov/cli/plan.py`, especially `_render_deployed_unit`,
+  `_render_failed_unit`, `_render_active_unit`, `_render_integration_telemetry`,
+  `_render_path_list`, and `_render_multiline_field`.
+- `tests/test_cli_plan_review.py::test_review_renders_semantic_evidence_from_event_log`
+- `tests/test_cli.py::TestReviewIntegrationTelemetry`
+- `tests/test_boundaries.py` because this task touches `src/`.
+
+Do NOT:
+- Change labels, spacing, colors, or omission behavior in plan review output.
+- Change JSON output.
+- Change `UnitReview` or plan review rollup logic.
+- Touch files outside the claimed set.
+
+## Edit
+
+1. In `src/dgov/cli/plan.py`, split `_render_integration_telemetry` into
+   focused private helpers for the independent display decisions:
+   - risk/overlap line
+   - claimed/changed path lists
+   - candidate result
+   - gate/error/evidence details
+2. Keep `_render_integration_telemetry(unit)` as the single call site used by
+   deployed, failed, and active unit renderers.
+3. Preserve exact text for existing assertions:
+   - `risk=<level>, overlap detected`
+   - `integration  overlap detected`
+   - `candidate    passed`
+   - `candidate    <failure_class>`
+   - `gate         <gate_name>`
+   - `reason      `
+   - `evidence    `
+
+## Verify
+
+Run:
+
+```
+uv run pytest -q tests/test_cli_plan_review.py::test_review_renders_semantic_evidence_from_event_log tests/test_cli.py::TestReviewIntegrationTelemetry tests/test_boundaries.py
+uv run ruff check src/dgov/cli/plan.py tests/test_cli_plan_review.py tests/test_cli.py tests/test_boundaries.py
+uv run ty check src/dgov/cli/plan.py
+uv run dgov sentrux offenders
+```
+
+The first three commands must pass. For `dgov sentrux offenders`, confirm
+`src/dgov/cli/plan.py:1230 _render_integration_telemetry` no longer appears as
+a complex function or cognitive hotspot.
+"""
+commit_message = "Reduce plan review telemetry complexity"
+files.edit = ["src/dgov/cli/plan.py"]
+files.read = ["tests/test_cli_plan_review.py", "tests/test_cli.py", "tests/test_boundaries.py"]
+self_review = true
