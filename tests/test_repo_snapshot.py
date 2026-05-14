@@ -70,3 +70,14 @@ def test_likely_structural_offenders_reports_long_and_complex_functions(tmp_path
     assert report["long_functions"]
     assert "hotspot.py" in text
     assert "hotspot" in text
+
+
+def test_format_structural_offender_report_renders_empty_state() -> None:
+    text = format_structural_offender_report({
+        "commit_sha": "abcdef1234567890",
+        "long_functions": [],
+        "complex_functions": [],
+        "cog_complex_functions": [],
+    })
+
+    assert text == "No structural offenders found at abcdef123456."

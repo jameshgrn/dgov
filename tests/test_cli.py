@@ -723,6 +723,20 @@ def test_sentrux_gate_prints_structural_offender_report_on_degradation(
     assert "Likely structural offenders:" in result.output
 
 
+def test_sentrux_offenders_reports_clean_empty_state(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "dgov.cli.sentrux._structural_offender_report",
+        lambda target: "No structural offenders found at abcdef123456.",
+    )
+
+    result = runner.invoke(cli, ["sentrux", "offenders"])
+
+    assert result.exit_code == 0
+    assert result.output == "No structural offenders found at abcdef123456.\n"
+
+
 def test_sentrux_gate_treats_degraded_output_as_degradation(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
