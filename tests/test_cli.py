@@ -359,6 +359,36 @@ def test_status_treats_run_completed_as_terminal(
     assert "stale-task" not in result.output
 
 
+def test_status_all_marks_unterminated_completed_run_stale(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-stale",
+        plan_name="plan-a",
+        task_slug="stale-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "run_completed",
+        "run-plan",
+        plan_name="plan-a",
+        run_status="degraded",
+    )
+
+    result = runner.invoke(cli, ["status", "--all"])
+
+    assert result.exit_code == 0
+    assert "status: idle" in result.output
+    assert "active: 0" in result.output
+    assert "stale-task" in result.output
+    assert "stale" in result.output
+    assert "active          stale-task" not in result.output
+
+
 def test_status_hides_reviewed_failure_by_default(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

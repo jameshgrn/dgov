@@ -72,6 +72,42 @@ def test_tasks_from_events_all_history_keeps_latest_state_per_task(tmp_path: Pat
     assert tasks == [{"slug": "task-a", "state": "merged", "plan_name": "plan-a"}]
 
 
+def test_tasks_from_events_all_history_marks_unterminated_completed_run_stale(
+    tmp_path: Path,
+) -> None:
+    """Historical output must not describe completed plan activity as still active."""
+    emit_event(str(tmp_path), "run_start", "run-a-1", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="task-a",
+    )
+    emit_event(str(tmp_path), "run_completed", "run-a-1", plan_name="plan-a")
+
+    tasks = tasks_from_events(str(tmp_path), latest_run_only=False)
+
+    assert tasks == [{"slug": "task-a", "state": "stale", "plan_name": "plan-a"}]
+
+
+def test_tasks_from_events_all_history_marks_superseded_run_stale(tmp_path: Path) -> None:
+    """A newer run boundary supersedes unterminated historical task state."""
+    emit_event(str(tmp_path), "run_start", "run-a-1", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="task-a",
+    )
+    emit_event(str(tmp_path), "run_start", "run-a-2", plan_name="plan-a")
+
+    tasks = tasks_from_events(str(tmp_path), latest_run_only=False)
+
+    assert tasks == [{"slug": "task-a", "state": "stale", "plan_name": "plan-a"}]
+
+
 def test_live_plan_names_ignores_stale_prior_runs(tmp_path: Path) -> None:
     """A newer run_start with no activity should hide active tasks from an older run."""
     emit_event(str(tmp_path), "run_start", "run-a-1", plan_name="plan-a")

@@ -34,6 +34,11 @@ TERMINAL_STATES = frozenset({
     "skipped",
 })
 
+PLAN_BOUNDARY_EVENTS = frozenset({
+    "run_start",
+    "run_completed",
+})
+
 _EVENT_STATE_MAP = {
     "dag_task_dispatched": "active",
     "task_done": "done",
@@ -116,6 +121,19 @@ def latest_run_completed_ids(events: list[dict]) -> dict[str, int]:
     return latest
 
 
+def latest_plan_boundary_ids(events: list[dict]) -> dict[str, int]:
+    """Return the latest plan-level boundary id for each plan in the event log."""
+    latest: dict[str, int] = {}
+    for event in events:
+        if event.get("event") not in PLAN_BOUNDARY_EVENTS:
+            continue
+        plan_name = event.get("plan_name")
+        if not plan_name:
+            continue
+        latest[str(plan_name)] = max(latest.get(str(plan_name), 0), _event_id(event))
+    return latest
+
+
 def _event_is_in_latest_run_window(
     event: dict,
     *,
@@ -171,6 +189,100 @@ def _apply_task_phases(
             task_statuses[key]["phase"] = phase
 
 
+def _mark_stale_historical_tasks(
+    task_statuses: dict[tuple[str, str], dict[str, str]],
+    task_phases: dict[tuple[str, str], str],
+    task_event_ids: dict[tuple[str, str], int],
+    latest_boundary_ids: dict[str, int],
+) -> None:
+    for key, task in task_statuses.items():
+        if task.get("state") not in LIVE_STATES:
+            continue
+
+        plan_name, _task_slug = key
+        if latest_boundary_ids.get(plan_name, 0) <= task_event_ids.get(key, 0):
+            continue
+
+        task["state"] = "stale"
+        task.pop("phase", None)
+        task_phases.pop(key, None)
+
+
+def _task_event_in_scope(
+    event: dict,
+    *,
+    latest_run_only: bool,
+    latest_run_ids: dict[str, int],
+    latest_completed_ids: dict[str, int],
+) -> bool:
+    return not latest_run_only or _event_is_in_latest_run_window(
+        event,
+        latest_run_ids=latest_run_ids,
+        latest_completed_ids=latest_completed_ids,
+    )
+
+
+def _record_task_event(
+    event: dict,
+    key: tuple[str, str],
+    task_statuses: dict[tuple[str, str], dict[str, str]],
+    task_phases: dict[tuple[str, str], str],
+    task_event_ids: dict[tuple[str, str], int],
+) -> None:
+    task_event_ids[key] = _event_id(event)
+    state = state_from_event(event)
+    if state is not None:
+        _record_task_state(task_statuses, task_phases, key, state)
+    _record_task_phase(task_phases, key, event)
+
+
+def _collect_task_statuses(
+    events: list[dict],
+    *,
+    latest_run_only: bool,
+    latest_run_ids: dict[str, int],
+    latest_completed_ids: dict[str, int],
+) -> tuple[
+    dict[tuple[str, str], dict[str, str]],
+    dict[tuple[str, str], str],
+    dict[tuple[str, str], int],
+]:
+    task_statuses: dict[tuple[str, str], dict[str, str]] = {}
+    task_phases: dict[tuple[str, str], str] = {}
+    task_event_ids: dict[tuple[str, str], int] = {}
+    for event in events:
+        key = _task_key(event)
+        if key is None:
+            continue
+        if not _task_event_in_scope(
+            event,
+            latest_run_only=latest_run_only,
+            latest_run_ids=latest_run_ids,
+            latest_completed_ids=latest_completed_ids,
+        ):
+            continue
+        _record_task_event(event, key, task_statuses, task_phases, task_event_ids)
+    return task_statuses, task_phases, task_event_ids
+
+
+def _finalize_task_statuses(
+    events: list[dict],
+    task_statuses: dict[tuple[str, str], dict[str, str]],
+    task_phases: dict[tuple[str, str], str],
+    task_event_ids: dict[tuple[str, str], int],
+    *,
+    latest_run_only: bool,
+) -> None:
+    _apply_task_phases(task_statuses, task_phases)
+    if not latest_run_only:
+        _mark_stale_historical_tasks(
+            task_statuses,
+            task_phases,
+            task_event_ids,
+            latest_plan_boundary_ids(events),
+        )
+
+
 def tasks_from_events(project_root: str, *, latest_run_only: bool) -> list[dict[str, str]]:
     """Build task snapshots from lifecycle events instead of mutable task rows.
 
@@ -183,27 +295,19 @@ def tasks_from_events(project_root: str, *, latest_run_only: bool) -> list[dict[
 
     latest_run_ids = latest_run_start_ids(events) if latest_run_only else {}
     latest_completed_ids = latest_run_completed_ids(events) if latest_run_only else {}
-    task_statuses: dict[tuple[str, str], dict[str, str]] = {}
-    task_phases: dict[tuple[str, str], str] = {}
-
-    for event in events:
-        key = _task_key(event)
-        if key is None:
-            continue
-        if latest_run_only and not _event_is_in_latest_run_window(
-            event,
-            latest_run_ids=latest_run_ids,
-            latest_completed_ids=latest_completed_ids,
-        ):
-            continue
-
-        state = state_from_event(event)
-        if state is not None:
-            _record_task_state(task_statuses, task_phases, key, state)
-
-        _record_task_phase(task_phases, key, event)
-
-    _apply_task_phases(task_statuses, task_phases)
+    task_statuses, task_phases, task_event_ids = _collect_task_statuses(
+        events,
+        latest_run_only=latest_run_only,
+        latest_run_ids=latest_run_ids,
+        latest_completed_ids=latest_completed_ids,
+    )
+    _finalize_task_statuses(
+        events,
+        task_statuses,
+        task_phases,
+        task_event_ids,
+        latest_run_only=latest_run_only,
+    )
 
     return sorted(
         task_statuses.values(),
