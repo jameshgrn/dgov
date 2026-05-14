@@ -1,0 +1,31 @@
+[tasks.extract-scope-rendering]
+summary = "Extract shared scope status text rendering helpers."
+prompt = """
+Orient:
+1. Read `src/dgov/scope_status.py`, `src/dgov/cli/scope.py`, and `src/dgov/workers/atomic.py` before editing.
+2. The goal is to reduce complexity in `AtomicTools._format_scope_status` and `dgov.cli.scope._render_scope_text` without changing scope analysis behavior.
+3. Keep `analyze_scope_status` as the authoritative analysis function; do not move git status collection or CLI option parsing into the analysis layer.
+4. Preserve existing human output labels unless the existing tests require a small adjustment for shared formatting.
+
+Edit:
+1. In `src/dgov/scope_status.py`, add small pure formatting helpers for path collections and human-readable scope status lines.
+2. Update `src/dgov/cli/scope.py` so `_render_scope_text` delegates to the shared helper and only handles click output/styling.
+3. Update `src/dgov/workers/atomic.py` so `AtomicTools._format_scope_status` delegates to the shared helper.
+4. Keep JSON output unchanged.
+5. Add or adjust focused assertions in `tests/test_scope_status.py` or `tests/test_cli_scope.py` only if needed to lock the shared rendering contract.
+
+Verify:
+1. Run `uv run pytest -q tests/test_scope_status.py tests/test_cli_scope.py`.
+2. Run `uv run ruff check src/dgov/scope_status.py src/dgov/cli/scope.py src/dgov/workers/atomic.py tests/test_scope_status.py tests/test_cli_scope.py`.
+3. Run `uv run ruff format --check src/dgov/scope_status.py src/dgov/cli/scope.py src/dgov/workers/atomic.py tests/test_scope_status.py tests/test_cli_scope.py`.
+"""
+commit_message = "Share scope status rendering"
+files.edit = [
+  "src/dgov/scope_status.py",
+  "src/dgov/cli/scope.py",
+  "src/dgov/workers/atomic.py",
+  "tests/test_scope_status.py",
+  "tests/test_cli_scope.py",
+]
+test_cmd = "uv run pytest -q tests/test_scope_status.py tests/test_cli_scope.py"
+

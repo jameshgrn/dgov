@@ -1,0 +1,5 @@
+[plan]
+name = "scope-status-rendering-cleanup"
+summary = "Share scope status text formatting across CLI and worker tool output."
+sections = ["tasks"]
+
