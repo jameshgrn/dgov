@@ -714,6 +714,21 @@ def _init_cli_git_repo(tmp_path: Path) -> str:
     ).stdout.strip()
 
 
+def _commit_cli_sentrux_baseline(tmp_path: Path) -> str:
+    sentrux_dir = tmp_path / ".sentrux"
+    sentrux_dir.mkdir()
+    (sentrux_dir / "baseline.json").write_text('{"quality": 1}\n')
+    subprocess.run(["git", "add", ".sentrux/baseline.json"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "save baseline"], cwd=tmp_path, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
 def _mock_sentrux_gate_save(
     tmp_path: Path,
     *,
@@ -728,7 +743,7 @@ def _mock_sentrux_gate_save(
         if assert_canonical_target:
             assert args == ["gate", "--save", str(tmp_path.resolve())]
         sentrux_dir = tmp_path / ".sentrux"
-        sentrux_dir.mkdir()
+        sentrux_dir.mkdir(exist_ok=True)
         (sentrux_dir / "baseline.json").write_text('{"quality": 42}\n')
         return subprocess.CompletedProcess(
             ["sentrux", *args], 0, stdout="Quality: 42\n", stderr=""
@@ -742,7 +757,8 @@ def test_sentrux_gate_save_records_dgov_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    head = _init_cli_git_repo(tmp_path)
+    _init_cli_git_repo(tmp_path)
+    head = _commit_cli_sentrux_baseline(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("dgov.cli.sentrux.sentrux_available", lambda: True)
     monkeypatch.setattr(

@@ -168,7 +168,7 @@ def _has_non_baseline_worktree_changes(root: Path) -> bool:
 
 
 def _status_path(line: str) -> str:
-    path = line[3:]
+    path = line[2:].strip()
     if " -> " in path:
         path = path.split(" -> ", 1)[1]
     return path
