@@ -15,6 +15,77 @@ system level. Workers may be probabilistic. Governance should not be.
 - Respect file claims. A task must only edit files it explicitly claims.
 - Prefer explicit contracts over clever prompts.
 - Fail closed. If structure or scope is unclear, stop and fix the plan.
+- Project-specific build, test, runtime, platform, data, CI, secrets, and
+  convention policy lives in the target repo's `.dgov/project.toml`,
+  `.dgov/sops/`, or repo scripts. Core dgov owns generic hooks, diagnostics,
+  and scope enforcement; it does not hardcode target-project wrappers. See
+  `.dgov/sops/project-extensions.md`.
+
+## Governor Invocation
+
+When operator direction is ambiguous, classify the work before dispatching.
+Classification is the governor's job; workers should not infer it from
+scattered policy.
+
+### Intent classes
+
+| Class | Distinguishing question | Next action |
+|-------|------------------------|-------------|
+| Implementation | Does the operator want product or code behavior to change? | Write a normal plan with explicit file claims and targeted verification. |
+| Governance repair | Are this repo's `.dgov/` files, plan state, or core dgov code wrong? | Plan against `.dgov/` or `src/dgov/`. |
+| Project policy | Is the blocker in a target repo's `.dgov/project.toml`, `.dgov/sops/`, or repo scripts? | Update that project's policy surfaces; do not change core dgov. |
+| Durable memory | Should a learned rule, bug, decision, or debt outlive this session? | Record it in the ledger; if operational, promote it into this charter or an SOP. |
+
+When implementation and governance-repair both apply, do governance-repair
+first; the implementation plan inherits the corrected state.
+
+If context risk is becoming the primary failure mode, write or refresh the
+handover before dispatching more work. Do not invent new implementation scope
+to fill a stale session.
+
+### Failure-to-task catalog
+
+Each entry maps observable evidence to a typed next task. Use these when a
+run ends in a known failure shape.
+
+**archive_policy_drift**
+- Evidence: `git check-ignore .dgov/plans/archive/<plan>/_root.toml` matches
+  a `.gitignore` rule.
+- Class: Project policy (target repo).
+- Next action: Edit the target repo's `.dgov/.gitignore` so durable plan
+  archives are trackable; retry the finalization path.
+- Do not: Rerun the landed worker task to recover bookkeeping. Worker-task
+  completion and governor finalization are separate states.
+
+**verify_recipe_missing**
+- Evidence: The same toolchain command appears in multiple task prompts, or a
+  worker fails because setup/lint/test invocation is ambiguous or repo-local.
+- Class: Project policy.
+- Next action: Add a `[verify.<name>]` recipe in `.dgov/project.toml` or a
+  repo script; reference it by name from prompts.
+- Do not: Add a language- or platform-specific wrapper to core dgov.
+
+**plan_claims_violation**
+- Evidence: Settlement rejects for scope; the worker edited a file outside
+  its claims.
+- Class: Governance repair.
+- Next action: Fix the plan's file claims or decompose the task; re-run.
+- Do not: Brute-force retry the same plan. Scope violations are terminal.
+
+**guidance_drift**
+- Evidence: A failure points at advice that is missing, contradictory, or
+  out of date in `.dgov/governor.md` or `.dgov/sops/`.
+- Class: Governance repair.
+- Next action: Update the SOP or charter section first; then dispatch the
+  implementation work.
+- Do not: Repeat the guidance inside a single task prompt.
+
+### Updating this catalog
+
+When a ledger entry of class `rule` or `pattern` describes a recurring failure
+shape, add or revise the matching catalog entry in the same change. The catalog
+is the governor-facing index into durable memory; if the ledger learns
+something this section does not, the index has drifted.
 
 ## Planning Rules
 
