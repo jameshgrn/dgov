@@ -276,6 +276,7 @@ from dgov.cli import (  # noqa: E402
     clean as clean,
     compile as compile,
     coverage as coverage,
+    diagnose as diagnose,
     fix as fix,
     init as init,
     ledger as ledger,
