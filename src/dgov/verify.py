@@ -36,6 +36,46 @@ class VerifyRunResult:
     results: tuple[VerifyCommandResult, ...]
 
 
+_KNOWN_FIELDS = {"command", "description", "log_name", "parser"}
+
+
+def _require_string(section: Mapping[str, Any], name: str, field: str) -> str:
+    value = section.get(field)
+    if not value or not isinstance(value, str):
+        raise ValueError(
+            f"verify recipe {name!r}: '{field}' is required and must be a non-empty string"
+        )
+    return value
+
+
+def _optional_string(section: Mapping[str, Any], name: str, field: str) -> str | None:
+    value = section.get(field)
+    if value is not None and not isinstance(value, str):
+        raise ValueError(f"verify recipe {name!r}: '{field}' must be a string")
+    return value
+
+
+def _reject_unknown_fields(section: Mapping[str, Any], name: str) -> None:
+    for key in section:
+        if key not in _KNOWN_FIELDS:
+            raise ValueError(f"verify recipe {name!r}: unknown field {key!r}")
+
+
+def _recipe_from_section(name: str, section: Mapping[str, Any]) -> VerifyRecipe:
+    command = _require_string(section, name, "command")
+    _reject_unknown_fields(section, name)
+    description = _optional_string(section, name, "description")
+    log_name = _optional_string(section, name, "log_name")
+    parser = _optional_string(section, name, "parser")
+    return VerifyRecipe(
+        name=name,
+        command=command,
+        description=description,
+        log_name=log_name,
+        parser=parser,
+    )
+
+
 def load_verify_recipes(raw: Mapping[str, Any]) -> dict[str, VerifyRecipe]:
     """Load verification recipes from raw project.toml data.
 
@@ -47,41 +87,10 @@ def load_verify_recipes(raw: Mapping[str, Any]) -> dict[str, VerifyRecipe]:
         return {}
 
     recipes: dict[str, VerifyRecipe] = {}
-    known_fields = {"command", "description", "log_name", "parser"}
-
     for name, section in verify_section.items():
         if not isinstance(section, dict):
             continue
-
-        command = section.get("command")
-        if not command or not isinstance(command, str):
-            raise ValueError(
-                f"verify recipe {name!r}: 'command' is required and must be a non-empty string"
-            )
-
-        for key in section:
-            if key not in known_fields:
-                raise ValueError(f"verify recipe {name!r}: unknown field {key!r}")
-
-        description = section.get("description")
-        if description is not None and not isinstance(description, str):
-            raise ValueError(f"verify recipe {name!r}: 'description' must be a string")
-
-        log_name = section.get("log_name")
-        if log_name is not None and not isinstance(log_name, str):
-            raise ValueError(f"verify recipe {name!r}: 'log_name' must be a string")
-
-        parser = section.get("parser")
-        if parser is not None and not isinstance(parser, str):
-            raise ValueError(f"verify recipe {name!r}: 'parser' must be a string")
-
-        recipes[name] = VerifyRecipe(
-            name=name,
-            command=command,
-            description=description,
-            log_name=log_name,
-            parser=parser,
-        )
+        recipes[name] = _recipe_from_section(name, section)
 
     return recipes
 
