@@ -145,22 +145,116 @@ def assess_sentrux_gate(
     stale_days: int,
 ) -> SentruxGateAssessment:
     baseline_age = sentrux_baseline_age(project_root, baseline_path)
-    current_report: dict[str, object] | None = None
-    new_offenders: tuple[SentruxOffender, ...] = ()
-    preexisting_offenders: tuple[SentruxOffender, ...] = ()
 
     clean_return = sentrux_returncode == 0 and not sentrux_output_degraded(sentrux_output)
     if clean_return or sentrux_is_warn_only(sentrux_output):
-        return SentruxGateAssessment(
-            should_fail=False,
-            warning=None,
-            error=None,
+        return _gate_assessment(should_fail=False, baseline_age=baseline_age)
+
+    current_report, new_offenders, preexisting_offenders = _diff_sentrux_offenders(
+        scan_root=scan_root,
+        project_root=project_root,
+        base_ref=base_ref,
+        changed_files=changed_files,
+    )
+
+    if _assessment_should_fail(mode, new_offenders):
+        return _failed_gate_assessment(
+            sentrux_output=sentrux_output,
+            baseline_age=baseline_age,
             new_offenders=new_offenders,
             preexisting_offenders=preexisting_offenders,
             current_report=current_report,
-            baseline_age=baseline_age,
         )
 
+    return _advisory_gate_assessment(
+        baseline_age=baseline_age,
+        new_offenders=new_offenders,
+        preexisting_offenders=preexisting_offenders,
+        current_report=current_report,
+        stale_commits=stale_commits,
+        stale_days=stale_days,
+    )
+
+
+def _assessment_should_fail(mode: str, new_offenders: Sequence[SentruxOffender]) -> bool:
+    return mode == "strict" or any(offender.hard for offender in new_offenders)
+
+
+def _failed_gate_assessment(
+    *,
+    sentrux_output: str,
+    baseline_age: SentruxBaselineAge,
+    new_offenders: tuple[SentruxOffender, ...],
+    preexisting_offenders: tuple[SentruxOffender, ...],
+    current_report: dict[str, object] | None,
+) -> SentruxGateAssessment:
+    error = _format_degradation_error(
+        sentrux_output,
+        baseline_age,
+        new_offenders,
+        preexisting_offenders,
+    )
+    return _gate_assessment(
+        should_fail=True,
+        error=error,
+        new_offenders=new_offenders,
+        preexisting_offenders=preexisting_offenders,
+        current_report=current_report,
+        baseline_age=baseline_age,
+    )
+
+
+def _advisory_gate_assessment(
+    *,
+    baseline_age: SentruxBaselineAge,
+    new_offenders: tuple[SentruxOffender, ...],
+    preexisting_offenders: tuple[SentruxOffender, ...],
+    current_report: dict[str, object] | None,
+    stale_commits: int,
+    stale_days: int,
+) -> SentruxGateAssessment:
+    return _gate_assessment(
+        should_fail=False,
+        warning=_stale_baseline_warning(
+            baseline_age,
+            stale_commits=stale_commits,
+            stale_days=stale_days,
+        ),
+        new_offenders=new_offenders,
+        preexisting_offenders=preexisting_offenders,
+        current_report=current_report,
+        baseline_age=baseline_age,
+    )
+
+
+def _gate_assessment(
+    *,
+    should_fail: bool,
+    baseline_age: SentruxBaselineAge,
+    warning: str | None = None,
+    error: str | None = None,
+    new_offenders: tuple[SentruxOffender, ...] = (),
+    preexisting_offenders: tuple[SentruxOffender, ...] = (),
+    current_report: dict[str, object] | None = None,
+) -> SentruxGateAssessment:
+    return SentruxGateAssessment(
+        should_fail=should_fail,
+        warning=warning,
+        error=error,
+        new_offenders=new_offenders,
+        preexisting_offenders=preexisting_offenders,
+        current_report=current_report,
+        baseline_age=baseline_age,
+    )
+
+
+def _diff_sentrux_offenders(
+    *,
+    scan_root: Path,
+    project_root: Path,
+    base_ref: str | None,
+    changed_files: Sequence[str],
+) -> tuple[dict[str, object] | None, tuple[SentruxOffender, ...], tuple[SentruxOffender, ...]]:
     current_report = _current_offender_report(scan_root, project_root)
     baseline_report = _offender_report_at_ref(project_root, base_ref) if base_ref else None
     current_offenders = _offenders_from_reports(current_report, _current_sentrux_json(scan_root))
@@ -177,42 +271,21 @@ def assess_sentrux_gate(
         changed_files=changed_files,
         changed_lines=changed_lines,
     )
+    return current_report, new_offenders, preexisting_offenders
 
-    strict_mode = mode == "strict"
-    hard_new_offenders = tuple(offender for offender in new_offenders if offender.hard)
-    if strict_mode or hard_new_offenders:
-        error = _format_degradation_error(
-            sentrux_output,
-            baseline_age,
-            new_offenders,
-            preexisting_offenders,
-        )
-        return SentruxGateAssessment(
-            should_fail=True,
-            warning=None,
-            error=error,
-            new_offenders=new_offenders,
-            preexisting_offenders=preexisting_offenders,
-            current_report=current_report,
-            baseline_age=baseline_age,
-        )
 
-    warning = None
-    if baseline_age.stale(commit_threshold=stale_commits, day_threshold=stale_days):
-        warning = (
-            "WARNING: Sentrux baseline is stale "
-            f"({baseline_age.describe()}); no diff-attributable structural offenders "
-            "were found. Run `dgov sentrux gate-save` if this drift is intentional."
-        )
-
-    return SentruxGateAssessment(
-        should_fail=False,
-        warning=warning,
-        error=None,
-        new_offenders=new_offenders,
-        preexisting_offenders=preexisting_offenders,
-        current_report=current_report,
-        baseline_age=baseline_age,
+def _stale_baseline_warning(
+    baseline_age: SentruxBaselineAge,
+    *,
+    stale_commits: int,
+    stale_days: int,
+) -> str | None:
+    if not baseline_age.stale(commit_threshold=stale_commits, day_threshold=stale_days):
+        return None
+    return (
+        "WARNING: Sentrux baseline is stale "
+        f"({baseline_age.describe()}); no diff-attributable structural offenders "
+        "were found. Run `dgov sentrux gate-save` if this drift is intentional."
     )
 
 

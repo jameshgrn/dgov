@@ -100,6 +100,29 @@ def _count_warnings(text: str) -> int:
     return sum(1 for line in text.splitlines() if "warning" in line.lower())
 
 
+def _execute_verify_command(
+    root: Path,
+    recipe: VerifyRecipe,
+    timeout: float,
+) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(
+            recipe.command,
+            shell=True,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode, proc.stdout + proc.stderr
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        return -1, stdout + stderr + f"\n[verify] timed out after {timeout}s\n"
+    except OSError as exc:
+        return -1, f"\n[verify] failed to execute: {exc}\n"
+
+
 def _run_single(
     root: Path,
     recipe: VerifyRecipe,
@@ -110,26 +133,7 @@ def _run_single(
     log_file = log_dir / (recipe.log_name or f"{recipe.name}.log")
 
     start = time.monotonic()
-    try:
-        proc = subprocess.run(
-            recipe.command,
-            shell=True,
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        exit_code = proc.returncode
-        output = proc.stdout + proc.stderr
-    except subprocess.TimeoutExpired as exc:
-        exit_code = -1
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-        output = stdout + stderr + f"\n[verify] timed out after {timeout}s\n"
-    except OSError as exc:
-        exit_code = -1
-        output = f"\n[verify] failed to execute: {exc}\n"
-
+    exit_code, output = _execute_verify_command(root, recipe, timeout)
     duration = time.monotonic() - start
     log_file.write_text(output, encoding="utf-8")
     warning_count = _count_warnings(output)

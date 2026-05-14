@@ -85,6 +85,36 @@ def _lifecycle(
     return base
 
 
+def _symbol_overlap_payload() -> dict:
+    return {
+        "_kind": "SymbolOverlap",
+        "symbol_name": "foo",
+        "symbol_type": "function",
+        "file_path": "src/a.py",
+        "task_line_range": None,
+        "target_line_range": None,
+    }
+
+
+def _integration_risk_review_events() -> list[dict]:
+    return [
+        _worker_log(1, "t", "call", {"tool": "edit_file"}),
+        _lifecycle(
+            2,
+            "integration_risk_scored",
+            "t",
+            "p",
+            risk_level="high",
+            python_overlap_detected=True,
+            claimed_files=["src/a.py"],
+            changed_files=["src/a.py"],
+            overlap_evidence=[_symbol_overlap_payload()],
+        ),
+        _lifecycle(3, "integration_candidate_passed", "t", "p", passed=True),
+        _lifecycle(4, "merge_completed", "t", "p", merge_sha="abc123"),
+    ]
+
+
 def _event_reader(events: list[dict]):
     def _fake_read_events(session_root, **kwargs):
         plan_name = kwargs.get("plan_name")
@@ -1076,31 +1106,7 @@ class TestIntegrationRiskTelemetry:
     def test_build_unit_review_includes_integration_fields(self, tmp_path: Path):
         """UnitReview should include integration fields when events present."""
         deploy = _FakeDeploy(plan="p", unit="t", sha="abc123", ts="2026-04-10T12:00:00Z")
-        events = [
-            _worker_log(1, "t", "call", {"tool": "edit_file"}),
-            _lifecycle(
-                2,
-                "integration_risk_scored",
-                "t",
-                "p",
-                risk_level="high",
-                python_overlap_detected=True,
-                claimed_files=["src/a.py"],
-                changed_files=["src/a.py"],
-                overlap_evidence=[
-                    {
-                        "_kind": "SymbolOverlap",
-                        "symbol_name": "foo",
-                        "symbol_type": "function",
-                        "file_path": "src/a.py",
-                        "task_line_range": None,
-                        "target_line_range": None,
-                    }
-                ],
-            ),
-            _lifecycle(3, "integration_candidate_passed", "t", "p", passed=True),
-            _lifecycle(4, "merge_completed", "t", "p", merge_sha="abc123"),
-        ]
+        events = _integration_risk_review_events()
         with (
             patch("dgov.plan_review._git_show_message", return_value="feat: x"),
             patch("dgov.plan_review._git_show_stat", return_value=None),

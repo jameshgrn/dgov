@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import click
@@ -13,6 +15,12 @@ from dgov.config import load_project_config
 from dgov.plan import parse_plan_file
 from dgov.project_root import resolve_project_root
 from dgov.scope_status import ScopeStatus, analyze_scope_status, render_scope_status_lines
+
+
+@dataclass(frozen=True)
+class _ScopeClaims:
+    writable: list[str]
+    read_only: list[str]
 
 
 def _get_actual_files(project_root: str) -> frozenset[str] | None:
@@ -88,6 +96,56 @@ def _render_scope_json(status: ScopeStatus) -> None:
     click.echo(json.dumps(payload, indent=2))
 
 
+def _resolve_scope_claims(
+    *,
+    plan: Path | None,
+    task: str,
+    claim: tuple[str, ...],
+    read_files: tuple[str, ...],
+) -> _ScopeClaims:
+    if plan is not None:
+        return _resolve_plan_scope_claims(plan, task)
+    if not claim:
+        click.echo("Error: --plan or at least one --claim is required", err=True)
+        raise click.exceptions.Exit(code=1)
+    return _ScopeClaims(writable=list(claim), read_only=list(read_files))
+
+
+def _resolve_plan_scope_claims(plan: Path, task: str) -> _ScopeClaims:
+    from dgov.cli.plan import resolve_plan_input
+
+    plan_file, _plan_dir = resolve_plan_input(plan)
+    if not plan_file.exists():
+        click.echo(f"Error: plan file not found: {plan_file}", err=True)
+        raise click.exceptions.Exit(code=1)
+    writable, read_only = _load_task_claims(plan_file, task)
+    return _ScopeClaims(writable=writable, read_only=read_only)
+
+
+def _analyze_scope_status_for_cli(
+    *,
+    project_root: str,
+    task: str,
+    pane: str | None,
+    claims: _ScopeClaims,
+    scope_ignore_files: Sequence[str],
+) -> ScopeStatus:
+    actual_files = _get_actual_files(project_root)
+    if actual_files is None:
+        click.echo("Error: git status failed", err=True)
+        raise click.exceptions.Exit(code=1)
+
+    return analyze_scope_status(
+        actual_files=actual_files,
+        claimed_files=claims.writable,
+        read_files=claims.read_only,
+        scope_ignore_files=scope_ignore_files,
+        session_root=project_root,
+        task_slug=task,
+        pane_slug=pane,
+    )
+
+
 @cli.group(name="scope")
 def scope_cmd() -> None:
     """Scope settlement preview."""
@@ -128,38 +186,18 @@ def scope_status_cmd(
     project_root = str(resolve_project_root())
 
     config = load_project_config(project_root)
-    scope_ignore_files = config.scope_ignore_files
-
-    if plan is not None:
-        from dgov.cli.plan import resolve_plan_input
-
-        plan_file, _plan_dir = resolve_plan_input(plan)
-        if not plan_file.exists():
-            click.echo(f"Error: plan file not found: {plan_file}", err=True)
-            raise click.exceptions.Exit(code=1)
-        writable, read_only = _load_task_claims(plan_file, task)
-        claimed_files = writable
-        read_only_claims = read_only
-    else:
-        if not claim:
-            click.echo("Error: --plan or at least one --claim is required", err=True)
-            raise click.exceptions.Exit(code=1)
-        claimed_files = list(claim)
-        read_only_claims = list(read_files)
-
-    actual_files = _get_actual_files(project_root)
-    if actual_files is None:
-        click.echo("Error: git status failed", err=True)
-        raise click.exceptions.Exit(code=1)
-
-    status = analyze_scope_status(
-        actual_files=actual_files,
-        claimed_files=claimed_files,
-        read_files=read_only_claims,
-        scope_ignore_files=scope_ignore_files,
-        session_root=project_root,
-        task_slug=task,
-        pane_slug=pane,
+    claims = _resolve_scope_claims(
+        plan=plan,
+        task=task,
+        claim=claim,
+        read_files=read_files,
+    )
+    status = _analyze_scope_status_for_cli(
+        project_root=project_root,
+        task=task,
+        pane=pane,
+        claims=claims,
+        scope_ignore_files=config.scope_ignore_files,
     )
 
     if want_json():

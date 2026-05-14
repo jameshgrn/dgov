@@ -471,30 +471,13 @@ def test_run_reports_degraded_when_final_sentrux_compare_degrades(
     plan_dir = _write_plan_tree(tmp_path, "compiled")
     _write_compiled(plan_dir, "compiled")
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=tmp_path, check=True)
-    (tmp_path / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
-
-    class _Runner:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        @property
-        def task_errors(self):
-            return {}
-
-        @property
-        def task_durations(self):
-            return {"a": 0.1}
-
-        async def run(self) -> dict[str, str]:
-            return {"a": "merged"}
+    _init_committed_repo(tmp_path)
 
     monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", lambda path: None)
-    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
+    monkeypatch.setattr(
+        "dgov.cli.run.EventDagRunner",
+        _fake_event_runner({"a": "merged"}, task_durations={"a": 0.1}),
+    )
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
