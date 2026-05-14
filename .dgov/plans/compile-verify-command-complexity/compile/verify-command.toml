@@ -1,0 +1,60 @@
+[tasks.verify-command]
+summary = "Extract small helpers from _looks_like_verify_command."
+prompt = """
+## Orient
+
+Reduce the Sentrux complexity of `src/dgov/cli/compile.py`'
+`_looks_like_verify_command` without changing how compile warnings classify
+backticked snippets in Verify sections.
+
+Read first:
+- `src/dgov/cli/compile.py`, especially `_verify_prompt_commands`,
+  `_looks_like_verify_command`, `_verification_tool`, `_is_env_assignment`,
+  `_looks_like_executable_path`, and `_looks_like_command_argument`.
+- `tests/test_cli_compile.py`, especially the verify prompt command scan tests.
+- `tests/test_boundaries.py` because this task touches `src/`.
+
+Do NOT:
+- Widen command detection. False positives in SOP prose are the failure mode
+  this helper exists to avoid.
+- Change warning text.
+- Change CLI options or plan compilation behavior.
+- Touch files outside the claimed set.
+
+## Edit
+
+1. In `src/dgov/cli/compile.py`, split `_looks_like_verify_command` into
+   smaller private helpers. Keep behavior equivalent for:
+   - snippets containing parentheses
+   - shell-parse failures
+   - leading environment assignments
+   - empty commands
+   - assignment-like snippets where the second token is `=`
+   - known verify tools
+   - executable paths
+   - single-token prose snippets
+   - invalid command names
+   - generic commands with command-like arguments
+2. Prefer helper names that describe the decision point. Do not introduce a
+   class or shared abstraction.
+3. Avoid editing tests unless a targeted test exposes a real behavior gap.
+
+## Verify
+
+Run:
+
+```
+uv run pytest -q tests/test_cli_compile.py::test_verify_prompt_command_scan_ignores_sop_prose_snippets tests/test_cli_compile.py::test_verify_prompt_command_scan_keeps_common_wrapped_commands tests/test_boundaries.py
+uv run ruff check src/dgov/cli/compile.py tests/test_cli_compile.py tests/test_boundaries.py
+uv run ty check src/dgov/cli/compile.py
+uv run dgov sentrux offenders
+```
+
+The first three commands must pass. For `dgov sentrux offenders`, confirm
+`src/dgov/cli/compile.py:544 _looks_like_verify_command` no longer appears as
+a complex function.
+"""
+commit_message = "Reduce verify command classifier complexity"
+files.edit = ["src/dgov/cli/compile.py"]
+files.read = ["tests/test_cli_compile.py", "tests/test_boundaries.py"]
+self_review = true

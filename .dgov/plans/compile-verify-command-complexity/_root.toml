@@ -1,0 +1,4 @@
+[plan]
+name = "compile-verify-command-complexity"
+summary = "Reduce complexity in compile-time Verify command classification without changing warnings."
+sections = ["compile"]
