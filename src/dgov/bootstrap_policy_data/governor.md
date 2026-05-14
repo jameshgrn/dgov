@@ -74,6 +74,18 @@ mechanical signal must be checked by hand.
 - Next action: Fix the plan's file claims or decompose the task; re-run.
 - Do not: Brute-force retry the same plan. Scope violations are terminal.
 
+**sentrux_baseline_drift**
+- Evidence: Sentrux gate emits a stale-baseline warning (baseline is many
+  commits behind HEAD or weeks old), or rejects with quality degradation
+  whose offender list is entirely pre-existing functions not touched by
+  the current diff.
+- Class: Governance repair.
+- Next action: Run `dgov sentrux gate-save` to refresh the baseline if the
+  drift is intentional; commit the refreshed `.sentrux/baseline.json`.
+- Do not: Game the import graph (dynamic imports, indirection) to satisfy
+  the metric. Refactor real coupling when it exists, not when the baseline
+  has drifted.
+
 **guidance_drift**
 - Evidence: A failure points at advice that is missing, contradictory, or
   out of date in `.dgov/governor.md` or `.dgov/sops/`.
