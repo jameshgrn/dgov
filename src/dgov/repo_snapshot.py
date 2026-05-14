@@ -263,11 +263,19 @@ def _decode_snapshot(data: dict[str, object]) -> RepoSnapshot:
     )
 
 
-def build_repo_snapshot(scan_root: Path, *, cache_root: Path | None = None) -> RepoSnapshot:
+def build_repo_snapshot(
+    scan_root: Path,
+    *,
+    cache_root: Path | None = None,
+    commit_sha: str | None = None,
+) -> RepoSnapshot:
     """Build and cache a structural snapshot for the current commit."""
     cache_project_root = cache_root or scan_root
-    commit_sha = _git_head_sha(scan_root)
-    dirty = _worktree_dirty(scan_root)
+    if commit_sha is None:
+        commit_sha = _git_head_sha(scan_root)
+        dirty = _worktree_dirty(scan_root)
+    else:
+        dirty = True
     cache_path = _snapshot_cache_path(cache_project_root, commit_sha)
     if not dirty and cache_path.exists():
         return _decode_snapshot(json.loads(cache_path.read_text()))
@@ -304,9 +312,10 @@ def likely_structural_offenders(
     *,
     cache_root: Path | None = None,
     limit: int = _MAX_REPORT_ITEMS,
+    commit_sha: str | None = None,
 ) -> dict[str, object]:
     """Return likely long/complex function offenders for the current commit."""
-    snapshot = build_repo_snapshot(scan_root, cache_root=cache_root)
+    snapshot = build_repo_snapshot(scan_root, cache_root=cache_root, commit_sha=commit_sha)
     long_functions = sorted(
         (fn for fn in snapshot.functions if fn.line_count >= _LONG_FUNCTION_LINES),
         key=lambda fn: (-fn.line_count, -fn.cyclomatic, fn.path, fn.qualname),

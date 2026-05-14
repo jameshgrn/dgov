@@ -46,6 +46,9 @@ class ProjectConfig(AtomicConfig):
     setup_cmd: str | None = None
     coverage_cmd: str | None = None
     coverage_threshold: float = 2.0
+    sentrux_mode: str = "diff"
+    sentrux_stale_commits: int = 10
+    sentrux_stale_days: int = 14
     departments: dict[str, list[str]] = field(default_factory=dict)
     verify_recipes: dict[str, VerifyRecipe] = field(default_factory=dict)
 
@@ -172,6 +175,28 @@ def _scope_ignore_files(raw: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(dict.fromkeys((*ProjectConfig.scope_ignore_files, *configured_scope_ignores)))
 
 
+def _sentrux_mode(raw: Mapping[str, Any]) -> str:
+    sentrux = _table(raw, "sentrux")
+    mode = str(sentrux.get("mode", ProjectConfig.sentrux_mode)).strip().lower()
+    if mode not in {"diff", "strict"}:
+        raise ValueError(".dgov/project.toml [sentrux].mode must be 'diff' or 'strict'")
+    return mode
+
+
+def _sentrux_int(raw: Mapping[str, Any], key: str, default: int) -> int:
+    sentrux = _table(raw, "sentrux")
+    value = sentrux.get(key, default)
+    if isinstance(value, bool):
+        raise ValueError(f".dgov/project.toml [sentrux].{key} must be an integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f".dgov/project.toml [sentrux].{key} must be an integer") from exc
+    if parsed < 0:
+        raise ValueError(f".dgov/project.toml [sentrux].{key} must be >= 0")
+    return parsed
+
+
 def _worker_config_fields(proj: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "language": proj.get("language", ProjectConfig.language),
@@ -207,6 +232,9 @@ def _governor_config_fields(raw: Mapping[str, Any], proj: Mapping[str, Any]) -> 
         "setup_cmd": proj.get("setup_cmd") or None,
         "coverage_cmd": proj.get("coverage_cmd") or None,
         "coverage_threshold": proj.get("coverage_threshold", 2.0),
+        "sentrux_mode": _sentrux_mode(raw),
+        "sentrux_stale_commits": _sentrux_int(raw, "stale_commits", 10),
+        "sentrux_stale_days": _sentrux_int(raw, "stale_days", 14),
         "departments": _table(raw, "departments"),
         "verify_recipes": load_verify_recipes(raw),
     }

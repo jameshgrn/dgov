@@ -29,6 +29,7 @@ from dgov.plan import PlanSpec, compile_plan, parse_plan_file
 from dgov.project_root import resolve_project_root
 from dgov.repo_snapshot import format_structural_offender_report, likely_structural_offenders
 from dgov.runner import EventDagRunner
+from dgov.sentrux_gate import SentruxGateAssessment, assess_sentrux_gate, changed_files_since
 
 
 @contextlib.contextmanager
@@ -479,7 +480,14 @@ def _parse_sentrux_gate_output(output: str) -> tuple[bool, int | None]:
 def _scan_head_against_sentrux_baseline(
     project_root: str,
     baseline_path: Path,
-) -> tuple[subprocess.CompletedProcess[str], dict[str, object] | None]:
+    *,
+    base_ref: str | None = None,
+    config: ProjectConfig | None = None,
+) -> tuple[
+    subprocess.CompletedProcess[str],
+    dict[str, object] | None,
+    SentruxGateAssessment | None,
+]:
     with _clean_head_worktree(project_root) as scan_dir:
         scan_sentrux_dir = scan_dir / ".sentrux"
         if scan_sentrux_dir.exists():
@@ -494,7 +502,29 @@ def _scan_head_against_sentrux_baseline(
             )
         except Exception:
             offenders = None
-        return result, offenders
+        output = (result.stdout or "") + (result.stderr or "")
+        degradation, _ = _parse_sentrux_gate_output(output)
+        assessment = None
+        if degradation:
+            pc = config or ProjectConfig()
+            changed_files = (
+                changed_files_since(Path(project_root), base_ref, pc.source_extensions)
+                if base_ref
+                else []
+            )
+            assessment = assess_sentrux_gate(
+                scan_root=scan_dir,
+                project_root=Path(project_root),
+                baseline_path=baseline_path,
+                sentrux_output=output,
+                sentrux_returncode=result.returncode,
+                changed_files=changed_files,
+                base_ref=base_ref,
+                mode=pc.sentrux_mode,
+                stale_commits=pc.sentrux_stale_commits,
+                stale_days=pc.sentrux_stale_days,
+            )
+        return result, offenders, assessment
 
 
 def _initial_sentrux_gate_result(baseline_quality: int | None) -> dict[str, object]:
@@ -548,18 +578,31 @@ def _complete_sentrux_gate_result(
     degradation: bool,
     quality_after: int | None,
     offenders: dict[str, object] | None,
+    error: str | None = None,
+    warning: str | None = None,
 ) -> dict[str, object]:
     gate_result["degradation"] = degradation
     gate_result["quality_after"] = quality_after
+    if error:
+        gate_result["error"] = error
+    if warning:
+        gate_result["warning"] = warning
     if degradation and offenders is not None:
         gate_result["structural_offenders"] = offenders
     if not want_json():
         status = "✓ clean" if not degradation else "✗ degradation detected"
         click.echo(f"[sentrux] Gate result: {status}")
+        if warning:
+            click.echo(warning, err=True)
     return gate_result
 
 
-def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[str, object]:
+def _sentrux_compare(
+    project_root: str,
+    baseline_quality: int | None,
+    base_ref: str | None = None,
+    config: ProjectConfig | None = None,
+) -> dict[str, object]:
     """Run `sentrux gate` and build a gate_result dict comparing against baseline."""
     gate_result = _initial_sentrux_gate_result(baseline_quality)
     if not want_json():
@@ -570,7 +613,12 @@ def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[st
         return _empty_baseline_sentrux_result(gate_result)
 
     try:
-        result, offenders = _scan_head_against_sentrux_baseline(project_root, baseline_path)
+        result, offenders, assessment = _scan_head_against_sentrux_baseline(
+            project_root,
+            baseline_path,
+            base_ref=base_ref,
+            config=config,
+        )
     except subprocess.CalledProcessError as e:
         return _record_sentrux_compare_error(
             gate_result,
@@ -594,11 +642,16 @@ def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[st
     )
     if failed_result is not None:
         return failed_result
+    if assessment is not None:
+        offenders = assessment.current_report or offenders
+        degradation = assessment.should_fail
     return _complete_sentrux_gate_result(
         gate_result,
         degradation=degradation,
         quality_after=quality_after,
         offenders=offenders,
+        error=assessment.error if assessment and assessment.should_fail else None,
+        warning=assessment.warning if assessment else None,
     )
 
 
@@ -1183,8 +1236,9 @@ def _execute_plan_with_gates(
         continue_failed=continue_failed,
     )
     _emit_run_start(dag.name, baseline_quality)
+    pre_run_head = _git_stdout(project_root, ["rev-parse", "HEAD"])
     results, duration = _run_plan_runner(runner)
-    gate_result = _sentrux_compare(project_root, baseline_quality)
+    gate_result = _sentrux_compare(project_root, baseline_quality, pre_run_head, pc)
     branch_result = _branch_verification_gate(project_root, pc)
     token_usage = cast(dict[str, tuple[int, int]], getattr(runner, "token_usage", {}))
     total_prompt_tokens, total_completion_tokens = _run_token_totals(token_usage)
