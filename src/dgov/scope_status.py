@@ -31,6 +31,37 @@ class ScopeStatus:
     blocking_failure: ReviewResult | None = None
 
 
+def format_scope_paths(paths: frozenset[str]) -> str:
+    """Return sorted comma-separated paths, or '(none)' if empty."""
+    return ", ".join(sorted(paths)) or "(none)"
+
+
+def render_scope_status_lines(status: ScopeStatus) -> list[str]:
+    """Return human-readable scope status lines."""
+    lines = [
+        f"claimed_writable: {format_scope_paths(status.claimed_writable)}",
+        f"claimed_readonly: {format_scope_paths(status.claimed_readonly)}",
+        f"modified_files: {format_scope_paths(status.actual_files)}",
+    ]
+    if status.transient_write_paths:
+        lines.append(f"transient_writes: {format_scope_paths(status.transient_write_paths)}")
+    if status.ignored_actual_paths:
+        lines.append(f"ignored_modified: {format_scope_paths(status.ignored_actual_paths)}")
+    if status.ignored_transient_paths:
+        lines.append(f"ignored_transient: {format_scope_paths(status.ignored_transient_paths)}")
+    if status.unclaimed_actual_paths:
+        lines.append(f"unclaimed_modified: {format_scope_paths(status.unclaimed_actual_paths)}")
+    if status.unclaimed_transient_paths:
+        lines.append(
+            f"unclaimed_transient: {format_scope_paths(status.unclaimed_transient_paths)}"
+        )
+    if status.blocking_failure:
+        lines.append(f"blocking: {status.blocking_failure.error}")
+    else:
+        lines.append("blocking: (none)")
+    return lines
+
+
 def analyze_scope_status(
     actual_files: frozenset[str],
     claimed_files: Sequence[str] | None = None,

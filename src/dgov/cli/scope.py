@@ -12,7 +12,7 @@ from dgov.cli import cli, want_json
 from dgov.config import load_project_config
 from dgov.plan import parse_plan_file
 from dgov.project_root import resolve_project_root
-from dgov.scope_status import ScopeStatus, analyze_scope_status
+from dgov.scope_status import ScopeStatus, analyze_scope_status, render_scope_status_lines
 
 
 def _get_actual_files(project_root: str) -> frozenset[str] | None:
@@ -57,34 +57,11 @@ def _load_task_claims(plan_path: Path, task_slug: str) -> tuple[list[str], list[
 
 def _render_scope_text(status: ScopeStatus) -> None:
     """Render scope status as human-readable text."""
-    click.echo("claimed_writable: " + (", ".join(sorted(status.claimed_writable)) or "(none)"))
-    click.echo("claimed_readonly: " + (", ".join(sorted(status.claimed_readonly)) or "(none)"))
-    click.echo("modified_files: " + (", ".join(sorted(status.actual_files)) or "(none)"))
-
-    if status.transient_write_paths:
-        click.echo("transient_writes: " + ", ".join(sorted(status.transient_write_paths)))
-
-    if status.ignored_actual_paths:
-        click.echo("ignored_modified: " + ", ".join(sorted(status.ignored_actual_paths)))
-
-    if status.ignored_transient_paths:
-        click.echo("ignored_transient: " + ", ".join(sorted(status.ignored_transient_paths)))
-
-    unclaimed = sorted(status.unclaimed_actual_paths)
-    if unclaimed:
-        click.echo("unclaimed_modified: " + ", ".join(unclaimed))
-
-    unclaimed_transient = sorted(status.unclaimed_transient_paths)
-    if unclaimed_transient:
-        click.echo("unclaimed_transient: " + ", ".join(unclaimed_transient))
-
-    if status.blocking_failure:
-        click.echo(
-            click.style(f"blocking: {status.blocking_failure.error}", fg="red"),
-            err=True,
-        )
-    else:
-        click.echo("blocking: (none)")
+    for line in render_scope_status_lines(status):
+        if status.blocking_failure and line.startswith("blocking: "):
+            click.echo(click.style(line, fg="red"), err=True)
+        else:
+            click.echo(line)
 
 
 def _render_scope_json(status: ScopeStatus) -> None:
