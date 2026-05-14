@@ -1,0 +1,80 @@
+# CLI smoke tests for `dgov diagnose`.
+
+[tasks.tests]
+summary = "Add tests for `dgov diagnose` covering text and JSON output."
+prompt = """
+## Orient
+
+Add CLI smoke tests for `dgov diagnose`. The command and the core checks
+already exist; this task only adds the tests.
+
+Read first:
+- `src/dgov/cli/diagnose.py` — the command. Note that it calls
+  `read_events()` and the two check functions explicitly.
+- `src/dgov/diagnose.py` — `DiagnosisFinding` shape for asserting output.
+- `tests/test_cli_verify.py` — the `--json` test idiom. JSON mode is
+  activated via the top-level `--json` flag on the `cli` group, which
+  sets `DGOV_JSON=1` env var.
+- `tests/test_diagnose.py` — existing core tests for monkeypatch patterns.
+
+Do NOT:
+- Modify `src/dgov/diagnose.py` or `src/dgov/cli/diagnose.py`. They are
+  the implementation under test, not in scope for editing.
+- Touch any other test files.
+
+## Edit
+
+Create `tests/test_cli_diagnose.py` using `click.testing.CliRunner`. Tests:
+
+1. `test_diagnose_clean_repo`: with `tmp_path` containing `git init` and an
+   empty initial commit, plus an empty `.dgov/` dir. Monkeypatch
+   `dgov.cli.diagnose.read_events` to return `[]`. Invoke
+   `runner.invoke(cli, ["diagnose", "--root", str(tmp_path)])`. Assert
+   exit code 0 and stdout contains "No failure shapes matched".
+
+2. `test_diagnose_reports_archive_drift`: `tmp_path` with `git init`, plus
+   `.dgov/.gitignore` containing `plans/archive/`. Monkeypatch
+   `dgov.cli.diagnose.read_events` to return `[]`. Invoke as above.
+   Assert exit code 0 and stdout contains `archive_policy_drift`.
+
+3. `test_diagnose_reports_scope_violation`: `tmp_path` with `git init` and
+   empty `.dgov/` (no archive drift). Monkeypatch
+   `dgov.cli.diagnose.read_events` to return a list with one synthetic
+   `{event: "review_fail", verdict: "scope_violation", plan_name: "p",
+   task_slug: "t"}` event. Assert exit code 0 and stdout contains
+   `plan_claims_violation` and `p/t`.
+
+4. `test_diagnose_json_output`: same setup as the archive-drift test, but
+   invoke with the top-level `--json` flag: `cli, ["--json", "diagnose",
+   "--root", str(tmp_path)]`. Manage `DGOV_JSON` env var via fixture
+   teardown mirroring `tests/test_cli_verify.py`. Assert stdout parses
+   as JSON with a `findings` list whose length is ≥ 1 and whose first
+   entry has key `name`.
+
+Use `monkeypatch.setattr("dgov.cli.diagnose.read_events", lambda *a, **k: [...])`
+to stub the events loader. Use `subprocess.run(["git", "init", ...])` with
+`check=True` and explicit env (no `GIT_CONFIG_GLOBAL`) to keep tests
+hermetic — copy the `_git()` helper pattern from
+`tests/test_sentrux_gate.py` if useful.
+
+## Verify
+
+```
+uv run pytest -q tests/test_cli_diagnose.py
+uv run ruff check tests/test_cli_diagnose.py
+```
+
+All tests must pass. Then call `scope_status` to confirm only
+`tests/test_cli_diagnose.py` is modified.
+"""
+commit_message = "Add tests for dgov diagnose CLI command"
+depends_on = ["cli/command.command"]
+files.create = ["tests/test_cli_diagnose.py"]
+files.read = [
+    "src/dgov/cli/diagnose.py",
+    "src/dgov/diagnose.py",
+    "tests/test_cli_verify.py",
+    "tests/test_diagnose.py",
+    "tests/test_sentrux_gate.py",
+]
+self_review = true

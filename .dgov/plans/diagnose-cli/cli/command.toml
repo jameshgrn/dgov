@@ -1,0 +1,153 @@
+# CLI surface for `dgov diagnose`.
+
+[tasks.command]
+summary = "Add `dgov diagnose` CLI command wired to dgov.diagnose.CHECKS."
+prompt = """
+## Orient
+
+Wire the diagnostic checks from `src/dgov/diagnose.py` into a `dgov diagnose`
+CLI command. The core module is already landed; do not modify it.
+
+Read first:
+- `src/dgov/diagnose.py` (full file). Note the two check signatures:
+  - `check_archive_policy_drift(project_root: Path) -> list[DiagnosisFinding]`
+  - `check_plan_claims_violation(events: list[dict]) -> list[DiagnosisFinding]`
+  The CLI is responsible for fetching events and passing them in.
+- `src/dgov/cli/verify.py` (full file) for the CLI module pattern: group +
+  subcommands + `want_json()` for `--json` output.
+- `src/dgov/cli/__init__.py` lines 270-291 for the import-block registration
+  pattern. New modules are added alphabetically in the `from dgov.cli import (...)` block.
+- `src/dgov/persistence/events.py` lines 100-135 — `read_events(session_root, limit=...)` signature.
+- `src/dgov/project_root.py` — `resolve_project_root()`.
+- `tests/test_cli_verify.py` (full file) for the `--json` test idiom: the
+  flag is top-level (`cli, ["--json", "verify", "list"]`), driven by
+  `DGOV_JSON` env var that `want_json()` reads.
+
+Do NOT:
+- Edit `src/dgov/diagnose.py`. The core is fixed.
+- Add a subcommand. `dgov diagnose` is a single bare command, not a group.
+- Add a `--strict` exit-nonzero flag. Default is informational; defer.
+
+## Edit
+
+1. Create `src/dgov/cli/diagnose.py`:
+
+   ```python
+   '''CLI surface for `dgov diagnose` — report known failure shapes.'''
+
+   from __future__ import annotations
+
+   import json
+   from pathlib import Path
+
+   import click
+
+   from dgov.cli import cli, want_json
+   from dgov.diagnose import (
+       DiagnosisFinding,
+       check_archive_policy_drift,
+       check_plan_claims_violation,
+   )
+   from dgov.persistence.events import read_events
+   from dgov.project_root import resolve_project_root
+
+
+   @cli.command(name="diagnose")
+   @click.option("--root", "-r", default=".", help="Project root")
+   def diagnose_cmd(root: str) -> None:
+       '''Report known governor failure shapes from the Failure-to-Task catalog.
+
+       Reads current repo state (gitignore rules, recent settlement events)
+       and prints typed next-action cards for any matched failure shape.
+       See `.dgov/governor.md` for the catalog.
+       '''
+       project_root = resolve_project_root(Path(root))
+       session_root = project_root / ".dgov"
+       findings: list[DiagnosisFinding] = []
+       findings.extend(_safe(check_archive_policy_drift, project_root=project_root))
+       events = _load_events(session_root)
+       findings.extend(_safe(check_plan_claims_violation, events=events))
+       _emit(findings)
+
+
+   def _load_events(session_root: Path) -> list[dict]:
+       try:
+           return list(read_events(str(session_root), limit=200))
+       except Exception as exc:
+           click.echo(f"warning: could not load events: {exc}", err=True)
+           return []
+
+
+   def _safe(check, **kwargs):
+       try:
+           return check(**kwargs)
+       except Exception as exc:
+           click.echo(f"warning: check {check.__name__} failed: {exc}", err=True)
+           return []
+
+
+   def _emit(findings: list[DiagnosisFinding]) -> None:
+       if want_json():
+           payload = {
+               "findings": [
+                   {
+                       "name": f.name,
+                       "intent_class": f.intent_class,
+                       "evidence": f.evidence,
+                       "next_action": f.next_action,
+                       "do_not": f.do_not,
+                   }
+                   for f in findings
+               ]
+           }
+           click.echo(json.dumps(payload, indent=2))
+           return
+       if not findings:
+           click.echo("No failure shapes matched current repo state.")
+           return
+       for f in findings:
+           click.echo(f"\\n{f.name}  [{f.intent_class}]")
+           click.echo(f"  evidence: {f.evidence}")
+           click.echo(f"  next:     {f.next_action}")
+           click.echo(f"  do not:   {f.do_not}")
+   ```
+
+   Notes:
+   - Each check has a different signature. Call each one explicitly with the
+     args it actually takes — no kwargs-filter trick.
+   - A failing check must not break the run; print to stderr and continue.
+
+2. Edit `src/dgov/cli/__init__.py`: add `diagnose as diagnose,` to the
+   alphabetical import block at the bottom (currently around lines 275-290).
+   Use `edit_file` — do NOT rewrite this 1000+ line file. The line goes
+   between `coverage as coverage,` and `fix as fix,`.
+
+## Verify
+
+```
+uv run ruff check src/dgov/cli/diagnose.py src/dgov/cli/__init__.py
+uv run ty check src/dgov/cli/diagnose.py
+uv run dgov diagnose --root .
+```
+
+The CLI invocation must execute without crashing. Empty or non-empty
+output is both acceptable.
+
+(Tests for this CLI live in a sibling task; do NOT create or modify
+test files in this task.)
+
+Call `scope_status` before `done` to confirm only the two claimed files
+are modified.
+"""
+commit_message = "Wire dgov diagnose CLI command"
+files.create = ["src/dgov/cli/diagnose.py"]
+files.edit = ["src/dgov/cli/__init__.py"]
+files.read = [
+    "src/dgov/diagnose.py",
+    "src/dgov/cli/verify.py",
+    "src/dgov/project_root.py",
+    "src/dgov/persistence/events.py",
+    "tests/test_cli_verify.py",
+    ".dgov/governor.md",
+]
+self_review = true

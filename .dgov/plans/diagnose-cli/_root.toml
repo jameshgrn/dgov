@@ -1,0 +1,10 @@
+# Ship the `dgov diagnose` CLI surface.
+#
+# The core checks (`src/dgov/diagnose.py`) and the charter pointer already
+# landed via PR #26. This plan wires those checks into a `dgov diagnose`
+# command and adds CLI smoke tests.
+
+[plan]
+name = "diagnose-cli"
+summary = "Wire src/dgov/diagnose.CHECKS into a `dgov diagnose` CLI command."
+sections = ["cli", "tests"]
