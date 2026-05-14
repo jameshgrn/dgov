@@ -432,22 +432,35 @@ def _short_object_name(value: object, *, fallback: str) -> str:
     return fallback
 
 
-def _paths_from_object(value: object) -> set[str]:
+def _paths_from_string(value: str) -> set[str]:
+    return _path_candidates(value)
+
+
+def _paths_from_mapping(value: Mapping) -> set[str]:
     paths: set[str] = set()
-    if isinstance(value, str):
-        paths.update(_path_candidates(value))
-        return paths
-    if isinstance(value, Mapping):
-        for key, raw in value.items():
-            path_key = isinstance(key, str) and key in {"path", "file", "module", "name"}
-            nested_value = isinstance(raw, Mapping | Sequence) and not isinstance(raw, str)
-            if path_key or nested_value:
-                paths.update(_paths_from_object(raw))
-        return paths
-    if isinstance(value, Sequence) and not isinstance(value, str):
-        for item in value:
-            paths.update(_paths_from_object(item))
+    for key, raw in value.items():
+        path_key = isinstance(key, str) and key in {"path", "file", "module", "name"}
+        nested_value = isinstance(raw, Mapping | Sequence) and not isinstance(raw, str)
+        if path_key or nested_value:
+            paths.update(_paths_from_object(raw))
     return paths
+
+
+def _paths_from_sequence(value: Sequence) -> set[str]:
+    paths: set[str] = set()
+    for item in value:
+        paths.update(_paths_from_object(item))
+    return paths
+
+
+def _paths_from_object(value: object) -> set[str]:
+    if isinstance(value, str):
+        return _paths_from_string(value)
+    if isinstance(value, Mapping):
+        return _paths_from_mapping(value)
+    if isinstance(value, Sequence) and not isinstance(value, str):
+        return _paths_from_sequence(value)
+    return set()
 
 
 def _path_candidates(value: str) -> set[str]:
