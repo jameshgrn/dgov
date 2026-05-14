@@ -177,7 +177,9 @@ def _install_degraded_successful_run_patches(
     )
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
-        lambda project_root, baseline_quality: _degraded_sentrux_result(baseline_quality),
+        lambda project_root, baseline_quality, *_, **__: _degraded_sentrux_result(
+            baseline_quality
+        ),
     )
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
 
@@ -314,7 +316,7 @@ def _install_successful_run_patches(
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
-        lambda project_root, baseline_quality: {
+        lambda project_root, baseline_quality, *_, **__: {
             "degradation": False,
             "quality_before": baseline_quality,
             "quality_after": baseline_quality,
@@ -370,7 +372,7 @@ def test_run_returns_nonzero_on_failed_plan(
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
-        lambda project_root, baseline_quality: {
+        lambda project_root, baseline_quality, *_, **__: {
             "degradation": False,
             "quality_before": baseline_quality,
             "quality_after": baseline_quality,
@@ -404,7 +406,7 @@ def test_run_auto_creates_bootstrap_commit_in_headless(
     )
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
-        lambda project_root, baseline_quality: {
+        lambda project_root, baseline_quality, *_, **__: {
             "degradation": False,
             "quality_before": baseline_quality,
             "quality_after": baseline_quality,
@@ -445,7 +447,7 @@ def test_run_bootstraps_missing_sentrux_baseline(
     )
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
-        lambda project_root, baseline_quality: {
+        lambda project_root, baseline_quality, *_, **__: {
             "degradation": False,
             "quality_before": baseline_quality,
             "quality_after": baseline_quality,
@@ -496,7 +498,9 @@ def test_run_reports_degraded_when_final_sentrux_compare_degrades(
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
-        lambda project_root, baseline_quality: _degraded_sentrux_result(baseline_quality),
+        lambda project_root, baseline_quality, *_, **__: _degraded_sentrux_result(
+            baseline_quality
+        ),
     )
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
     monkeypatch.chdir(tmp_path)
@@ -549,7 +553,7 @@ def test_run_returns_nonzero_on_branch_verification_failure(
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
-        lambda project_root, baseline_quality: {
+        lambda project_root, baseline_quality, *_, **__: {
             "degradation": False,
             "quality_before": baseline_quality,
             "quality_after": baseline_quality,
@@ -584,8 +588,8 @@ def test_run_reports_structural_offenders_when_sentrux_degrades(
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",
-        lambda project_root, baseline_quality: _structural_offender_degraded_sentrux_result(
-            baseline_quality
+        lambda project_root, baseline_quality, *_, **__: (
+            _structural_offender_degraded_sentrux_result(baseline_quality)
         ),
     )
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
