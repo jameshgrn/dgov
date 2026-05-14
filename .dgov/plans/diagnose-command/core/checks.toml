@@ -1,0 +1,175 @@
+# Core diagnose module + its unit tests.
+
+[tasks.checks]
+summary = "Create src/dgov/diagnose.py with two check functions and unit tests."
+prompt = """
+## Orient
+
+Create the core diagnostic module for `dgov diagnose`. This is pure logic;
+the CLI wrapper is a separate task.
+
+Read first:
+- `.dgov/governor.md` — Failure-to-task catalog section. The two checks you
+  implement here must match the entries `archive_policy_drift` and
+  `plan_claims_violation` exactly (name, class, next_action, do_not).
+- `src/dgov/verify.py` (lines 1-60) for the existing pure-core pattern that
+  pairs with a thin CLI module.
+- `src/dgov/persistence/events.py` lines 100-135 — `read_events()` signature.
+- `src/dgov/persistence/schema.py` lines 195-215 — `verdict` lives in the JSON
+  `data` blob, not a typed column. Decoded events surface it as `event["verdict"]`.
+- `src/dgov/project_root.py` — use `resolve_project_root()` for path inputs.
+
+Do NOT:
+- Touch any other file. Only `src/dgov/diagnose.py` and `tests/test_diagnose.py`
+  in this task.
+- Add a third check. Catalog drift is a separate decision.
+- Shell out to git for anything except `git check-ignore`.
+
+## Edit
+
+1. Create `src/dgov/diagnose.py` with this surface:
+
+   ```python
+   from __future__ import annotations
+
+   import subprocess
+   from dataclasses import dataclass
+   from pathlib import Path
+
+   from dgov.persistence.events import read_events
+
+
+   @dataclass(frozen=True)
+   class DiagnosisFinding:
+       name: str            # catalog entry name, e.g. "archive_policy_drift"
+       intent_class: str    # "Project policy" or "Governance repair"
+       evidence: str        # one-line description of what was observed
+       next_action: str     # one-line typed next task
+       do_not: str          # one-line warning
+
+
+   def check_archive_policy_drift(project_root: Path) -> list[DiagnosisFinding]:
+       '''Return a finding if `.dgov/plans/archive/` is git-ignored.
+
+       Probe path does not need to exist. `git check-ignore -v` exits 0 when
+       the path is ignored and prints the matching rule on stdout.
+       '''
+       probe = project_root / ".dgov" / "plans" / "archive" / "_probe" / "_root.toml"
+       try:
+           result = subprocess.run(
+               ["git", "check-ignore", "-v", str(probe)],
+               cwd=project_root,
+               capture_output=True,
+               text=True,
+               check=False,
+           )
+       except (FileNotFoundError, OSError):
+           return []
+       if result.returncode != 0:
+           return []
+       rule = result.stdout.strip().splitlines()[0] if result.stdout.strip() else "(no rule output)"
+       return [DiagnosisFinding(
+           name="archive_policy_drift",
+           intent_class="Project policy",
+           evidence=f"`.dgov/plans/archive/` is git-ignored — {rule}",
+           next_action="Edit the repo's `.dgov/.gitignore` so durable plan archives are trackable; retry the finalization path.",
+           do_not="Rerun the landed worker task to recover bookkeeping. Worker-task completion and governor finalization are separate states.",
+       )]
+
+
+   def check_plan_claims_violation(session_root: Path, limit: int = 200) -> list[DiagnosisFinding]:
+       '''Return findings for recent settlement scope violations.
+
+       Reads `review_fail` events from persistence and surfaces those whose
+       `verdict` is `scope_violation` or `read_scope_violation`. One finding
+       per failing task. Limit caps how many recent events to inspect.
+       '''
+       try:
+           events = read_events(str(session_root), limit=limit)
+       except Exception:
+           return []
+       seen: set[tuple[str, str]] = set()
+       findings: list[DiagnosisFinding] = []
+       for ev in events:
+           if ev.get("event") != "review_fail":
+               continue
+           verdict = ev.get("verdict", "")
+           if verdict not in {"scope_violation", "read_scope_violation"}:
+               continue
+           plan_name = ev.get("plan_name", "")
+           task_slug = ev.get("task_slug", "")
+           key = (plan_name, task_slug)
+           if key in seen:
+               continue
+           seen.add(key)
+           findings.append(DiagnosisFinding(
+               name="plan_claims_violation",
+               intent_class="Governance repair",
+               evidence=f"`{plan_name}/{task_slug}` rejected with verdict `{verdict}`",
+               next_action="Fix the plan's file claims or decompose the task; re-run.",
+               do_not="Brute-force retry the same plan. Scope violations are terminal.",
+           ))
+       return findings
+
+
+   CHECKS = (check_archive_policy_drift, check_plan_claims_violation)
+   '''Ordered registry. Each check returns `list[DiagnosisFinding]`. Keep names
+   in sync with the Failure-to-task catalog in `.dgov/governor.md`.'''
+   ```
+
+   Notes:
+   - `subprocess.run` with `check=False` so the nonzero exit when not ignored
+     is normal control flow, not an exception.
+   - Both checks accept the path object they need and return a list; they
+     never raise on missing files. Test stubs depend on this.
+   - `CHECKS` is the registry the CLI module will iterate. Different signatures
+     are fine; the CLI passes the kwargs each check needs.
+
+2. Create `tests/test_diagnose.py` covering both functions. Use `tmp_path`
+   for filesystem isolation. Suggested cases (use Swift-Testing-style names
+   to match repo idiom, but the framework is plain pytest):
+
+   - `test_archive_policy_drift_finding_when_ignored`: write a `.gitignore`
+     containing `plans/archive/` under `tmp_path/.dgov/`, `git init` the
+     `tmp_path`, then assert the check returns exactly one finding with name
+     `archive_policy_drift`.
+   - `test_archive_policy_drift_no_finding_when_tracked`: same setup but with
+     no `plans/archive/` line; assert empty list.
+   - `test_archive_policy_drift_no_git_repo_is_silent`: `tmp_path` with no git
+     init; assert empty list (check-ignore returns 128, must not crash).
+   - `test_plan_claims_violation_emits_finding`: monkeypatch
+     `dgov.diagnose.read_events` to return one synthetic event with
+     `event="review_fail"`, `verdict="scope_violation"`, `plan_name="p"`,
+     `task_slug="t"`; assert one finding with `name == "plan_claims_violation"`
+     and evidence containing `p/t`.
+   - `test_plan_claims_violation_dedupes_repeats`: monkeypatch to return three
+     events for the same `(plan, task)` pair; assert exactly one finding.
+   - `test_plan_claims_violation_ignores_other_verdicts`: monkeypatch to
+     return a `review_fail` event with `verdict="lint_fail"`; assert empty.
+
+   Use `monkeypatch.setattr("dgov.diagnose.read_events", lambda *a, **k: [...])`
+   so tests do not touch the real SQLite store.
+
+## Verify
+
+Run all three:
+
+```
+uv run pytest -q tests/test_diagnose.py
+uv run ruff check src/dgov/diagnose.py tests/test_diagnose.py
+uv run ty check src/dgov/diagnose.py
+```
+
+All must pass before `done`. Then call `scope_status` to confirm only
+`src/dgov/diagnose.py` and `tests/test_diagnose.py` are modified.
+"""
+commit_message = "Add dgov diagnose core checks"
+files.create = ["src/dgov/diagnose.py", "tests/test_diagnose.py"]
+files.read = [
+    ".dgov/governor.md",
+    "src/dgov/verify.py",
+    "src/dgov/persistence/events.py",
+    "src/dgov/persistence/schema.py",
+    "src/dgov/project_root.py",
+]
+self_review = true

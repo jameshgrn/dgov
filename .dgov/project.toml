@@ -28,6 +28,11 @@ require_uv_run = true
 deny_shell_file_mutations = true
 deny_shell_commands = ["pip", "python -m pip", "pip3", "python -m venv", "uv venv"]
 
+[sentrux]
+mode = "diff"
+stale_commits = 10
+stale_days = 14
+
 [agents]
 kimi = "accounts/fireworks/routers/kimi-k2p6-turbo"
 "kimi-k2.6" = "accounts/fireworks/routers/kimi-k2p6-turbo"

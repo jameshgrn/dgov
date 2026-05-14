@@ -1,0 +1,12 @@
+# `dgov diagnose` — read-only command that reports known failure shapes from
+# the Failure-to-Task catalog in `.dgov/governor.md`.
+#
+# Scope: 2 checks (archive_policy_drift, plan_claims_violation). Defer
+# verify_recipe_missing (heuristic-heavy) and guidance_drift (no mechanical
+# signal). Each check returns DiagnosisFinding records mapping evidence to a
+# typed next action.
+
+[plan]
+name = "diagnose-command"
+summary = "Add `dgov diagnose` command that reports known governor failure shapes from observed repo state."
+sections = ["core", "cli", "docs"]

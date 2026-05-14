@@ -10,7 +10,9 @@ import click
 
 from dgov.cli import _output, cli, want_json
 from dgov.cli.run import run_sentrux, sentrux_available
+from dgov.config import load_project_config
 from dgov.repo_snapshot import format_structural_offender_report, likely_structural_offenders
+from dgov.sentrux_gate import assess_sentrux_gate
 
 
 def _is_degradation_output(output: str) -> bool:
@@ -179,6 +181,26 @@ def sentrux_gate(path: Path | None, fail_on_degradation: bool) -> None:
         _raise_gate_failure(output)
 
     click.echo(output)
+    target_path = Path(target)
+    config = load_project_config(target_path)
+    assessment = None
+    if degradation:
+        assessment = assess_sentrux_gate(
+            scan_root=target_path,
+            project_root=target_path,
+            baseline_path=target_path / ".sentrux" / "baseline.json",
+            sentrux_output=output,
+            sentrux_returncode=result.returncode,
+            changed_files=[],
+            base_ref=None,
+            mode="strict" if fail_on_degradation else config.sentrux_mode,
+            stale_commits=config.sentrux_stale_commits,
+            stale_days=config.sentrux_stale_days,
+        )
+        if assessment.warning:
+            click.echo(assessment.warning, err=True)
+        if fail_on_degradation and assessment.error:
+            click.echo(assessment.error, err=True)
     _emit_gate_degradation_report(target, degradation)
     _fail_on_gate_degradation(degradation, fail_on_degradation)
 

@@ -1,0 +1,51 @@
+# Add a one-line pointer from the Failure-to-Task catalog to `dgov diagnose`.
+
+[tasks.charter-pointer]
+summary = "Reference `dgov diagnose` from the charter's Failure-to-Task catalog."
+prompt = """
+## Orient
+
+The charter's `### Failure-to-task catalog` section currently describes the
+catalog purely as prose. Add a one-line pointer at the top of that section
+telling the reader that `dgov diagnose` will check the live evidence for
+the entries below.
+
+Read first:
+- `.dgov/governor.md` — find the heading `### Failure-to-task catalog` and
+  the paragraph immediately after it:
+
+  > Each entry maps observable evidence to a typed next task. Use these when
+  > a run ends in a known failure shape.
+
+Do NOT:
+- Edit any catalog entry. They are correct.
+- Add a new entry. The MVP checks cover `archive_policy_drift` and
+  `plan_claims_violation` only.
+- Touch any file other than `.dgov/governor.md`.
+
+## Edit
+
+1. In `.dgov/governor.md`, replace the existing paragraph that begins
+   `Each entry maps observable evidence to a typed next task.` with:
+
+   ```
+   Each entry maps observable evidence to a typed next task. Use these when
+   a run ends in a known failure shape. Run `dgov diagnose` to evaluate the
+   mechanical entries against live repo state; entries marked as having no
+   mechanical signal must be checked by hand.
+   ```
+
+   Use `edit_file` with the existing paragraph as `old_string` and the
+   replacement as `new_string`. Do NOT rewrite the whole file.
+
+## Verify
+
+```
+rg -n 'dgov diagnose' .dgov/governor.md
+```
+
+Expect exactly one hit, inside the Failure-to-Task catalog section.
+Then call `scope_status` to confirm only `.dgov/governor.md` is modified.
+"""
+commit_message = "Point Failure-to-task catalog at dgov diagnose"
+files.edit = [".dgov/governor.md"]

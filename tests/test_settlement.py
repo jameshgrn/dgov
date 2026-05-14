@@ -956,7 +956,7 @@ class TestValidateSandbox:
         assert "Test failure" in (result.error or "")
 
     def test_fail_sentrux_degradation(self, tmp_path: Path, monkeypatch):
-        """Sentrux gate rejects architectural degradation."""
+        """Strict Sentrux mode rejects absolute architectural degradation."""
         base = _init_repo(tmp_path)
         # 1. Setup Sentrux baseline
         sx_dir = tmp_path / ".sentrux"
@@ -983,7 +983,12 @@ class TestValidateSandbox:
 
         monkeypatch.setattr("subprocess.run", _mock_run)
 
-        result = validate_sandbox(tmp_path, base, str(tmp_path))
+        result = validate_sandbox(
+            tmp_path,
+            base,
+            str(tmp_path),
+            config=ProjectConfig(sentrux_mode="strict"),
+        )
         assert not result.passed
         assert "Sentrux architectural degradation" in (result.error or "")
 

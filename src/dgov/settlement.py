@@ -18,6 +18,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import textwrap
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -27,6 +28,7 @@ from typing import cast
 
 from dgov.config import ProjectConfig, load_project_config
 from dgov.persistence import read_events
+from dgov.sentrux_gate import assess_sentrux_gate, sentrux_is_warn_only
 from dgov.typecheck_diagnostics import parse_diagnostic_identities
 
 logger = logging.getLogger(__name__)
@@ -1445,17 +1447,6 @@ def _type_check_gate(
     return _type_check_failure(worktree_res, worktree_output, new_ids, worktree_ids)
 
 
-_SENTRUX_WARN_ONLY = re.compile(
-    r"(complex functions increased|coupling increased)",
-    re.IGNORECASE,
-)
-
-_SENTRUX_HARD_FAIL = re.compile(
-    r"(quality.*dropped|cycles increased|god files increased)",
-    re.IGNORECASE,
-)
-
-
 def _sentrux_is_warn_only(output: str) -> bool:
     """Return True if the only degradation is complexity increase (not a hard failure).
 
@@ -1463,13 +1454,7 @@ def _sentrux_is_warn_only(output: str) -> bool:
     new code. Hard-failing on it blocks legitimate work. We log a warning instead.
     Hard failures: quality drop, coupling increase, cycle increase, god-file increase.
     """
-    lines = output.splitlines()
-    failing = [ln for ln in lines if ln.strip().startswith("✗") and "DEGRADED" not in ln]
-    if not failing:
-        return False
-    return all(_SENTRUX_WARN_ONLY.search(ln) for ln in failing) and not any(
-        _SENTRUX_HARD_FAIL.search(ln) for ln in lines
-    )
+    return sentrux_is_warn_only(output)
 
 
 def _sentrux_baseline_is_empty(baseline: Path) -> bool:
@@ -1512,18 +1497,56 @@ def _execute_sentrux_gate(
         )
 
 
-def _sentrux_gate_result(res_sx: subprocess.CompletedProcess[str]) -> GateResult:
+def _sentrux_gate_result(
+    res_sx: subprocess.CompletedProcess[str],
+    *,
+    worktree_path: Path,
+    project_root: str,
+    baseline: Path,
+    changed_files: Sequence[str],
+    base_commit: str | None,
+    config: ProjectConfig,
+) -> GateResult:
     sx_output = (res_sx.stdout or "") + (res_sx.stderr or "")
     if res_sx.returncode == 0:
         return GateResult(passed=True)
     if _sentrux_is_warn_only(sx_output):
         logger.warning("Sentrux: complexity increased (warn-only, not blocking):\n%s", sx_output)
         return GateResult(passed=True)
-    return GateResult(passed=False, error=f"Sentrux architectural degradation:\n{sx_output}")
+    assessment = assess_sentrux_gate(
+        scan_root=worktree_path,
+        project_root=Path(project_root),
+        baseline_path=baseline,
+        sentrux_output=sx_output,
+        sentrux_returncode=res_sx.returncode,
+        changed_files=changed_files,
+        base_ref=base_commit,
+        mode=config.sentrux_mode,
+        stale_commits=config.sentrux_stale_commits,
+        stale_days=config.sentrux_stale_days,
+    )
+    if assessment.warning:
+        print(assessment.warning, file=sys.stderr)
+    if assessment.should_fail:
+        return GateResult(
+            passed=False,
+            error=assessment.error or f"Sentrux architectural degradation:\n{sx_output}",
+        )
+    return GateResult(passed=True)
 
 
-def _run_sentrux_gate(worktree_path: Path, project_root: str, timeout: int) -> GateResult:
+def _run_sentrux_gate(
+    worktree_path: Path,
+    project_root: str,
+    timeout: int,
+    *,
+    changed_files: Sequence[str] = (),
+    base_commit: str | None = None,
+    config: ProjectConfig | None = None,
+) -> GateResult:
     """Run sentrux policy gate — reject on hard degradation, warn on complexity only."""
+    if config is None:
+        config = load_project_config(project_root)
     baseline = Path(project_root) / ".sentrux" / "baseline.json"
     if not baseline.exists():
         return GateResult(passed=True)
@@ -1543,7 +1566,15 @@ def _run_sentrux_gate(worktree_path: Path, project_root: str, timeout: int) -> G
     res_sx = _execute_sentrux_gate(worktree_path, timeout)
     if isinstance(res_sx, GateResult):
         return res_sx
-    return _sentrux_gate_result(res_sx)
+    return _sentrux_gate_result(
+        res_sx,
+        worktree_path=worktree_path,
+        project_root=project_root,
+        baseline=baseline,
+        changed_files=changed_files,
+        base_commit=base_commit,
+        config=config,
+    )
 
 
 def _run_setup_cmd(setup_cmd: str, worktree_path: Path, timeout: int = 300) -> GateResult | None:
@@ -1895,6 +1926,9 @@ def _run_sentrux_acceptance_gate(context: _AcceptanceGateContext) -> GateResult 
         context.worktree_path,
         context.project_root,
         context.config.settlement_timeout,
+        changed_files=context.changed_files,
+        base_commit=context.base_commit,
+        config=context.config,
     )
     if sx_result.passed:
         return None
