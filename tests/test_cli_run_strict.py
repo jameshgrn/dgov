@@ -601,6 +601,36 @@ def test_run_reports_structural_offenders_when_sentrux_degrades(
     assert "Likely structural offenders at abc123" in result.output
 
 
+def test_normalize_sentrux_assessment() -> None:
+    """_normalize_sentrux_assessment should map assessment fields correctly."""
+    from dgov.cli.run import _normalize_sentrux_assessment
+
+    class FakeAssessment:
+        def __init__(self) -> None:
+            self.should_fail = True
+            self.warning = "warn"
+            self.error = "err"
+            self.current_report = {"b": 2}
+
+    degradation, offenders, error, warning = _normalize_sentrux_assessment(
+        FakeAssessment(),  # type: ignore
+        {"a": 1},
+        False,
+    )
+    assert degradation is True
+    assert offenders == {"b": 2}
+    assert error == "err"
+    assert warning == "warn"
+
+    degradation2, offenders2, error2, warning2 = _normalize_sentrux_assessment(
+        None, {"a": 1}, True
+    )
+    assert degradation2 is True
+    assert offenders2 == {"a": 1}
+    assert error2 is None
+    assert warning2 is None
+
+
 def test_clean_head_worktree_isolates_from_dirty_state(tmp_path: Path) -> None:
     """_clean_head_worktree yields a checkout at HEAD, ignoring dirty working-tree changes."""
     from dgov.cli.run import _clean_head_worktree
