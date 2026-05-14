@@ -1,0 +1,43 @@
+[tasks.marker]
+summary = "Add the unit pytest marker to architectural boundary tests."
+prompt = """
+## Orient
+
+`tests/test_boundaries.py` verifies import layering and should run whenever
+`src/` changes. A previous worker noted that the `run_tests()` tool applies a
+unit marker filter and deselects this file because it lacks `pytestmark`.
+
+Read first:
+- `tests/test_boundaries.py`
+- `pyproject.toml` pytest marker definitions
+
+Do NOT:
+- Change any boundary assertion.
+- Change production code.
+- Touch files outside the claimed set.
+
+## Edit
+
+1. In `tests/test_boundaries.py`, import `pytest`.
+2. Add `pytestmark = pytest.mark.unit` near the module constants, matching
+   the pattern used by other unit test files.
+
+## Verify
+
+Run:
+
+```
+uv run pytest -q -m unit tests/test_boundaries.py
+uv run pytest -q tests/test_boundaries.py
+uv run ruff check tests/test_boundaries.py
+uv run ty check tests/test_boundaries.py
+```
+
+All commands must pass, and the marker-filtered command must run 15 tests
+rather than deselecting them.
+"""
+commit_message = "Mark boundary tests as unit tests"
+files.edit = ["tests/test_boundaries.py"]
+files.read = ["pyproject.toml"]
+test_cmd = "uv run pytest -q -m unit tests/test_boundaries.py"
+self_review = true
