@@ -1,0 +1,55 @@
+[tasks.loader]
+summary = "Extract verify recipe field validation out of load_verify_recipes."
+prompt = """
+## Orient
+
+Reduce the Sentrux complexity of `load_verify_recipes` without changing its
+public behavior.
+
+Read first:
+- `src/dgov/verify.py` for the current `VerifyRecipe` dataclass and loader.
+- `tests/test_verify.py` for the loader behavior that must remain unchanged.
+- `tests/test_boundaries.py` because this task touches `src/`.
+
+Do NOT:
+- Change the accepted `[verify.<name>]` schema.
+- Change error message meaning for invalid recipe fields.
+- Add new configuration fields.
+- Touch files outside the claimed set.
+
+## Edit
+
+1. In `src/dgov/verify.py`, split the validation currently inside
+   `load_verify_recipes` into small private helpers. Keep the top-level loader
+   easy to scan:
+   - get `raw["verify"]`
+   - return `{}` when that section is not a dict
+   - iterate recipe sections
+   - skip non-dict sections
+   - delegate one recipe conversion to a helper
+2. Preserve the existing `VerifyRecipe` output values and the existing
+   `ValueError` contract for invalid `command`, unknown fields,
+   `description`, `log_name`, and `parser`.
+3. Keep helper names explicit and local to this module. Do not add a new
+   abstraction outside `src/dgov/verify.py`.
+
+## Verify
+
+Run:
+
+```
+uv run pytest -q tests/test_verify.py::TestLoadVerifyRecipes
+uv run pytest -q tests/test_boundaries.py
+uv run ruff check src/dgov/verify.py tests/test_verify.py tests/test_boundaries.py
+uv run ty check src/dgov/verify.py
+uv run dgov sentrux offenders
+```
+
+The first four commands must pass. For `dgov sentrux offenders`, confirm
+`src/dgov/verify.py:39 load_verify_recipes` no longer appears as a complex
+function or cognitive hotspot.
+"""
+commit_message = "Reduce verify recipe loader complexity"
+files.edit = ["src/dgov/verify.py"]
+files.read = ["tests/test_verify.py", "tests/test_boundaries.py"]
+self_review = true
