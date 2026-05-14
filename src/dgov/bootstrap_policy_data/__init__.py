@@ -1,1 +1,1 @@
-"""Canonical bootstrap policy assets shipped with dgov."""
+"""Package namespace for bootstrap policy assets shipped in built distributions."""

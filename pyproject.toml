@@ -54,6 +54,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/dgov"]
 
+[tool.hatch.build.targets.wheel.force-include]
+".dgov/governor.md" = "dgov/bootstrap_policy_data/governor.md"
+".dgov/sops" = "dgov/bootstrap_policy_data/sops"
+
 [tool.ruff]
 line-length = 99
 target-version = "py312"

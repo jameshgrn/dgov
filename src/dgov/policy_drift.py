@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
+from typing import cast
 
 GUIDANCE_FILENAMES = ("AGENTS.md", "CLAUDE.md", "GEMINI.md")
+_EXPECTED_BOOTSTRAP_FORCE_INCLUDE = {
+    ".dgov/governor.md": "dgov/bootstrap_policy_data/governor.md",
+    ".dgov/sops": "dgov/bootstrap_policy_data/sops",
+}
 
 
 def find_policy_drift(project_root: Path) -> list[str]:
@@ -31,35 +37,6 @@ def _guidance_file_drift(project_root: Path) -> list[str]:
     return []
 
 
-def _governor_policy_drift(repo_policy_dir: Path, source_policy_dir: Path) -> list[str]:
-    repo_governor = repo_policy_dir / "governor.md"
-    source_governor = source_policy_dir / "governor.md"
-    if not repo_governor.exists() or not source_governor.exists():
-        return ["Missing governor.md in repo policy or bootstrap policy assets"]
-    if repo_governor.read_text() != source_governor.read_text():
-        return [".dgov/governor.md differs from bootstrap policy asset"]
-    return []
-
-
-def _sop_set_drift(repo_sops: dict[str, Path], source_sops: dict[str, Path]) -> list[str]:
-    issues: list[str] = []
-    missing_from_assets = sorted(set(repo_sops) - set(source_sops))
-    missing_from_repo = sorted(set(source_sops) - set(repo_sops))
-    if missing_from_assets:
-        issues.append(f"SOP missing from bootstrap assets: {', '.join(missing_from_assets)}")
-    if missing_from_repo:
-        issues.append(f"SOP missing from repo policy: {', '.join(missing_from_repo)}")
-    return issues
-
-
-def _sop_content_drift(repo_sops: dict[str, Path], source_sops: dict[str, Path]) -> list[str]:
-    issues: list[str] = []
-    for name in sorted(set(repo_sops) & set(source_sops)):
-        if repo_sops[name].read_text() != source_sops[name].read_text():
-            issues.append(f".dgov/sops/{name} differs from bootstrap policy asset")
-    return issues
-
-
 def _bootstrap_policy_drift(project_root: Path) -> list[str]:
     source_policy_dir = project_root / "src" / "dgov" / "bootstrap_policy_data"
     repo_policy_dir = project_root / ".dgov"
@@ -67,16 +44,62 @@ def _bootstrap_policy_drift(project_root: Path) -> list[str]:
         return []
 
     issues: list[str] = []
-    issues.extend(_governor_policy_drift(repo_policy_dir, source_policy_dir))
-    repo_sops = _markdown_files(repo_policy_dir / "sops")
-    source_sops = _markdown_files(source_policy_dir / "sops")
-    if set(repo_sops) != set(source_sops):
-        issues.extend(_sop_set_drift(repo_sops, source_sops))
-    issues.extend(_sop_content_drift(repo_sops, source_sops))
+    mirrored_assets = _bootstrap_policy_asset_mirrors(source_policy_dir)
+    if mirrored_assets:
+        issues.append(
+            "Bootstrap policy assets are mirrored under "
+            f"src/dgov/bootstrap_policy_data: {', '.join(mirrored_assets)}"
+        )
+    issues.extend(_bootstrap_policy_build_mapping_drift(project_root))
     return issues
 
 
-def _markdown_files(directory: Path) -> dict[str, Path]:
-    if not directory.is_dir():
+def _bootstrap_policy_asset_mirrors(source_policy_dir: Path) -> list[str]:
+    mirrored: list[str] = []
+    if (source_policy_dir / "governor.md").is_file():
+        mirrored.append("governor.md")
+    mirrored.extend(
+        f"sops/{path.name}" for path in sorted((source_policy_dir / "sops").glob("*.md"))
+    )
+    return mirrored
+
+
+def _bootstrap_policy_build_mapping_drift(project_root: Path) -> list[str]:
+    force_include = _wheel_force_include(project_root / "pyproject.toml")
+    missing = [
+        f"{source} -> {target}"
+        for source, target in _EXPECTED_BOOTSTRAP_FORCE_INCLUDE.items()
+        if force_include.get(source) != target
+    ]
+    if not missing:
+        return []
+    return ["Bootstrap policy wheel force-include missing: " + ", ".join(missing)]
+
+
+def _wheel_force_include(pyproject: Path) -> dict[str, str]:
+    data = _read_pyproject(pyproject)
+    tool = _mapping(data.get("tool"))
+    hatch = _mapping(tool.get("hatch"))
+    build = _mapping(hatch.get("build"))
+    targets = _mapping(build.get("targets"))
+    wheel = _mapping(targets.get("wheel"))
+    force_include = _mapping(wheel.get("force-include"))
+    return {
+        str(source): target
+        for source, target in force_include.items()
+        if isinstance(source, str) and isinstance(target, str)
+    }
+
+
+def _read_pyproject(pyproject: Path) -> dict[str, object]:
+    if not pyproject.is_file():
         return {}
-    return {path.name: path for path in sorted(directory.glob("*.md"))}
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    return cast("dict[str, object]", data)
+
+
+def _mapping(value: object) -> dict[str, object]:
+    return cast("dict[str, object]", value) if isinstance(value, dict) else {}

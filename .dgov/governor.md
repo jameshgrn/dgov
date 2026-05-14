@@ -20,6 +20,10 @@ system level. Workers may be probabilistic. Governance should not be.
   `.dgov/sops/`, or repo scripts. Core dgov owns generic hooks, diagnostics,
   and scope enforcement; it does not hardcode target-project wrappers. See
   `.dgov/sops/project-extensions.md`.
+- In this source repo, `.dgov/governor.md` and `.dgov/sops/` are the canonical
+  bootstrap policy sources. Built distributions derive
+  `dgov.bootstrap_policy_data` from those files; do not hand-maintain Markdown
+  mirrors under `src/dgov/bootstrap_policy_data/`.
 
 ## Governor Invocation
 
