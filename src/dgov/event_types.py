@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
+from dgov.run_source import DEFAULT_RUN_SOURCE
+
 
 @dataclass(frozen=True)
 class RunStart:
@@ -17,6 +19,7 @@ class RunStart:
     event_type: Literal["run_start"] = "run_start"
     pane: str = ""
     plan_name: str = ""
+    run_source: str = DEFAULT_RUN_SOURCE
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,7 @@ class RunCompleted:
     run_status: str = ""
     duration_s: float = 0.0
     sentrux: str = ""  # JSON string
+    run_source: str = DEFAULT_RUN_SOURCE
 
 
 @dataclass(frozen=True)

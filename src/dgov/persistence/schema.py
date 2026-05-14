@@ -23,7 +23,7 @@ from dgov.types import TaskState
 
 STATE_DIR = ".dgov"
 _STATE_FILE = "state.db"
-_SCHEMA_VERSION = 9  # Added dispatch_runs table
+_SCHEMA_VERSION = 10  # Added run_source provenance
 
 TASK_STATES = frozenset(TaskState)
 
@@ -210,6 +210,7 @@ _EVENT_TYPED_COLS = frozenset({
     "new_slug",
     "target_agent",
     "message",
+    "run_source",
 })
 
 

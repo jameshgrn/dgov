@@ -28,6 +28,7 @@ from dgov.persistence.events import emit_event
 from dgov.plan import PlanSpec, compile_plan, parse_plan_file
 from dgov.project_root import resolve_project_root
 from dgov.repo_snapshot import format_structural_offender_report, likely_structural_offenders
+from dgov.run_source import current_run_source
 from dgov.runner import EventDagRunner
 from dgov.sentrux_baseline import (
     SentruxBaselineRefreshError,
@@ -876,6 +877,7 @@ def _emit_run_completed(
     run_status: str,
     duration: timedelta,
     gate_result: dict[str, object],
+    run_source: str,
 ) -> None:
     """Emit run_completed event with final status and Sentrux gate result."""
     emit_event(
@@ -886,6 +888,7 @@ def _emit_run_completed(
             run_status=run_status,
             duration_s=round(duration.total_seconds(), 2),
             sentrux=json.dumps(gate_result, default=str),
+            run_source=run_source,
         ),
     )
 
@@ -1406,7 +1409,15 @@ def _record_run_completion(
         run_status=summary.run_status,
         duration=artifacts.duration,
         gate_result=artifacts.completed_gate_result,
+        run_source=_runner_run_source(artifacts.runner),
     )
+
+
+def _runner_run_source(runner: object) -> str:
+    run_source = getattr(runner, "run_source", None)
+    if isinstance(run_source, str):
+        return run_source
+    return current_run_source()
 
 
 def _emit_run_summary_output(

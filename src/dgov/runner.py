@@ -75,11 +75,12 @@ from dgov.persistence import (
 )
 from dgov.persistence.dispatch_runs import (
     get_dispatch_run,
-    get_dispatch_runs_for_unit,
+    list_dispatch_runs,
     save_dispatch_run,
 )
 from dgov.persistence.schema import TaskState, WorkerTask
 from dgov.prompt_builder import PromptBuilder, build_baseline_diag_note, load_review_sop_blocks
+from dgov.run_source import current_run_source
 from dgov.semantic_settlement import summarize_evidence
 from dgov.settlement import ReviewResult, review_sandbox
 from dgov.settlement_flow import (
@@ -188,6 +189,7 @@ class EventDagRunner:
         self.session_root = session_root
         self.on_event = on_event
         self._dispatched_by = dispatched_by
+        self.run_source = current_run_source()
         self.project_config = load_project_config(session_root)
         self.deps = {slug: tuple(t.depends_on) for slug, t in dag.tasks.items()}
         self._tasks: dict[str, TaskContext] = {}
@@ -394,7 +396,11 @@ class EventDagRunner:
     def _rehydrate_dispatch_run_contexts(self) -> None:
         """Restore latest DispatchRun ids for retry/fork lineage after process restart."""
         for slug in self.dag.tasks:
-            rows = get_dispatch_runs_for_unit(self.session_root, slug)
+            rows = list_dispatch_runs(
+                self.session_root,
+                plan_id=self.dag.name,
+                unit_slug=slug,
+            )
             if rows:
                 self._ctx(slug).current_dispatch_run_id = rows[-1]["id"]
 
@@ -557,6 +563,18 @@ class EventDagRunner:
                 continue
             self._shutdown_interrupted = True
             pane_slug = self._pane_slug_for_task(task_slug)
+            ctx = self._ctx(task_slug)
+            self._record_terminal_dispatch_run(
+                exit_event=WorkerExit(
+                    task_slug=task_slug,
+                    pane_slug=pane_slug or "runner",
+                    exit_code=1,
+                    output_dir="",
+                    last_error="shutdown",
+                ),
+                ctx=ctx,
+                state="abandoned",
+            )
             logger.warning("Task %s interrupted by operator — marking ABANDONED", task_slug)
             emit_event(
                 self.session_root,
@@ -585,6 +603,7 @@ class EventDagRunner:
             RunStart(
                 pane=f"run-{self.dag.name}",
                 plan_name=self.dag.name,
+                run_source=self.run_source,
             ),
         )
 
@@ -1676,6 +1695,7 @@ class EventDagRunner:
             agent_model=agent,
             effective_sop_set_hash=effective_sop_set_hash,
             drift_against_plan=(plan_hash is not None and plan_hash != effective_sop_set_hash),
+            run_source=self.run_source,
             drift_evidence=derive_drift_evidence(
                 plan_hash=plan_hash,
                 effective_hash=effective_sop_set_hash,

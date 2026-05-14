@@ -46,6 +46,11 @@ def refresh_sentrux_baseline_after_clean_run(
 ) -> bool:
     """Refresh sentrux baseline files for an already accepted full-plan run."""
     root = canonical_project_root(project_root)
+    if _has_non_baseline_worktree_changes(root):
+        raise SentruxBaselineRefreshError(
+            "refusing to refresh sentrux baseline after clean run: "
+            "non-baseline working-tree changes are present"
+        )
     result = _run_sentrux_gate_save(root, run_sentrux)
     output = (result.stdout or "") + (result.stderr or "")
     _write_dgov_sentrux_baseline_metadata(
@@ -145,7 +150,7 @@ def _commit_sentrux_baseline_refresh(root: Path) -> bool:
     _run_git_or_raise(root, ["add", "--", *paths], action="stage sentrux baseline")
     _run_git_or_raise(
         root,
-        ["commit", "-m", "chore: refresh sentrux baseline", "--", *paths],
+        ["commit", "-m", "Refresh sentrux baseline", "--", *paths],
         action="commit sentrux baseline refresh",
     )
     return True

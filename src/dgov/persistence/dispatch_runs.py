@@ -7,6 +7,7 @@ import sqlite3
 
 from dgov.dispatch_run import DispatchRun
 from dgov.persistence.connection import _get_db, _retry_on_lock
+from dgov.run_source import normalize_run_source
 
 _DISPATCH_RUN_COLUMNS = (
     "id",
@@ -19,6 +20,7 @@ _DISPATCH_RUN_COLUMNS = (
     "effective_sop_set_hash",
     "drift_against_plan",
     "drift_evidence",
+    "run_source",
     "retried_from",
     "forked_from",
     "retry_index",
@@ -48,6 +50,7 @@ def _serialize_dispatch_run(dispatch_run: DispatchRun) -> dict[str, object]:
         "effective_sop_set_hash": dispatch_run.effective_sop_set_hash,
         "drift_against_plan": int(dispatch_run.drift_against_plan),
         "drift_evidence": json.dumps(list(dispatch_run.drift_evidence)),
+        "run_source": dispatch_run.run_source,
         "retried_from": dispatch_run.retried_from,
         "forked_from": dispatch_run.forked_from,
         "retry_index": dispatch_run.retry_index,
@@ -115,6 +118,7 @@ def list_dispatch_runs(
     plan_id: str | None = None,
     unit_slug: str | None = None,
     state: str | None = None,
+    run_source: str | None = None,
 ) -> list[dict]:
     """List DispatchRun rows filtered by optional keys."""
     clauses: list[str] = []
@@ -128,6 +132,9 @@ def list_dispatch_runs(
     if state is not None:
         clauses.append("state = ?")
         values.append(state)
+    if run_source is not None:
+        clauses.append("run_source = ?")
+        values.append(normalize_run_source(run_source))
 
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     conn = _get_db(session_root)

@@ -36,13 +36,15 @@ def test_derive_dispatch_run_id_is_stable_and_strategy_tagged() -> None:
     first = _derive_id()
     second = _derive_id()
     changed = _derive_id(base_commit="def456")
+    changed_source = _derive_id(run_source="workshop")
 
     assert first == second
     assert first != changed
+    assert first != changed_source
     assert first.startswith("disprun:")
 
 
-def _derive_id(*, base_commit: str = "abc123") -> str:
+def _derive_id(*, base_commit: str = "abc123", run_source: str = "manual") -> str:
     return derive_dispatch_run_id(
         from_plan_id="plan-a",
         unit_slug="unit-a",
@@ -56,6 +58,7 @@ def _derive_id(*, base_commit: str = "abc123") -> str:
         retry_index=0,
         fork_depth=0,
         dispatched_at=_dt(),
+        run_source=run_source,
     )
 
 

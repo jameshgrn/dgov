@@ -81,10 +81,19 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         "task_slug": "TEXT DEFAULT NULL",
         "plan_name": "TEXT DEFAULT NULL",
         "action": "TEXT DEFAULT NULL",
+        "run_source": "TEXT DEFAULT NULL",
     }
     for col, dtype in new_events_cols.items():
         if col not in existing_events_cols:
             conn.execute(f"ALTER TABLE events ADD COLUMN {col} {dtype}")
+
+    cursor = conn.execute("PRAGMA table_info(dispatch_runs)")
+    existing_dispatch_cols = {row[1] for row in cursor.fetchall()}
+
+    if "run_source" not in existing_dispatch_cols:
+        conn.execute(
+            "ALTER TABLE dispatch_runs ADD COLUMN run_source TEXT NOT NULL DEFAULT 'manual'"
+        )
 
     # 2. Migrate 'tasks' table
     cursor = conn.execute("PRAGMA table_info(tasks)")

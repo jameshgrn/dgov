@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS events (
     branch TEXT DEFAULT NULL,
     new_slug TEXT DEFAULT NULL,
     target_agent TEXT DEFAULT NULL,
-    message TEXT DEFAULT NULL)
+    message TEXT DEFAULT NULL,
+    run_source TEXT DEFAULT NULL)
 """
 
 _CREATE_SLUG_HISTORY_TABLE_SQL = """
@@ -73,6 +74,7 @@ CREATE TABLE IF NOT EXISTS dispatch_runs (
     effective_sop_set_hash TEXT NOT NULL,
     drift_against_plan INTEGER NOT NULL,
     drift_evidence TEXT NOT NULL DEFAULT '[]',
+    run_source TEXT NOT NULL DEFAULT 'manual',
     retried_from TEXT,
     forked_from TEXT,
     retry_index INTEGER NOT NULL DEFAULT 0,

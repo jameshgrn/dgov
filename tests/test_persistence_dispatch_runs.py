@@ -30,6 +30,7 @@ def _dispatch_run(
     unit_slug: str = "unit-a",
     state: str = "active",
     dispatched_at: datetime | None = None,
+    run_source: str = "manual",
 ) -> DispatchRun:
     run = DispatchRun(
         from_plan_id=plan_id,
@@ -43,6 +44,7 @@ def _dispatch_run(
         drift_evidence=("metadata:modified=bundle:sop_set_hash",),
         dispatched_by="watermaster:test",
         dispatched_at=dispatched_at or _dt(),
+        run_source=run_source,
     ).start_active()
     if state == "done":
         return run.complete_done(
@@ -73,6 +75,7 @@ def test_save_and_get_dispatch_run_round_trips(tmp_path: Path) -> None:
     assert row["id"] == run.id
     assert row["drift_against_plan"] is True
     assert row["drift_evidence"] == ("metadata:modified=bundle:sop_set_hash",)
+    assert row["run_source"] == "manual"
     assert row["dispatched_at"] == run.dispatched_at.isoformat()
     assert row["terminated_at"] is None
 
@@ -117,10 +120,16 @@ def test_list_dispatch_runs_filters(tmp_path: Path) -> None:
         str(tmp_path),
         _dispatch_run(plan_id="plan-b", unit_slug="unit-c", state="done"),
     )
+    save_dispatch_run(
+        str(tmp_path),
+        _dispatch_run(plan_id="plan-c", unit_slug="unit-d", run_source="workshop"),
+    )
 
     assert len(list_dispatch_runs(str(tmp_path), plan_id="plan-a")) == 2
     assert len(list_dispatch_runs(str(tmp_path), unit_slug="unit-a")) == 2
     assert len(list_dispatch_runs(str(tmp_path), state="done")) == 1
+    assert len(list_dispatch_runs(str(tmp_path), run_source="workshop")) == 1
+    assert len(list_dispatch_runs(str(tmp_path), run_source=" Workshop ")) == 1
 
 
 def test_get_dispatch_runs_for_unit_orders_by_dispatched_at(tmp_path: Path) -> None:
@@ -144,5 +153,5 @@ def test_dispatch_runs_table_created_on_db_initialization(tmp_path: Path) -> Non
     assert table_name is not None
 
 
-def test_schema_version_is_9() -> None:
-    assert _SCHEMA_VERSION == 9
+def test_schema_version_is_10() -> None:
+    assert _SCHEMA_VERSION == 10

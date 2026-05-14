@@ -527,7 +527,10 @@ class TestWorkerFailure:
 
 
 class TestDispatchRunRecording:
-    def test_mint_dispatch_run_records_active_row(self, tmp_path: Path):
+    def test_mint_dispatch_run_records_active_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("DGOV_RUN_SOURCE", raising=False)
         dag = _dag({"a": _task("a")}).model_copy(
             update={"name": "plan-a", "session_root": str(tmp_path), "project_root": str(tmp_path)}
         )
@@ -547,6 +550,29 @@ class TestDispatchRunRecording:
         assert row["from_plan_id"] == "plan-a"
         assert row["unit_slug"] == "a"
         assert row["dispatched_by"] == "watermaster:test"
+        assert row["run_source"] == "manual"
+
+    def test_mint_dispatch_run_records_env_run_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("DGOV_RUN_SOURCE", "workshop")
+        dag = _dag({"a": _task("a")}).model_copy(
+            update={"name": "plan-a", "session_root": str(tmp_path), "project_root": str(tmp_path)}
+        )
+        runner = EventDagRunner(dag, session_root=str(tmp_path), dispatched_by="watermaster:test")
+        wt = Worktree(path=tmp_path / "wt-a", branch="dgov/a", commit="abc123")
+
+        dispatch_run = runner._mint_dispatch_run(
+            task_slug="a",
+            wt=wt,
+            agent="codex",
+            ctx=runner._ctx("a"),
+        )
+        row = get_dispatch_run(str(tmp_path), dispatch_run.id)
+
+        assert row is not None
+        assert runner.run_source == "workshop"
+        assert row["run_source"] == "workshop"
 
     def test_terminal_dispatch_run_records_timed_out(self, tmp_path: Path):
         dag = _dag({"a": _task("a")}).model_copy(
@@ -580,6 +606,27 @@ class TestDispatchRunRecording:
         assert row["prompt_tokens"] == 3
         assert row["completion_tokens"] == 5
         assert row["iteration_count"] == 7
+
+    def test_shutdown_abandon_records_terminal_dispatch_run(self, tmp_path: Path):
+        dag = _dag({"a": _task("a")}).model_copy(
+            update={"name": "plan-a", "session_root": str(tmp_path), "project_root": str(tmp_path)}
+        )
+        runner = EventDagRunner(dag, session_root=str(tmp_path))
+        ctx = runner._ctx("a")
+        dispatch_run = runner._mint_dispatch_run(
+            task_slug="a",
+            wt=Worktree(path=tmp_path / "wt-a", branch="dgov/a", commit="abc123"),
+            agent="codex",
+            ctx=ctx,
+        )
+        runner.kernel.task_states["a"] = TaskState.ACTIVE
+
+        runner._abandon_active_tasks_for_shutdown()
+        row = get_dispatch_run(str(tmp_path), dispatch_run.id)
+
+        assert row is not None
+        assert row["state"] == "abandoned"
+        assert row["last_error"] == "shutdown"
 
     def test_retry_lineage_records_prior_dispatch_run(self, tmp_path: Path):
         dag = _dag({"a": _task("a")}).model_copy(
@@ -666,6 +713,41 @@ class TestDispatchRunRecording:
         assert runner._ctx("a").current_dispatch_run_id == second.id
         assert second.retried_from == prior.id
         assert second.retry_index == 1
+
+    def test_rehydrate_dispatch_run_contexts_filters_by_plan(self, tmp_path: Path):
+        dag = _dag({"a": _task("a")}).model_copy(
+            update={"name": "plan-a", "session_root": str(tmp_path), "project_root": str(tmp_path)}
+        )
+        plan_run = DispatchRun(
+            from_plan_id="plan-a",
+            unit_slug="a",
+            worktree_id=str(tmp_path / "wt-a"),
+            branch="dgov/a",
+            base_commit="abc123",
+            agent_model="codex",
+            effective_sop_set_hash="",
+            drift_against_plan=False,
+            dispatched_by="watermaster:test",
+            dispatched_at=datetime(2026, 5, 14, 12, 0, tzinfo=UTC),
+        ).start_active()
+        other_plan_run = DispatchRun(
+            from_plan_id="other-plan",
+            unit_slug="a",
+            worktree_id=str(tmp_path / "wt-other"),
+            branch="dgov/other",
+            base_commit="def456",
+            agent_model="codex",
+            effective_sop_set_hash="",
+            drift_against_plan=False,
+            dispatched_by="watermaster:test",
+            dispatched_at=datetime(2026, 5, 14, 12, 1, tzinfo=UTC),
+        ).start_active()
+        save_dispatch_run(str(tmp_path), plan_run)
+        save_dispatch_run(str(tmp_path), other_plan_run)
+
+        runner = EventDagRunner(dag, session_root=str(tmp_path))
+
+        assert runner._ctx("a").current_dispatch_run_id == plan_run.id
 
 
 class TestPreflight:

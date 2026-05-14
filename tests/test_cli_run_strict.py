@@ -196,6 +196,7 @@ def _assert_degraded_run_completed_event(
     expected_plan_name: str,
     expected_branch: str,
     expected_baseline_quality: int = 100,
+    expected_run_source: str = "manual",
 ) -> None:
     """Find and assert the run_completed event payload for a degraded run."""
     run_completed_events = [
@@ -207,6 +208,7 @@ def _assert_degraded_run_completed_event(
     assert run_completed.pane == expected_plan_name
     assert run_completed.plan_name == expected_plan_name
     assert run_completed.run_status == "degraded"
+    assert run_completed.run_source == expected_run_source
     assert isinstance(run_completed.duration_s, float)
 
     sentrux = json.loads(run_completed.sentrux)
@@ -525,7 +527,39 @@ def test_refresh_sentrux_baseline_after_clean_run_commits_metadata(
     metadata = json.loads((sentrux_dir / "dgov-baseline.json").read_text())
     assert metadata["accepted_head"] == accepted_head
     assert metadata["quality"] == 100
-    assert _latest_commit_subject(tmp_path) == "chore: refresh sentrux baseline"
+    assert _latest_commit_subject(tmp_path) == "Refresh sentrux baseline"
+
+
+def test_refresh_sentrux_baseline_after_clean_run_rejects_dirty_source_tree(
+    tmp_path: Path,
+) -> None:
+    from dgov.sentrux_baseline import (
+        SentruxBaselineRefreshError,
+        refresh_sentrux_baseline_after_clean_run,
+    )
+
+    sentrux_dir, _accepted_head = _commit_sentrux_baseline(tmp_path)
+    (tmp_path / "README.md").write_text("dirty\n")
+    calls = 0
+
+    def _unexpected_sentrux(
+        args: list[str],
+        cwd: str | None = None,
+        timeout: float = 30.0,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(["sentrux", *args], 0, stdout="", stderr="")
+
+    with pytest.raises(SentruxBaselineRefreshError, match="non-baseline"):
+        refresh_sentrux_baseline_after_clean_run(
+            str(tmp_path),
+            run_sentrux=_unexpected_sentrux,
+        )
+
+    assert calls == 0
+    assert not (sentrux_dir / "dgov-baseline.json").exists()
 
 
 def _clean_complete_artifacts() -> object:
@@ -617,6 +651,44 @@ def test_finalize_refreshes_sentrux_baseline_before_archiving(
     ]
 
 
+def test_record_run_completion_uses_runner_run_source_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dgov.cli.run import PlanRunSummary, _record_run_completion
+
+    artifacts = cast(Any, _clean_complete_artifacts())
+    artifacts.runner.run_source = "workshop"
+    captured_events: list[RunCompleted] = []
+
+    monkeypatch.setenv("DGOV_RUN_SOURCE", "invalid source")
+    monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr("dgov.cli.run._maybe_archive_completed_plan", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "dgov.cli.run.emit_event",
+        lambda _project_root, event: captured_events.append(event),
+    )
+
+    _record_run_completion(
+        project_root=str(tmp_path),
+        dag=cast(Any, _compiled_test_dag(tmp_path)),
+        plan_file=str(tmp_path / "_compiled.toml"),
+        artifacts=artifacts,
+        summary=PlanRunSummary(
+            run_status="complete",
+            failed=[],
+            abandoned=[],
+            skipped=[],
+            succeeded=["a"],
+            task_errors={},
+        ),
+        only=None,
+        plan_dir=None,
+    )
+
+    assert captured_events[0].run_source == "workshop"
+
+
 def test_run_reports_degraded_when_final_sentrux_compare_degrades(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -662,6 +734,28 @@ def test_run_emits_run_completed_event_with_degraded_status(
 
     assert result.exit_code == 0
     _assert_degraded_run_completed_event(captured_events, "compiled", head)
+
+
+def test_run_completed_event_records_env_run_source(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_dir = _write_plan_tree(tmp_path, "compiled")
+    _write_compiled(plan_dir, "compiled")
+    head = _init_committed_repo(tmp_path)
+    captured_events: list[object] = []
+
+    monkeypatch.setenv("DGOV_RUN_SOURCE", "workshop")
+    _install_degraded_successful_run_patches(monkeypatch, tmp_path, captured_events)
+
+    result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    _assert_degraded_run_completed_event(
+        captured_events,
+        "compiled",
+        head,
+        expected_run_source="workshop",
+    )
 
 
 def _mock_branch_verification_failure(project_root: str, config: object) -> dict[str, object]:

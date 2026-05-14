@@ -47,6 +47,22 @@ class TestEmitEvent:
         assert "id" in ev
         assert "ts" in ev
 
+    def test_emit_run_source_typed_column_and_read_back(self, tmp_path):
+        session_root = _session(tmp_path)
+
+        emit_event(
+            session_root,
+            event="run_start",
+            pane="run-plan",
+            plan_name="plan",
+            run_source="workshop",
+        )
+
+        events = read_events(session_root)
+
+        assert events[0]["event"] == "run_start"
+        assert events[0]["run_source"] == "workshop"
+
     def test_emit_invalid_event_raises_valueerror(self, tmp_path):
         """Emit with an invalid event name raises ValueError."""
         session_root = _session(tmp_path)

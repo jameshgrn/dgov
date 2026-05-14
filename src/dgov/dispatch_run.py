@@ -8,7 +8,10 @@ from dataclasses import InitVar, dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
+from dgov.run_source import DEFAULT_RUN_SOURCE, normalize_run_source
+
 type WatermasterId = str
+type RunSource = str
 DispatchRunState = Literal["pending", "active", "done", "failed", "timed_out", "abandoned"]
 
 _DISPATCH_RUN_STATES = frozenset({
@@ -44,6 +47,7 @@ def derive_dispatch_run_id(
     retry_index: int,
     fork_depth: int,
     dispatched_at: datetime,
+    run_source: str = DEFAULT_RUN_SOURCE,
 ) -> str:
     """Content-derive a stable DispatchRun id with strategy tag ``disprun:``."""
     _require_utc(dispatched_at, "dispatched_at")
@@ -55,6 +59,7 @@ def derive_dispatch_run_id(
         "base_commit": base_commit,
         "agent_model": agent_model,
         "effective_sop_set_hash": effective_sop_set_hash,
+        "run_source": normalize_run_source(run_source),
         "retried_from": retried_from,
         "forked_from": forked_from,
         "retry_index": retry_index,
@@ -139,6 +144,7 @@ def _dispatch_run_id_from_instance(run: DispatchRun, explicit_id: str | None) ->
         retry_index=run.retry_index,
         fork_depth=run.fork_depth,
         dispatched_at=run.dispatched_at,
+        run_source=run.run_source,
     )
 
 
@@ -157,6 +163,7 @@ class DispatchRun:
     drift_against_plan: bool
     dispatched_by: WatermasterId
     dispatched_at: datetime
+    run_source: RunSource = DEFAULT_RUN_SOURCE
     drift_evidence: tuple[str, ...] = ()
     retried_from: str | None = None
     forked_from: str | None = None
@@ -184,6 +191,7 @@ class DispatchRun:
             dispatched_at=self.dispatched_at,
             terminated_at=self.terminated_at,
         )
+        object.__setattr__(self, "run_source", normalize_run_source(self.run_source))
         object.__setattr__(self, "drift_evidence", tuple(self.drift_evidence))
         object.__setattr__(self, "id", _dispatch_run_id_from_instance(self, _id))
 
@@ -338,6 +346,7 @@ def _dispatch_run_from_row_dict(row_dict: dict) -> DispatchRun:
         agent_model=row_dict["agent_model"],
         effective_sop_set_hash=row_dict["effective_sop_set_hash"],
         drift_against_plan=bool(row_dict["drift_against_plan"]),
+        run_source=row_dict.get("run_source", DEFAULT_RUN_SOURCE),
         drift_evidence=tuple(row_dict["drift_evidence"]),
         retried_from=row_dict["retried_from"],
         forked_from=row_dict["forked_from"],
@@ -360,6 +369,7 @@ def _dispatch_run_from_row_dict(row_dict: dict) -> DispatchRun:
 __all__ = [
     "DispatchRun",
     "DispatchRunState",
+    "RunSource",
     "WatermasterId",
     "derive_dispatch_run_id",
     "derive_drift_evidence",
