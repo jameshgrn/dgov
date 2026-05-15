@@ -14,10 +14,10 @@ Docs: https://sandfrom.space/dgov/
 
 ## Install
 
-`dgov` is not published on PyPI yet. Install from Git:
+Install from PyPI:
 
 ```bash
-uv tool install --from git+https://github.com/jameshgrn/dgov dgov
+uv tool install dgov
 ```
 
 For a local checkout:
