@@ -236,10 +236,19 @@ def kb_open(article_id: str, root: str) -> None:
 
     absolute_path = (project_root / article.relative_path).resolve()
     if shutil.which("obsidian"):
-        subprocess.run(["obsidian", "open", article.relative_path], check=False)
+        try:
+            subprocess.run(
+                ["obsidian", "open", f"path={article.relative_path}"],
+                cwd=project_root,
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise click.ClickException(
+                f"failed to open {article.relative_path} with Obsidian CLI: {exc}"
+            ) from exc
         return
 
-    uri = f"obsidian://open?path={urllib.parse.quote(str(absolute_path))}"
+    uri = f"obsidian://open?path={urllib.parse.quote(str(absolute_path), safe='')}"
     click.echo(uri)
 
 

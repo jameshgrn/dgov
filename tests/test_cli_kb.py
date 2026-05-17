@@ -268,14 +268,16 @@ def test_kb_open_fallback(runner: CliRunner, tmp_path: Path, monkeypatch) -> Non
         result = runner.invoke(cli, ["kb", "open", "sentrux"])
     assert result.exit_code == 0, result.output
     assert result.output.startswith("obsidian://open?path=")
-    assert "sentrux.md" in result.output
+    assert "docs%2Fknowledge%2Fconcepts%2Fsentrux.md" in result.output
 
 
 def test_kb_open_with_obsidian(runner: CliRunner, tmp_path: Path, monkeypatch) -> None:
     calls = []
+    kwargs = []
 
     def fake_run(cmd, **_kwargs):
         calls.append(cmd)
+        kwargs.append(_kwargs)
 
     monkeypatch.setattr("dgov.cli.kb.shutil.which", lambda _name: "/usr/bin/obsidian")
     monkeypatch.setattr("dgov.cli.kb.subprocess.run", fake_run)
@@ -285,7 +287,9 @@ def test_kb_open_with_obsidian(runner: CliRunner, tmp_path: Path, monkeypatch) -
         result = runner.invoke(cli, ["kb", "open", "sentrux"])
     assert result.exit_code == 0
     assert len(calls) == 1
-    assert calls[0] == ["obsidian", "open", "docs/knowledge/concepts/sentrux.md"]
+    assert calls[0] == ["obsidian", "open", "path=docs/knowledge/concepts/sentrux.md"]
+    assert kwargs[0]["cwd"] == root
+    assert kwargs[0]["check"] is True
 
 
 def test_kb_open_unknown(runner: CliRunner, tmp_path: Path, monkeypatch) -> None:
