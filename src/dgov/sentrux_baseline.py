@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -46,16 +50,15 @@ def refresh_sentrux_baseline_after_clean_run(
 ) -> bool:
     """Refresh sentrux baseline files for an already accepted full-plan run."""
     root = canonical_project_root(project_root)
-    if _has_non_baseline_worktree_changes(root):
-        raise SentruxBaselineRefreshError(
-            "refusing to refresh sentrux baseline after clean run: "
-            "non-baseline working-tree changes are present"
-        )
-    result = _run_sentrux_gate_save(root, run_sentrux)
+    _raise_if_non_refreshable_worktree_changes(root)
+    accepted_head = _accepted_head(root)
+    with _detached_head_worktree(root) as clean_root:
+        result = _run_sentrux_gate_save(clean_root, run_sentrux)
+        _copy_refreshed_sentrux_baseline(clean_root, root)
     output = (result.stdout or "") + (result.stderr or "")
     _write_dgov_sentrux_baseline_metadata(
         root,
-        accepted_head=_accepted_head(root),
+        accepted_head=accepted_head,
         quality=_parse_sentrux_save_quality(output),
     )
     return _commit_sentrux_baseline_refresh(root)
@@ -68,7 +71,7 @@ def record_sentrux_baseline_metadata(project_root: str, output: str) -> Path | N
         accepted_head = _accepted_head(root)
     except SentruxBaselineRefreshError:
         return None
-    if _has_non_baseline_worktree_changes(root):
+    if _has_non_refreshable_worktree_changes(root):
         return None
     _write_dgov_sentrux_baseline_metadata(
         root,
@@ -89,6 +92,44 @@ def _run_sentrux_gate_save(
     except subprocess.TimeoutExpired as exc:
         message = f"timed out refreshing sentrux baseline after clean run: {exc}"
         raise SentruxBaselineRefreshError(message) from exc
+
+
+@contextmanager
+def _detached_head_worktree(root: Path) -> Iterator[Path]:
+    tmp_root = Path(tempfile.mkdtemp(prefix="dgov-sentrux-accepted-"))
+    wt_path = tmp_root / "head"
+    created = False
+    try:
+        _run_git_or_raise(
+            root,
+            ["worktree", "add", "--detach", str(wt_path), "HEAD"],
+            action="create clean sentrux refresh worktree",
+        )
+        created = True
+        yield wt_path
+    finally:
+        if created:
+            subprocess.run(
+                ["git", "worktree", "remove", "-f", str(wt_path)],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                env=_git_env(root),
+                check=False,
+            )
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def _copy_refreshed_sentrux_baseline(source_root: Path, target_root: Path) -> None:
+    source = source_root / SENTRUX_BASELINE_REL_PATH
+    target = target_root / SENTRUX_BASELINE_REL_PATH
+    if not source.exists():
+        raise SentruxBaselineRefreshError(
+            "failed to refresh sentrux baseline after clean run: "
+            f"{SENTRUX_BASELINE_REL_PATH} was not created"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
 
 
 def _called_process_message(exc: subprocess.CalledProcessError) -> str:
@@ -164,19 +205,50 @@ def _git_has_path_changes(root: Path, paths: list[str]) -> bool:
     return bool(status)
 
 
-def _has_non_baseline_worktree_changes(root: Path) -> bool:
+def _raise_if_non_refreshable_worktree_changes(root: Path) -> None:
+    changes = _non_refreshable_worktree_changes(root)
+    if not changes:
+        return
+    sample = ", ".join(changes[:5])
+    more = f", and {len(changes) - 5} more" if len(changes) > 5 else ""
+    raise SentruxBaselineRefreshError(
+        "refusing to refresh sentrux baseline after clean run: "
+        f"non-baseline working-tree changes are present: {sample}{more}"
+    )
+
+
+def _has_non_refreshable_worktree_changes(root: Path) -> bool:
+    return bool(_non_refreshable_worktree_changes(root))
+
+
+def _non_refreshable_worktree_changes(root: Path) -> list[str]:
     status = _git_stdout(root, ["status", "--porcelain", "--untracked-files=all"])
     if status is None:
-        return True
-    baseline_paths = {SENTRUX_BASELINE_REL_PATH, DGOV_SENTRUX_BASELINE_META_REL_PATH}
-    return any(_status_path(line) not in baseline_paths for line in status.splitlines() if line)
+        return ["<unable to read git status>"]
+    changes: list[str] = []
+    for line in status.splitlines():
+        if not line:
+            continue
+        paths = _status_paths(line)
+        if any(not _is_refresh_compatible_path(path) for path in paths):
+            changes.extend(paths)
+    return changes
 
 
-def _status_path(line: str) -> str:
+def _status_paths(line: str) -> tuple[str, ...]:
     path = line[2:].strip()
     if " -> " in path:
-        path = path.split(" -> ", 1)[1]
-    return path
+        old, new = path.split(" -> ", 1)
+        return (old, new)
+    return (path,)
+
+
+def _is_refresh_compatible_path(path: str) -> bool:
+    return (
+        path in {SENTRUX_BASELINE_REL_PATH, DGOV_SENTRUX_BASELINE_META_REL_PATH}
+        or path == ".dgov/plans/deployed.jsonl"
+        or (path.startswith(".dgov/") and path.endswith("/_compiled.toml"))
+    )
 
 
 def _run_git_or_raise(

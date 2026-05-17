@@ -93,6 +93,20 @@ mechanical signal must be checked by hand.
   the metric. Refactor real coupling when it exists, not when the baseline
   has drifted.
 
+**post_run_sentrux_refresh_metadata_conflict**
+- Evidence: A full-plan run or `dgov.dispatch` lands worker commits, then exits
+  nonzero during accepted sentrux baseline refresh with only dgov-generated
+  metadata dirty, such as `.dgov/plans/deployed.jsonl` or plan `_compiled.toml`.
+- Class: Governance repair.
+- Next action: Treat the worker deployment and post-run baseline refresh as
+  separate states. The canonical fix is in core dgov: refresh accepted sentrux
+  baseline from a clean detached `HEAD`, copy back only `.sentrux` baseline
+  outputs, and tolerate known dgov run metadata while still rejecting source
+  dirt. In target repos pinned to older dgov, commit the dgov metadata before
+  retrying the refresh path.
+- Do not: Mark the landed worker task as failed, ignore all nonzero dispatch
+  exit codes, allow arbitrary `.dgov/` dirt, or disable sentrux.
+
 **guidance_drift**
 - Evidence: A failure points at advice that is missing, contradictory, or
   out of date in `.dgov/governor.md` or `.dgov/sops/`.

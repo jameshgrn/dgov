@@ -635,13 +635,18 @@ def _commit_sentrux_baseline(tmp_path: Path) -> tuple[Path, str]:
 
 
 def _mock_clean_sentrux_save(
-    sentrux_dir: Path,
+    _sentrux_dir: Path,
     captured: dict[str, object],
 ) -> Callable[..., subprocess.CompletedProcess[str]]:
     def _mock_run_sentrux(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured["args"] = args
         captured["timeout"] = kwargs.get("timeout")
-        (sentrux_dir / "baseline.json").write_text('{"quality": 100}\n')
+        scan_root = Path(args[-1])
+        captured["scan_root"] = str(scan_root)
+        captured["scan_head"] = _git_head(scan_root)
+        scan_sentrux_dir = scan_root / ".sentrux"
+        scan_sentrux_dir.mkdir(parents=True, exist_ok=True)
+        (scan_sentrux_dir / "baseline.json").write_text('{"quality": 100}\n')
         return subprocess.CompletedProcess(
             ["sentrux", *args],
             0,
@@ -677,13 +682,69 @@ def test_refresh_sentrux_baseline_after_clean_run_commits_metadata(
 
     _refresh_sentrux_baseline_after_clean_run(".")
 
-    assert captured["args"] == ["gate", "--save", str(tmp_path.resolve())]
+    assert cast(list[str], captured["args"])[:2] == ["gate", "--save"]
     assert captured["timeout"] == 30.0
+    assert captured["scan_root"] != str(tmp_path.resolve())
+    assert captured["scan_head"] == accepted_head
 
     metadata = json.loads((sentrux_dir / "dgov-baseline.json").read_text())
     assert metadata["accepted_head"] == accepted_head
     assert metadata["quality"] == 100
     assert _latest_commit_subject(tmp_path) == "Refresh sentrux baseline"
+
+
+def test_refresh_sentrux_baseline_after_clean_run_allows_dgov_run_metadata(
+    tmp_path: Path,
+) -> None:
+    from dgov.sentrux_baseline import refresh_sentrux_baseline_after_clean_run
+
+    _init_committed_repo(tmp_path)
+    sentrux_dir = tmp_path / ".sentrux"
+    plan_dir = tmp_path / ".dgov" / "sops" / "plan_hello"
+    deployed_log = tmp_path / ".dgov" / "plans" / "deployed.jsonl"
+    compiled_plan = plan_dir / "_compiled.toml"
+    deployed_log.parent.mkdir(parents=True)
+    plan_dir.mkdir(parents=True)
+    sentrux_dir.mkdir()
+    (sentrux_dir / "baseline.json").write_text('{"quality": 90}\n')
+    deployed_log.write_text('{"plan":"hello","unit":"old","sha":"abc","ts":"old"}\n')
+    compiled_plan.write_text('[plan]\nname = "hello"\n')
+    subprocess.run(
+        [
+            "git",
+            "add",
+            ".sentrux/baseline.json",
+            ".dgov/plans/deployed.jsonl",
+            ".dgov/sops/plan_hello/_compiled.toml",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(["git", "commit", "-q", "-m", "save dgov state"], cwd=tmp_path, check=True)
+    accepted_head = _git_head(tmp_path)
+    deployed_log.write_text(deployed_log.read_text() + '{"plan":"hello","unit":"new"}\n')
+    compiled_plan.write_text('[plan]\nname = "hello"\nsource_mtime_max = "now"\n')
+    captured: dict[str, object] = {}
+
+    committed = refresh_sentrux_baseline_after_clean_run(
+        str(tmp_path),
+        run_sentrux=_mock_clean_sentrux_save(sentrux_dir, captured),
+    )
+
+    assert committed is True
+    assert captured["scan_head"] == accepted_head
+    metadata = json.loads((sentrux_dir / "dgov-baseline.json").read_text())
+    assert metadata["accepted_head"] == accepted_head
+    assert _latest_commit_subject(tmp_path) == "Refresh sentrux baseline"
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "M .dgov/plans/deployed.jsonl" in status
+    assert "M .dgov/sops/plan_hello/_compiled.toml" in status
 
 
 def test_refresh_sentrux_baseline_after_clean_run_rejects_dirty_source_tree(
