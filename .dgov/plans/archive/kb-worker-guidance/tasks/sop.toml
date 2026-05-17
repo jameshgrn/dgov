@@ -1,0 +1,23 @@
+[tasks.add-kb-sop]
+summary = "Add knowledge base worker SOP"
+prompt = """
+Orient:
+Read .dgov/sops/project-extensions.md, docs/knowledge/README.md, docs/knowledge/operations/obsidian-workflow.md, src/dgov/kb.py, and src/dgov/cli/kb.py. This task only adds worker-facing SOP guidance for knowledge-base work. Do not edit .dgov/governor.md, src/dgov/worker.py, or existing KB implementation files.
+
+Edit:
+1. Create .dgov/sops/knowledge-base.md using the required SOP frontmatter and sections: When, Do, Do Not, Verify, Escalate.
+2. The SOP must say KB articles are source-backed explanations, not ledger/governor/SOP authority.
+3. The SOP must require canonical repo-relative sources outside docs/knowledge/.
+4. The SOP must require valid intentional related edges for traversal.
+5. The SOP must discourage typed edge fields until real traversal queries justify them.
+6. The SOP must require uv run dgov kb validate for KB edits.
+7. The SOP must say not to commit .obsidian/ workspace state.
+8. Add applies_to tags that let KB/documentation/Obsidian tasks match this SOP, including knowledge, kb, docs/knowledge, obsidian, traversal, graph, and documentation.
+
+Verify:
+uv run pytest -q -m unit tests/test_bootstrap_policy.py tests/test_sop_bundler.py
+uv run ruff check .dgov/sops/knowledge-base.md
+"""
+commit_message = "Add knowledge base worker SOP"
+files = { create = [".dgov/sops/knowledge-base.md"], read = [".dgov/governor.md", ".dgov/sops/project-extensions.md", "docs/knowledge/README.md", "docs/knowledge/operations/obsidian-workflow.md", "src/dgov/worker.py", "src/dgov/kb.py", "src/dgov/cli/kb.py", "tests/test_bootstrap_policy.py", "tests/test_sop_bundler.py"] }
+test_cmd = "uv run pytest -q -m unit tests/test_bootstrap_policy.py tests/test_sop_bundler.py"
