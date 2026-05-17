@@ -9,8 +9,8 @@ from pathlib import Path
 
 import click
 
-from dgov.cli import cli
-from dgov.config import ProjectConfig, load_project_config
+from dgov.cli import cli, load_project_config_or_exit
+from dgov.config import ProjectConfig
 from dgov.project_root import resolve_project_root
 
 
@@ -69,7 +69,7 @@ def _cleanup_output_path(output_path: Path) -> None:
 def coverage_baseline_cmd() -> None:
     """Create or refresh the coverage baseline for the current project."""
     project_root = resolve_project_root()
-    config = load_project_config(project_root)
+    config = load_project_config_or_exit(project_root)
 
     coverage_cmd = _validate_coverage_cmd(config)
 

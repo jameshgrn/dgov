@@ -624,15 +624,15 @@ class TestSerializeCompiledTomlWithSopMapping:
 class TestSerializeCompiledTomlWithAgentAndTimeout:
     """Test serialize_compiled_toml with agent and timeout_s fields."""
 
-    def test_agent_and_timeout_in_output(self, tmp_path):
-        """Agent and timeout_s should appear in output when populated."""
+    def _agent_timeout_bundle(self, tmp_path) -> BundleResult:
         plan_root = tmp_path / "test_plan"
         plan_root.mkdir()
-
         root_meta = RootMeta(
             name="agent-plan",
             summary="Test with agent",
             sections=("section1",),
+            default_agent="gpt-test",
+            default_provider="openai",
         )
 
         unit = PlanUnit(
@@ -641,10 +641,10 @@ class TestSerializeCompiledTomlWithAgentAndTimeout:
             prompt="Do something",
             commit_message="Done",
             files=PlanUnitFiles(),
-            agent="accounts/fireworks/routers/kimi-k2p6-turbo",
+            agent="provider/model-name",
+            provider="llm",
             timeout_s=1200,
         )
-
         flat_plan = FlatPlan(
             plan_root=plan_root,
             root_meta=root_meta,
@@ -652,16 +652,22 @@ class TestSerializeCompiledTomlWithAgentAndTimeout:
             source_map={"section1/file.agent_task": plan_root / "section1" / "file.toml"},
             source_mtime_max=1234567890.0,
         )
-
-        bundle = BundleResult(
+        return BundleResult(
             plan=flat_plan,
             sop_mapping={"section1/file.agent_task": ()},
             sop_set_hash="agent_hash",
         )
 
+    def test_agent_and_timeout_in_output(self, tmp_path):
+        """Agent and timeout_s should appear in output when populated."""
+        bundle = self._agent_timeout_bundle(tmp_path)
+        flat_plan = bundle.plan
         result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
 
-        assert 'agent = "accounts/fireworks/routers/kimi-k2p6-turbo"' in result
+        assert 'default_agent = "gpt-test"' in result
+        assert 'agent = "provider/model-name"' in result
+        assert 'default_provider = "openai"' in result
+        assert 'provider = "llm"' in result
         assert "timeout_s = 1200" in result
 
     def test_agent_and_timeout_not_present_when_empty(self, tmp_path):

@@ -265,20 +265,43 @@ require_uv_run = true
 
 def test_load_project_config_llm_defaults(tmp_path: Path) -> None:
     config = load_project_config(tmp_path)
-    assert config.llm_base_url == "https://api.fireworks.ai/inference/v1"
-    assert config.llm_api_key_env == "FIREWORKS_API_KEY"
+    assert config.llm_provider == ""
+    assert config.llm_base_url == ""
+    assert config.llm_api_key_env == ""
 
 
 def test_load_project_config_llm_from_toml(tmp_path: Path) -> None:
     dgov_dir = tmp_path / ".dgov"
     dgov_dir.mkdir()
     (dgov_dir / "project.toml").write_text(
-        '[project]\nllm_base_url = "https://api.fireworks.ai/inference/v1"\n'
-        'llm_api_key_env = "CUSTOM_FIREWORKS_API_KEY"\n'
+        '[project]\nprovider = "test-provider"\n'
+        "\n[providers.test-provider]\n"
+        'base_url = "https://provider.test/v1"\n'
+        'api_key_env = "TEST_PROVIDER_API_KEY"\n'
     )
     config = load_project_config(tmp_path)
-    assert config.llm_base_url == "https://api.fireworks.ai/inference/v1"
-    assert config.llm_api_key_env == "CUSTOM_FIREWORKS_API_KEY"
+    assert config.llm_provider == "test-provider"
+    assert config.llm_base_url == "https://provider.test/v1"
+    assert config.llm_api_key_env == "TEST_PROVIDER_API_KEY"
+
+
+def test_load_project_config_llm_from_named_provider(tmp_path: Path) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text(
+        """
+[project]
+provider = "openai"
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+"""
+    )
+    config = load_project_config(tmp_path)
+    assert config.llm_provider == "openai"
+    assert config.llm_base_url == "https://api.openai.com/v1"
+    assert config.llm_api_key_env == "OPENAI_API_KEY"
 
 
 # -- get_tool_spec --
@@ -449,6 +472,58 @@ def test_execute_tool_call_emits_failed_telemetry(
     assert result_event["tool_index"] == 3
 
 
+def test_execute_tool_call_reports_invalid_json_arguments(
+    tools: AtomicTools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        "dgov.workers.runtime.WorkerEvent.emit",
+        lambda self: events.append((self.type, self.content)),
+    )
+    call = SimpleNamespace(
+        id="call-bad-json",
+        function=SimpleNamespace(name="read_file", arguments="{not-json"),
+    )
+
+    result, is_done = execute_tool_call(
+        call,
+        tools,
+        role="worker",
+        turn_index=3,
+        tool_index=2,
+    )
+
+    assert result.startswith("Error: Tool read_file arguments contain invalid JSON")
+    assert is_done is False
+    call_event = cast(dict[str, Any], events[0][1])
+    result_event = cast(dict[str, Any], events[1][1])
+    assert call_event["arg_keys"] == []
+    assert result_event["status"] == "failed"
+    assert result_event["error_kind"] == "validation_failed"
+
+
+def test_execute_tool_call_rejects_non_object_json_arguments(
+    tools: AtomicTools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        "dgov.workers.runtime.WorkerEvent.emit",
+        lambda self: events.append((self.type, self.content)),
+    )
+    call = SimpleNamespace(
+        id="call-array-json",
+        function=SimpleNamespace(name="read_file", arguments='["hello.py"]'),
+    )
+
+    result, is_done = execute_tool_call(call, tools, role="worker")
+
+    assert result == "Error: Tool read_file arguments must be a JSON object."
+    assert is_done is False
+    result_event = cast(dict[str, Any], events[1][1])
+    assert result_event["status"] == "failed"
+    assert result_event["error_kind"] == "validation_failed"
+
+
 def test_build_system_prompt_uses_configured_budget_and_repo_map(tmp_path: Path) -> None:
     for idx in range(90):
         (tmp_path / f"file_{idx:03}.txt").write_text("x\n")
@@ -592,10 +667,20 @@ def test_diff_stat_for_error_summarizes_worktree_changes(tmp_path: Path) -> None
     assert "tracked.py" in summary
 
 
+def _provider_payload(**overrides: object) -> str:
+    payload: dict[str, object] = {
+        "llm_provider": "test-provider",
+        "llm_base_url": "https://provider.test/v1",
+        "llm_api_key_env": "TEST_PROVIDER_API_KEY",
+    }
+    payload.update(overrides)
+    return json.dumps(payload)
+
+
 def test_run_worker_uses_configured_iteration_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("TEST_PROVIDER_API_KEY", "test-key")
     events: list[tuple[str, object]] = []
     call_count = 0
 
@@ -628,13 +713,66 @@ def test_run_worker_uses_configured_iteration_budget(
             "do it",
             tmp_path,
             "test-model",
-            json.dumps({"worker_iteration_budget": 2}),
+            _provider_payload(worker_iteration_budget=2),
         )
 
     assert excinfo.value.code == 1
     assert call_count == 2
     assert events[-1][0] == "error"
     assert str(events[-1][1]).startswith("Exceeded max iterations (2)")
+
+
+def test_run_worker_reports_invalid_project_config_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    _capture_events(monkeypatch, events)
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_worker("do it", tmp_path, "test-model", "{not-json")
+
+    assert excinfo.value.code == 1
+    assert events == [
+        (
+            "error",
+            "Project configuration error: Invalid worker project config JSON: "
+            "Expecting property name enclosed in double quotes",
+        )
+    ]
+
+
+def test_run_worker_reports_invalid_task_scope_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    _capture_events(monkeypatch, events)
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_worker("do it", tmp_path, "test-model", "", "{not-json")
+
+    assert excinfo.value.code == 1
+    assert events == [
+        (
+            "error",
+            "Task scope error: Invalid task scope JSON: "
+            "Expecting property name enclosed in double quotes",
+        )
+    ]
+
+
+def test_run_worker_reports_non_object_task_scope_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    _capture_events(monkeypatch, events)
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_worker("do it", tmp_path, "test-model", "", '["x.py"]')
+
+    assert excinfo.value.code == 1
+    assert events == [
+        ("error", "Task scope error: Invalid task scope payload: expected a JSON object")
+    ]
 
 
 def _make_fake_message(tool_calls: list[SimpleNamespace] | None = None) -> SimpleNamespace:
@@ -698,7 +836,7 @@ def _capture_events(monkeypatch: pytest.MonkeyPatch, events: list[tuple[str, obj
 def test_run_worker_forces_done_near_iteration_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("TEST_PROVIDER_API_KEY", "test-key")
     events: list[tuple[str, object]] = []
     tool_choices: list[object] = []
 
@@ -711,7 +849,7 @@ def test_run_worker_forces_done_near_iteration_limit(
             "do it",
             tmp_path,
             "test-model",
-            json.dumps({"worker_iteration_budget": 10, "worker_iteration_warn_at": 8}),
+            _provider_payload(worker_iteration_budget=10, worker_iteration_warn_at=8),
         )
 
     assert excinfo.value.code == 0

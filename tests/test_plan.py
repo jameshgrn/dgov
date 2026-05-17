@@ -195,12 +195,14 @@ depends_on = ["setup"]
         plan_content = """
 [plan]
 name = "agent-plan"
+default_provider = "openai"
 
 [tasks.custom-agent]
 summary = "Custom agent task"
 prompt = "Do something"
 commit_message = "Done"
 agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
+provider = "fireworks"
 timeout_s = 1200
 """
         plan_file.write_text(plan_content)
@@ -208,7 +210,9 @@ timeout_s = 1200
         result = parse_plan_file(str(plan_file))
 
         unit = result.units["custom-agent"]
+        assert result.default_provider == "openai"
         assert unit.agent == "accounts/fireworks/routers/kimi-k2p6-turbo"
+        assert unit.provider == "fireworks"
         assert unit.timeout_s == 1200
 
     def test_parses_plan_with_task_test_override(self, tmp_path):
@@ -356,6 +360,84 @@ class TestCompilePlan:
         result = compile_plan(plan, project_agent="test-agent")
 
         assert result.tasks["task-1"].agent == "accounts/fireworks/routers/kimi-k2p6-turbo"
+
+    def test_resolves_provider_and_provider_default_agent(self):
+        plan = PlanSpec(
+            name="provider-plan",
+            goal="Goal",
+            default_provider="openai",
+            units={
+                "task-1": PlanUnit(
+                    slug="task-1",
+                    summary="Task",
+                    prompt="Do it",
+                    commit_message="Done",
+                    files=PlanUnitFiles(),
+                )
+            },
+        )
+
+        result = compile_plan(
+            plan,
+            project_agent="fallback-agent",
+            project_provider="fireworks",
+            provider_agents={"openai": "gpt-test"},
+        )
+
+        assert result.tasks["task-1"].provider == "openai"
+        assert result.tasks["task-1"].agent == "gpt-test"
+        assert result.default_provider == "openai"
+
+    def test_provider_override_does_not_inherit_other_provider_default_agent(self):
+        plan = PlanSpec(
+            name="provider-plan",
+            goal="Goal",
+            units={
+                "task-1": PlanUnit(
+                    slug="task-1",
+                    summary="Task",
+                    prompt="Do it",
+                    commit_message="Done",
+                    provider="openai",
+                    files=PlanUnitFiles(),
+                )
+            },
+        )
+
+        with pytest.raises(PlanValidationError, match="No agent for task 'task-1'"):
+            compile_plan(
+                plan,
+                project_agent="accounts/fireworks/routers/kimi-k2p6-turbo",
+                project_provider="fireworks",
+                provider_agents={"fireworks": "accounts/fireworks/routers/kimi-k2p6-turbo"},
+                provider_names=("fireworks", "openai"),
+            )
+
+    def test_fails_unknown_task_provider(self):
+        plan = PlanSpec(
+            name="provider-plan",
+            goal="Goal",
+            units={
+                "task-1": PlanUnit(
+                    slug="task-1",
+                    summary="Task",
+                    prompt="Do it",
+                    commit_message="Done",
+                    provider="missing",
+                    agent="some/model",
+                    files=PlanUnitFiles(),
+                )
+            },
+        )
+
+        with pytest.raises(PlanValidationError, match="Unknown provider 'missing'"):
+            compile_plan(
+                plan,
+                project_agent="accounts/fireworks/routers/kimi-k2p6-turbo",
+                project_provider="fireworks",
+                provider_agents={"fireworks": "accounts/fireworks/routers/kimi-k2p6-turbo"},
+                provider_names=("fireworks",),
+            )
 
     def test_fails_unauthorized_department_edit(self):
         plan = PlanSpec(

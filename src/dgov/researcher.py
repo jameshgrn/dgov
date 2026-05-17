@@ -49,6 +49,7 @@ def _project_section(config: Any) -> str:
         f"- Language: {config.language}\n"
         f"- Source: {config.src_dir}\n"
         f"- Tests: {config.test_dir}\n"
+        f"- LLM provider: {config.llm_provider}\n"
     )
     if config.test_markers:
         section += f"- Test markers: {', '.join(config.test_markers)}\n"
@@ -180,11 +181,14 @@ THE DGOV WAY:
     return "".join(sections)
 
 
-def _parse_task_scope(task_scope_json: str) -> Any:
+def _parse_task_scope(task_scope_json: str) -> Mapping[str, object] | None:
     try:
-        return json.loads(task_scope_json) if task_scope_json else None
-    except json.JSONDecodeError:
-        return None
+        scope = json.loads(task_scope_json) if task_scope_json else None
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid task scope JSON: {exc.msg}") from exc
+    if scope is not None and not isinstance(scope, dict):
+        raise ValueError("Invalid task scope payload: expected a JSON object")
+    return scope
 
 
 def _initial_messages(
@@ -277,6 +281,44 @@ def _exit_researcher(cleanup: Callable[[], None], code: int) -> None:
     sys.exit(code)
 
 
+def _task_scope_or_exit(task_scope_json: str) -> Mapping[str, object] | None:
+    try:
+        return _parse_task_scope(task_scope_json)
+    except ValueError as exc:
+        WorkerEvent("error", f"Task scope error: {exc}").emit()
+        sys.exit(1)
+
+
+def _config_or_exit(worktree: Path, project_config_json: str) -> Any:
+    try:
+        return resolve_config(worktree, project_config_json)
+    except ValueError as exc:
+        WorkerEvent("error", f"Project configuration error: {exc}").emit()
+        sys.exit(1)
+
+
+def _provider_or_exit(config: Any) -> Any:
+    if not config.llm_provider or not config.llm_base_url or not config.llm_api_key_env:
+        WorkerEvent(
+            "error",
+            "Provider configuration missing: set [project].provider and "
+            "[providers.<name>].base_url/api_key_env in .dgov/project.toml",
+        ).emit()
+        sys.exit(1)
+    api_key = os.environ.get(config.llm_api_key_env)
+    if not api_key:
+        WorkerEvent(
+            "error",
+            f"{config.llm_api_key_env} missing for provider {config.llm_provider!r}",
+        ).emit()
+        sys.exit(1)
+    return create_provider(
+        name=config.llm_provider,
+        base_url=config.llm_base_url,
+        api_key=api_key,
+    )
+
+
 def _build_runtime_state(
     goal: str,
     worktree: Path,
@@ -287,15 +329,10 @@ def _build_runtime_state(
 
     Returns: (config, provider, actuators, task_scope, cleanup, messages, allowed_tools, budget)
     """
-    config = resolve_config(worktree, project_config_json)
-    api_key = os.environ.get(config.llm_api_key_env)
-    if not api_key:
-        WorkerEvent("error", f"{config.llm_api_key_env} missing").emit()
-        sys.exit(1)
-
-    provider = create_provider(base_url=config.llm_base_url, api_key=api_key)
+    task_scope = _task_scope_or_exit(task_scope_json)
+    config = _config_or_exit(worktree, project_config_json)
+    provider = _provider_or_exit(config)
     actuators = AtomicTools(worktree, config)
-    task_scope = _parse_task_scope(task_scope_json)
 
     def _cleanup() -> None:
         shutil.rmtree(actuators._sandbox_home, ignore_errors=True)
@@ -351,7 +388,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--goal", required=True)
     parser.add_argument("--worktree", required=True)
-    parser.add_argument("--model", default="accounts/fireworks/routers/kimi-k2p6-turbo")
+    parser.add_argument("--model", default="")
     parser.add_argument("--project-config", default="", help="JSON-encoded project config")
     parser.add_argument("--task-scope", default="", help="JSON-encoded task file-claim scope")
     args = parser.parse_args()

@@ -9,6 +9,23 @@ from click.testing import CliRunner
 from dgov.cli import cli
 
 
+def write_test_provider_config(root: Path) -> None:
+    """Write a neutral provider config for tests that compile executable plans."""
+    dgov_dir = root / ".dgov"
+    dgov_dir.mkdir(exist_ok=True)
+    (dgov_dir / "project.toml").write_text(
+        """
+[project]
+provider = "test-provider"
+
+[providers.test-provider]
+default_agent = "provider/model-name"
+base_url = "https://provider.example.com/v1"
+api_key_env = "TEST_PROVIDER_API_KEY"
+""".lstrip()
+    )
+
+
 def compile_plan_tree(tmp_path: Path, name: str, tasks_toml: str, sections: str = "tasks") -> Path:
     """Create a Plan Tree structure and compile it using dgov compile.
 
@@ -21,6 +38,8 @@ def compile_plan_tree(tmp_path: Path, name: str, tasks_toml: str, sections: str 
     )
     if result.exit_code != 0:
         raise RuntimeError(f"init-plan failed: {result.output}")
+
+    write_test_provider_config(Path.cwd())
 
     plan_root = Path(".dgov") / "plans" / name
 

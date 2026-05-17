@@ -614,12 +614,12 @@ class TestProjectConfig:
         assert config.test_markers == ("unit", "integration")
         assert config.conventions == {"style": "rustfmt"}
 
-    def test_corrupt_toml_returns_defaults(self, worker_module, tmp_path):
+    def test_corrupt_toml_raises(self, worker_module, tmp_path):
         dgov_dir = tmp_path / ".dgov"
         dgov_dir.mkdir()
         (dgov_dir / "project.toml").write_text("this is not valid toml {{{")
-        config = worker_module._load_project_config(tmp_path)
-        assert config.language == "python"
+        with pytest.raises(ValueError, match="Invalid TOML"):
+            worker_module._load_project_config(tmp_path)
 
 
 # -- Tool spec completeness --

@@ -86,6 +86,7 @@ def _make_test_task(
     prompt: str = "do it",
     commit_message: str = "test: task",
     agent: str = "test-agent",
+    provider: str | None = None,
     files: DagFileSpec | None = None,
     iteration_budget: int | None = None,
 ) -> DagTaskSpec:
@@ -98,6 +99,7 @@ def _make_test_task(
         prompt=prompt,
         commit_message=commit_message,
         agent=agent,
+        provider=provider,
         files=files,
         iteration_budget=iteration_budget,
     )
@@ -110,11 +112,24 @@ def _setup_project_toml(tmp_path: Path, content: str) -> None:
     (dgov_dir / "project.toml").write_text(content)
 
 
+def _project_toml_with_provider(project_settings: str = "") -> str:
+    return f"""
+[project]
+provider = "test-provider"
+{project_settings}
+
+[providers.test-provider]
+base_url = "https://provider.test/v1"
+api_key_env = "TEST_PROVIDER_API_KEY"
+"""
+
+
 def test_run_headless_worker_uses_project_config_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _setup_project_toml(
-        tmp_path, '[project]\ntype_check_cmd = "uv run ty check"\nline_length = 120\n'
+        tmp_path,
+        _project_toml_with_provider('type_check_cmd = "uv run ty check"\nline_length = 120\n'),
     )
     task = _make_test_task()
     captured: dict[str, object] = {}
@@ -152,7 +167,7 @@ def test_run_headless_worker_uses_project_config_payload(
 
 
 def test_config_json_for_task_applies_iteration_budget_override(tmp_path: Path) -> None:
-    _setup_project_toml(tmp_path, "[project]\nworker_iteration_budget = 50\n")
+    _setup_project_toml(tmp_path, _project_toml_with_provider("worker_iteration_budget = 50\n"))
     task = _make_test_task(iteration_budget=9)
 
     payload = json.loads(_config_json_for_task(str(tmp_path), task))
@@ -160,9 +175,35 @@ def test_config_json_for_task_applies_iteration_budget_override(tmp_path: Path) 
     assert payload["worker_iteration_budget"] == 9
 
 
+def test_config_json_for_task_applies_provider_override(tmp_path: Path) -> None:
+    _setup_project_toml(
+        tmp_path,
+        """
+[project]
+provider = "fireworks"
+
+[providers.fireworks]
+base_url = "https://api.fireworks.ai/inference/v1"
+api_key_env = "FIREWORKS_API_KEY"
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+""",
+    )
+    task = _make_test_task(provider="openai")
+
+    payload = json.loads(_config_json_for_task(str(tmp_path), task))
+
+    assert payload["llm_provider"] == "openai"
+    assert payload["llm_base_url"] == "https://api.openai.com/v1"
+    assert payload["llm_api_key_env"] == "OPENAI_API_KEY"
+
+
 def test_run_headless_worker_emits_plan_name_on_worker_logs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _setup_project_toml(tmp_path, _project_toml_with_provider())
     task = _make_test_task()
     emitted: list = []
 
@@ -200,3 +241,87 @@ def test_run_headless_worker_emits_plan_name_on_worker_logs(
     assert evt.task_slug == "t1"
     assert evt.log_type == "thought"
     assert evt.content == "hi"
+
+
+def test_run_headless_worker_ignores_malformed_worker_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup_project_toml(tmp_path, _project_toml_with_provider())
+    task = _make_test_task()
+    emitted: list = []
+    exits, on_exit = _make_exit_recorder()
+
+    def _capture_emit(session_root, event, pane="", **kwargs):
+        emitted.append(event)
+
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        _make_mock_subprocess_exec(
+            exit_code=0,
+            stdout_lines=[
+                b'{"worker_event":{"content":"missing type"}}\n',
+                b'{"worker_event":{"type":"done","content":"ok"}}\n',
+            ],
+        ),
+    )
+    monkeypatch.setattr("dgov.workers.headless.emit_event", _capture_emit)
+
+    asyncio.run(
+        run_headless_worker(
+            project_root=str(tmp_path),
+            plan_name="plan-1",
+            task_slug="t1",
+            pane_slug="pane-1",
+            worktree_path=tmp_path,
+            task=task,
+            task_scope={"task_slug": "t1", "create": ["x.py"]},
+            on_exit=on_exit,
+        )
+    )
+
+    assert exits == [(0, "", 0, 0)]
+    assert len(emitted) == 1
+    assert emitted[0].log_type == "done"
+
+
+def test_run_headless_worker_ignores_non_object_json_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup_project_toml(tmp_path, _project_toml_with_provider())
+    task = _make_test_task()
+    emitted: list = []
+    exits, on_exit = _make_exit_recorder()
+
+    def _capture_emit(session_root, event, pane="", **kwargs):
+        emitted.append(event)
+
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        _make_mock_subprocess_exec(
+            exit_code=0,
+            stdout_lines=[
+                b'["not-an-event"]\n',
+                b'{"worker_event":{"type":"thought","content":"ok"}}\n',
+            ],
+        ),
+    )
+    monkeypatch.setattr("dgov.workers.headless.emit_event", _capture_emit)
+
+    asyncio.run(
+        run_headless_worker(
+            project_root=str(tmp_path),
+            plan_name="plan-1",
+            task_slug="t1",
+            pane_slug="pane-1",
+            worktree_path=tmp_path,
+            task=task,
+            task_scope={"task_slug": "t1", "create": ["x.py"]},
+            on_exit=on_exit,
+        )
+    )
+
+    assert exits == [(0, "", 0, 0)]
+    assert len(emitted) == 1
+    assert emitted[0].log_type == "thought"

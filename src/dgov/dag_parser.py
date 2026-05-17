@@ -34,6 +34,7 @@ class DagTaskSpec(BaseModel):
     prompt_file: str | None = None
     commit_message: str | None = None
     agent: str | None = None
+    provider: str | None = None
     role: Literal["worker", "researcher", "reviewer"] = "worker"
     depends_on: tuple[str, ...] = ()
     files: DagFileSpec = Field(default_factory=DagFileSpec)
@@ -66,6 +67,7 @@ class DagDefinition(BaseModel):
     default_max_retries: int = 3
     source_mtime_max: str = ""
     sop_set_hash: str = ""
+    default_provider: str = ""
 
 
 def parse_dag_file(path: str) -> DagDefinition:
@@ -102,6 +104,7 @@ def parse_dag_file(path: str) -> DagDefinition:
         session_root=plan_section.get("session_root", "."),
         tasks=tasks,
         default_agent=plan_section.get("default_agent", ""),
+        default_provider=plan_section.get("default_provider", ""),
         default_max_retries=plan_section.get(
             "default_max_retries",
             plan_section.get("max_retries", 3),

@@ -30,6 +30,27 @@ from dgov.workers.runtime import execute_tool_call  # noqa: E402
 pytestmark = pytest.mark.unit
 
 
+class _LengthFinishMessage:
+    content = None
+
+    def __init__(self) -> None:
+        self.tool_calls = []
+
+    def model_dump(self, exclude_none: bool = True):
+        return {"role": "assistant"}
+
+
+class _LengthFinishProvider:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def create_chat_completion(self, **kwargs):
+        self.call_count += 1
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=_LengthFinishMessage(), finish_reason="length")]
+        )
+
+
 def test_researcher_prompt_uses_configured_budget_and_repo_map(tmp_path: Path) -> None:
     for idx in range(90):
         (tmp_path / f"file_{idx:03}.txt").write_text("x\n")
@@ -158,28 +179,11 @@ def test_researcher_execution_rejects_disallowed_tool(tmp_path: Path) -> None:
 def test_run_researcher_uses_configured_iteration_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("TEST_PROVIDER_API_KEY", "test-key")
     events: list[tuple[str, object]] = []
-    call_count = 0
+    provider = _LengthFinishProvider()
 
-    class _FakeMessage:
-        content = None
-
-        def __init__(self) -> None:
-            self.tool_calls = []
-
-        def model_dump(self, exclude_none: bool = True):
-            return {"role": "assistant"}
-
-    class _FakeProvider:
-        def create_chat_completion(self, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=_FakeMessage(), finish_reason="length")]
-            )
-
-    monkeypatch.setattr("dgov.researcher.create_provider", lambda **_kwargs: _FakeProvider())
+    monkeypatch.setattr("dgov.researcher.create_provider", lambda **_kwargs: provider)
     monkeypatch.setattr(
         "dgov.workers.runtime.WorkerEvent.emit",
         lambda self: events.append((self.type, self.content)),
@@ -190,9 +194,58 @@ def test_run_researcher_uses_configured_iteration_budget(
             "investigate",
             tmp_path,
             "test-model",
-            json.dumps({"worker_iteration_budget": 2}),
+            json.dumps({
+                "llm_provider": "test-provider",
+                "llm_base_url": "https://provider.test/v1",
+                "llm_api_key_env": "TEST_PROVIDER_API_KEY",
+                "worker_iteration_budget": 2,
+            }),
         )
 
     assert excinfo.value.code == 1
-    assert call_count == 2
+    assert provider.call_count == 2
     assert events[-1] == ("error", "Exceeded max iterations (2)")
+
+
+def test_run_researcher_reports_invalid_project_config_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        "dgov.workers.runtime.WorkerEvent.emit",
+        lambda self: events.append((self.type, self.content)),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_researcher("investigate", tmp_path, "test-model", "{not-json")
+
+    assert excinfo.value.code == 1
+    assert events == [
+        (
+            "error",
+            "Project configuration error: Invalid worker project config JSON: "
+            "Expecting property name enclosed in double quotes",
+        )
+    ]
+
+
+def test_run_researcher_reports_invalid_task_scope_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        "dgov.workers.runtime.WorkerEvent.emit",
+        lambda self: events.append((self.type, self.content)),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_researcher("investigate", tmp_path, "test-model", "", "{not-json")
+
+    assert excinfo.value.code == 1
+    assert events == [
+        (
+            "error",
+            "Task scope error: Invalid task scope JSON: "
+            "Expecting property name enclosed in double quotes",
+        )
+    ]

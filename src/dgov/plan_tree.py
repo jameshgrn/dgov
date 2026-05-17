@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from dgov.plan import PlanUnit, PlanUnitFiles
 
@@ -33,6 +33,8 @@ class RootMeta:
     name: str
     summary: str
     sections: tuple[str, ...]
+    default_agent: str = ""
+    default_provider: str = ""
 
 
 @dataclass(frozen=True)
@@ -63,12 +65,10 @@ class FlatPlan:
 def _load_root_meta(root_file: Path) -> RootMeta:
     raw = tomllib.loads(root_file.read_text())
     plan_section = raw.get("plan")
-    if not plan_section:
+    if not isinstance(plan_section, dict) or not plan_section:
         raise ValueError(f"_root.toml missing [plan] section: {root_file}")
 
-    name = plan_section.get("name")
-    if not name:
-        raise ValueError(f"_root.toml [plan] missing 'name': {root_file}")
+    name = _root_string(plan_section, "name", root_file, required=True)
 
     sections = plan_section.get("sections", [])
     if not isinstance(sections, list):
@@ -78,9 +78,30 @@ def _load_root_meta(root_file: Path) -> RootMeta:
 
     return RootMeta(
         name=name,
-        summary=plan_section.get("summary", ""),
+        summary=_root_string(plan_section, "summary", root_file),
         sections=tuple(sections),
+        default_agent=_root_string(plan_section, "default_agent", root_file),
+        default_provider=_root_string(plan_section, "default_provider", root_file),
     )
+
+
+def _root_string(
+    plan_section: dict[str, Any],
+    key: str,
+    root_file: Path,
+    *,
+    required: bool = False,
+) -> str:
+    if key not in plan_section:
+        if required:
+            raise ValueError(f"_root.toml [plan] missing '{key}': {root_file}")
+        return ""
+    value = plan_section[key]
+    if not isinstance(value, str):
+        raise ValueError(f"_root.toml [plan].{key} must be a string: {root_file}")
+    if required and not value.strip():
+        raise ValueError(f"_root.toml [plan].{key} must be a non-empty string: {root_file}")
+    return value
 
 
 def _section_unit_files(plan_root: Path, section: str) -> tuple[Path, ...]:
@@ -268,6 +289,22 @@ def _str_list(value: Any, field: str, context: Path) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _task_string(data: dict[str, Any], key: str, source: Path, default: str = "") -> str:
+    value = data.get(key, default)
+    if not isinstance(value, str):
+        raise ValueError(f"[tasks.*].{key} must be a string in {source}")
+    return value
+
+
+def _task_role(data: dict[str, Any], source: Path) -> Literal["worker", "researcher", "reviewer"]:
+    value = _task_string(data, "role", source, default="worker")
+    if value not in {"worker", "researcher", "reviewer"}:
+        raise ValueError(
+            f"[tasks.*].role must be one of: worker, researcher, reviewer in {source}"
+        )
+    return cast(Literal["worker", "researcher", "reviewer"], value)
+
+
 def _unit_from_task(fq_id: str, data: dict[str, Any], source: Path) -> PlanUnit:
     """Build a PlanUnit from a parsed `[tasks.<slug>]` table."""
     files_data = data.get("files", {})
@@ -286,16 +323,17 @@ def _unit_from_task(fq_id: str, data: dict[str, Any], source: Path) -> PlanUnit:
         raise ValueError(f"[tasks.*].files must be a list or table in {source}")
     return PlanUnit(
         slug=fq_id,
-        summary=data.get("summary", ""),
-        prompt=data.get("prompt", ""),
-        commit_message=data.get("commit_message", ""),
+        summary=_task_string(data, "summary", source),
+        prompt=_task_string(data, "prompt", source),
+        commit_message=_task_string(data, "commit_message", source),
         files=files,
         depends_on=_str_list(data.get("depends_on", []), "depends_on", source),
-        agent=data.get("agent", ""),
-        role=data.get("role", "worker"),
+        agent=_task_string(data, "agent", source),
+        provider=_task_string(data, "provider", source),
+        role=_task_role(data, source),
         timeout_s=data.get("timeout_s", 0),
         iteration_budget=data.get("iteration_budget"),
-        test_cmd=data.get("test_cmd", ""),
+        test_cmd=_task_string(data, "test_cmd", source),
         sop_mapping=_str_list(data.get("sop_mapping", []), "sop_mapping", source),
     )
 

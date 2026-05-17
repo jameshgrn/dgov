@@ -43,7 +43,7 @@ def _config_json_for_task(project_root: str, task: DagTaskSpec) -> str:
     """Serialize worker config, applying task-local overrides in memory only."""
     from dgov.config import load_project_config
 
-    payload = load_project_config(project_root).to_worker_payload()
+    payload = load_project_config(project_root).to_worker_payload(task.provider)
     if task.iteration_budget is not None:
         payload["worker_iteration_budget"] = task.iteration_budget
     return json.dumps(payload)
@@ -126,7 +126,11 @@ def _handle_worker_event(
     ev = _worker_log_event(data)
     if ev is None:
         return None
-    log_type = str(ev["type"])
+    raw_type = ev.get("type")
+    if not isinstance(raw_type, str) or raw_type == "":
+        logger.warning("Worker [%s] emitted malformed worker_event: %r", task_slug, ev)
+        return None
+    log_type = raw_type
     content = ev.get("content")
     _emit_worker_log(
         project_root=project_root,
@@ -181,26 +185,37 @@ async def _drain_worker_stdout(
         line_bytes = await process.stdout.readline()
         if not line_bytes:
             break
-        line = line_bytes.decode().strip()
-        try:
-            data = json.loads(line)
-            error = _handle_worker_event(
-                data,
-                project_root=project_root,
-                plan_name=plan_name,
-                task_slug=task_slug,
-                pane_slug=pane_slug,
-                on_event=on_event,
-            )
-            if error is not None:
-                last_error = error
-            if tokens := _worker_tokens(data):
-                prompt_tokens, completion_tokens = tokens
-        except json.JSONDecodeError:
-            if line:
-                logger.debug("Worker [%s] raw: %s", task_slug, line)
+        data = _decode_worker_stdout_line(line_bytes, task_slug)
+        if data is None:
+            continue
+        error = _handle_worker_event(
+            data,
+            project_root=project_root,
+            plan_name=plan_name,
+            task_slug=task_slug,
+            pane_slug=pane_slug,
+            on_event=on_event,
+        )
+        if error is not None:
+            last_error = error
+        if tokens := _worker_tokens(data):
+            prompt_tokens, completion_tokens = tokens
 
     return last_error, prompt_tokens, completion_tokens
+
+
+def _decode_worker_stdout_line(line_bytes: bytes, task_slug: str) -> dict | None:
+    line = line_bytes.decode().strip()
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        if line:
+            logger.debug("Worker [%s] raw: %s", task_slug, line)
+        return None
+    if not isinstance(data, dict):
+        logger.warning("Worker [%s] emitted non-object JSON: %r", task_slug, data)
+        return None
+    return data
 
 
 def _report_exit(

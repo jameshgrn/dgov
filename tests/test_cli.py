@@ -584,6 +584,68 @@ commit_message = "a"
         assert data["tasks"] == 1
 
 
+def test_validate_rejects_unknown_task_provider(runner: CliRunner, tmp_path: Path) -> None:
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        root = Path(td)
+        dgov_dir = root / ".dgov"
+        plan_dir = dgov_dir / "plans" / "provider"
+        plan_dir.mkdir(parents=True)
+        (dgov_dir / "project.toml").write_text(
+            """
+[project]
+provider = "test-provider"
+
+[providers.test-provider]
+default_agent = "provider/model-name"
+base_url = "https://provider.example.com/v1"
+api_key_env = "TEST_PROVIDER_API_KEY"
+""",
+            encoding="utf-8",
+        )
+        compiled_path = plan_dir / "_compiled.toml"
+        compiled_path.write_text(
+            '[plan]\nname = "provider"\nsource_mtime_max = "2026-04-10T12:00:00Z"\n\n'
+            "[tasks.a]\n"
+            'summary = "Do a"\n'
+            'prompt = "Orient:\\nContext.\\n\\nEdit:\\n1. Change.\\n\\nVerify:\\n- Check."\n'
+            'commit_message = "a"\n'
+            'provider = "missing"\n'
+            'agent = "some/model"\n'
+            'files = ["README.md"]\n',
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(cli, ["validate", str(compiled_path)])
+
+        assert result.exit_code != 0
+        assert "Unknown provider 'missing'" in result.output
+
+
+def test_validate_rejects_missing_provider_config(runner: CliRunner, tmp_path: Path) -> None:
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        root = Path(td)
+        dgov_dir = root / ".dgov"
+        plan_dir = dgov_dir / "plans" / "provider"
+        plan_dir.mkdir(parents=True)
+        (dgov_dir / "project.toml").write_text("[project]\n", encoding="utf-8")
+        compiled_path = plan_dir / "_compiled.toml"
+        compiled_path.write_text(
+            '[plan]\nname = "provider"\nsource_mtime_max = "2026-04-10T12:00:00Z"\n\n'
+            "[tasks.a]\n"
+            'summary = "Do a"\n'
+            'prompt = "Orient:\\nContext.\\n\\nEdit:\\n1. Change.\\n\\nVerify:\\n- Check."\n'
+            'commit_message = "a"\n'
+            'agent = "some/model"\n'
+            'files = ["README.md"]\n',
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(cli, ["validate", str(compiled_path)])
+
+        assert result.exit_code != 0
+        assert "No provider for task" in result.output
+
+
 def test_validate_rejects_department_violation(runner: CliRunner, tmp_path: Path) -> None:
     with runner.isolated_filesystem(temp_dir=tmp_path) as td:
         root = Path(td)
@@ -656,9 +718,11 @@ def test_init_creates_bootstrap_files(
         content = config.read_text()
         assert 'language = "python"' in content
         assert 'src_dir = "src/"' in content
-        assert 'default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"' in content
-        assert 'llm_base_url = "https://api.fireworks.ai/inference/v1"' in content
-        assert 'llm_api_key_env = "FIREWORKS_API_KEY"' in content
+        assert '# provider = "your-provider"' in content
+        assert "# [providers.your-provider]" in content
+        assert '# default_agent = "provider/model-name"' in content
+        assert '# base_url = "https://provider.example.com/v1"' in content
+        assert '# api_key_env = "YOUR_PROVIDER_API_KEY"' in content
         assert '# Run "dgov sentrux gate-save" after bootstrap' in content
         assert 'test_cmd = "uv run pytest {test_dir} -q --tb=short"' in content
         assert 'lint_cmd = "uv run ruff check {file}"' in content
@@ -696,6 +760,34 @@ def test_sentrux_check_passes_requested_path_without_chdir(
 
     assert result.exit_code == 0
     assert calls == [(["check", "src"], None)]
+
+
+def test_sentrux_check_reports_stdout_and_stderr_on_failure(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("dgov.cli.sentrux.sentrux_available", lambda: True)
+
+    def _mock_run(
+        args: list[str],
+        cwd: str | None = None,
+        timeout: float = 30.0,
+        check: bool = True,
+    ):
+        raise subprocess.CalledProcessError(
+            1,
+            ["sentrux", *args],
+            output="Quality: 6656\nmin_quality failed\n",
+            stderr="Scanning ...\n",
+        )
+
+    monkeypatch.setattr("dgov.cli.sentrux.run_sentrux", _mock_run)
+
+    result = runner.invoke(cli, ["sentrux", "check"])
+
+    assert result.exit_code == 1
+    assert "Quality: 6656" in result.output
+    assert "min_quality failed" in result.output
+    assert "Scanning ..." in result.output
 
 
 def _init_cli_git_repo(tmp_path: Path) -> str:
@@ -1110,11 +1202,10 @@ def test_init_project_type_swift_writes_swift_config(
         assert 'language = "swift"' in config
         assert 'src_dir = "Sources/"' in config
         assert 'test_dir = "Tests/"' in config
-        assert 'lint_cmd = "xcrun swift-format lint --strict {file}"' in config
-        assert (
-            'setup_cmd = "if [ -f project.yml ]; then USER=$(whoami) xcodegen generate; fi"'
-            in config
-        )
+        assert 'lint_cmd = ""  # Configure a project-local lint command' in config
+        assert '# setup_cmd = ""  # Runs in worktree before gates' in config
+        assert "xcodegen" not in config
+        assert "xcrun swift-format" not in config
         assert "pane: unavailable" in result.output
         assert "worker env:" in result.output
 
@@ -1126,7 +1217,9 @@ def test_render_project_toml() -> None:
     content = _render_project_toml("python", "src/", "tests/", [".py"], ["uv.lock"])
     assert "[project]" in content
     assert 'language = "python"' in content
-    assert 'llm_api_key_env = "FIREWORKS_API_KEY"' in content
+    assert '# provider = "your-provider"' in content
+    assert "# [providers.your-provider]" in content
+    assert '# api_key_env = "YOUR_PROVIDER_API_KEY"' in content
     assert 'format_cmd = "uv run ruff format {file}"' in content
     assert 'ignore_files = ["uv.lock"]' in content
     assert "built-in" in content
@@ -1311,6 +1404,16 @@ def test_plan_remediate_rejects_non_degraded_plan(
 
     assert result.exit_code == 1
     assert "fully deployed plans whose last run status is degraded" in result.output
+
+
+def test_plan_remediate_reports_invalid_compiled_toml(runner: CliRunner, tmp_path: Path) -> None:
+    plan_dir = _make_compiled_plan(tmp_path, "source-plan", {"tasks/main.a": "do a"})
+    (plan_dir / "_compiled.toml").write_text("this is not valid toml {{{")
+
+    result = runner.invoke(cli, ["plan", "remediate", str(plan_dir)])
+
+    assert result.exit_code == 1
+    assert "Invalid compiled plan" in result.output
 
 
 def test_plan_remediate_fails_when_live_plan_exists(
@@ -1774,12 +1877,14 @@ def _run_only_plan_toml() -> str:
 summary = "task a"
 prompt = "do a"
 commit_message = "a"
+agent = "test-agent"
 files = ["a.py"]
 
 [tasks.b]
 summary = "task b"
 prompt = "do b"
 commit_message = "b"
+agent = "test-agent"
 depends_on = ["a"]
 files = ["b.py"]
 
@@ -1787,6 +1892,7 @@ files = ["b.py"]
 summary = "task c"
 prompt = "do c"
 commit_message = "c"
+agent = "test-agent"
 depends_on = ["b"]
 files = ["c.py"]
 """
@@ -1835,6 +1941,7 @@ def test_run_only_unknown_slug_exits(runner: CliRunner, tmp_path: Path) -> None:
 summary = "do a"
 prompt = "do a"
 commit_message = "a"
+agent = "test-agent"
 files = ["a.py"]
 """
         compiled_path = compile_plan_tree(Path.cwd(), "unknown-slug-test", tasks_toml)
@@ -1866,15 +1973,17 @@ def test_run_only_filters_plan(runner: CliRunner, tmp_path: Path) -> None:
 
 def test_run_rejects_uncompiled_plan(runner: CliRunner, tmp_path: Path) -> None:
     """Running with a single plan TOML file should fail with directory guidance."""
-    plan = tmp_path / "plan.toml"
-    plan.write_text(
-        '[plan]\nname = "test"\n\n'
-        "[tasks.a]\n"
-        'summary = "do a"\n'
-        'prompt = "do a"\n'
-        'commit_message = "a"\n'
-    )
-    result = runner.invoke(cli, ["run", str(plan)])
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        plan = Path("plan.toml")
+        plan.write_text(
+            '[plan]\nname = "test"\n\n'
+            "[tasks.a]\n"
+            'summary = "do a"\n'
+            'prompt = "do a"\n'
+            'commit_message = "a"\n'
+        )
+        result = runner.invoke(cli, ["run", str(plan)])
+
     assert result.exit_code == 1
     assert "requires a plan directory" in result.output.lower()
     assert "dgov run <plan-dir>" in result.output
