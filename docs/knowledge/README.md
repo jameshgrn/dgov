@@ -37,6 +37,22 @@ Required fields:
 `sources` must point outside `docs/knowledge/`. The KB pulls from canonical
 repo state; it does not cite itself as authority.
 
+## Traversal schema
+
+The knowledge graph built by `dgov kb graph` contains two node types and two
+edge types:
+
+- **Article nodes** — every article ID (`id` field).
+- **Source nodes** — every unique `sources` entry (repo-relative file path).
+- **Source edges** — `article --[source]--> source_file`. One per source
+  listed in an article's frontmatter.
+- **Related edges** — `article --[related]--> article`. One per entry in an
+  article's `related` list.
+
+`dgov kb related` follows only `related` edges. `dgov kb path` finds the
+shortest related-edge path between two articles. `dgov kb graph` emits the
+full set of nodes and edges.
+
 Validate the vault with:
 
 ```bash

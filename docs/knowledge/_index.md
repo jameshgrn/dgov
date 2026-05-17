@@ -12,6 +12,7 @@ related:
   - settlement-flow
   - failure-shapes
   - ledger
+  - obsidian-workflow
 ---
 
 # dgov Knowledge Base
@@ -31,3 +32,4 @@ The current starting points are:
 - `settlement-flow`: how candidate changes become accepted work
 - `failure-shapes`: how known failures map to typed next actions
 - `ledger`: durable operational memory
+- `obsidian-workflow`: using the repo root as an Obsidian vault

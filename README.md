@@ -85,6 +85,10 @@ files through frontmatter.
 dgov kb list
 dgov kb show sentrux
 dgov kb validate
+dgov kb graph              # dump article + source graph
+dgov kb related <id>       # follow related edges
+dgov kb path <from> <to>   # shortest path between articles
+dgov kb open <id>          # open an article in Obsidian
 ```
 
 The KB is explanatory material, not durable memory. Bugs, rules, decisions,
