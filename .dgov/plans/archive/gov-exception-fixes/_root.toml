@@ -1,0 +1,4 @@
+[plan]
+name = "gov-exception-fixes"
+summary = "Fix persistence and config governance exceptions"
+sections = ["tasks"]

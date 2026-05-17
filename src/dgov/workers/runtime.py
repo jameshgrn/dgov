@@ -37,8 +37,10 @@ def load_project_payload(worktree: Path) -> dict[str, object]:
         import tomllib
 
         raw = tomllib.loads(path.read_text())
-    except Exception:
-        return worker_payload_from_project_toml({})
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"Invalid TOML in {path}: {exc}") from exc
+    except OSError as exc:
+        raise ValueError(f"Could not read {path}: {exc}") from exc
     return worker_payload_from_project_toml(raw)
 
 
@@ -50,8 +52,10 @@ def resolve_config(worktree: Path, project_config_json: str) -> AtomicConfig:
     if project_config_json:
         try:
             return atomic_config_from_payload(json.loads(project_config_json))
-        except Exception:
-            pass
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid worker project config JSON: {exc.msg}") from exc
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid worker project config payload: {exc}") from exc
     return load_project_config(worktree)
 
 
@@ -576,9 +580,22 @@ def execute_tool_call(
     tool_index: int = 0,
 ) -> tuple[str, bool]:
     name = call.function.name
-    args = json.loads(call.function.arguments)
     call_id = _tool_call_id(call)
     start = time.perf_counter()
+    try:
+        args = json.loads(call.function.arguments)
+    except json.JSONDecodeError as exc:
+        args = {}
+        base_event = _tool_base_event(name, args, call_id, role, turn_index, tool_index)
+        WorkerEvent("call", base_event).emit()
+        result = f"Error: Tool {name} arguments contain invalid JSON: {exc.msg}"
+        return _emit_tool_result(base_event, start, result, "failed", []), False
+    if not isinstance(args, dict):
+        args = {}
+        base_event = _tool_base_event(name, args, call_id, role, turn_index, tool_index)
+        WorkerEvent("call", base_event).emit()
+        result = f"Error: Tool {name} arguments must be a JSON object."
+        return _emit_tool_result(base_event, start, result, "failed", []), False
     base_event = _tool_base_event(name, args, call_id, role, turn_index, tool_index)
     WorkerEvent("call", base_event).emit()
 

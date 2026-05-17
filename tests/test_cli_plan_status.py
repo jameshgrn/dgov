@@ -74,12 +74,35 @@ def test_status_not_compiled(runner: CliRunner, tmp_path: Path) -> None:
     assert "Not compiled" in result.output
 
 
+def test_status_reports_invalid_compiled_toml(runner: CliRunner, tmp_path: Path) -> None:
+    plan_dir = _make_plan_tree(tmp_path)
+    (plan_dir / "_compiled.toml").write_text("this is not valid toml {{{")
+
+    result = runner.invoke(cli, ["plan", "status", str(plan_dir)])
+
+    assert result.exit_code == 1
+    assert "Invalid compiled plan" in result.output
+    assert "_compiled.toml" in result.output
+
+
 def test_status_not_compiled_json(runner: CliRunner, tmp_path: Path) -> None:
     plan_dir = _make_plan_tree(tmp_path)
     result = runner.invoke(cli, ["--json", "plan", "status", str(plan_dir)])
     assert result.exit_code != 0
     data = json.loads(result.output)
     assert data["status"] == "not_compiled"
+
+
+def test_status_reports_invalid_compiled_toml_json(runner: CliRunner, tmp_path: Path) -> None:
+    plan_dir = _make_plan_tree(tmp_path)
+    (plan_dir / "_compiled.toml").write_text("this is not valid toml {{{")
+
+    result = runner.invoke(cli, ["--json", "plan", "status", str(plan_dir)])
+
+    assert result.exit_code == 1
+    data = json.loads(result.output)
+    assert data["status"] == "invalid_compiled_plan"
+    assert "_compiled.toml" in data["message"]
 
 
 def test_status_missing_plan_reports_error(runner: CliRunner, tmp_path: Path) -> None:

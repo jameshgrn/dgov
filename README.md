@@ -31,37 +31,35 @@ uv tool install --from . dgov
 ## Quick start
 
 ```bash
-# 1. Set your API key
-export FIREWORKS_API_KEY=your-key-here
-
-# 2. Bootstrap your project
+# 1. Bootstrap your project
 cd /path/to/your/repo
 # Run inside a git repo. For a new project, initialize git first:
 git rev-parse --is-inside-work-tree >/dev/null || git init
 dgov init                # Creates .dgov/project.toml, .dgov/governor.md, and .dgov/sops/
 
-# 3. Review bootstrap files
-# .dgov/project.toml: repo toolchain + LLM endpoint config
+# 2. Review bootstrap files and configure the provider placeholders
+# .dgov/project.toml: repo toolchain + LLM provider config
 # .dgov/governor.md: planning, retry, and done criteria for the governor
 # .dgov/sops/*.md: worker execution guidance and review/testing discipline
+export PROVIDER_API_KEY=your-key-here
 
-# 4. Create a plan tree
+# 3. Create a plan tree
 dgov init-plan my-plan      # Scaffolds .dgov/plans/my-plan/_root.toml + tasks/
 
-# 5. Edit .dgov/plans/my-plan/tasks/main.toml, then compile it
+# 4. Edit .dgov/plans/my-plan/tasks/main.toml, then compile it
 dgov compile .dgov/plans/my-plan/
 
-# 6. Run the compiled plan
+# 5. Run the compiled plan
 # If the repo has no commits yet, dgov will create a bootstrap snapshot.
 # If the repo has no .sentrux/baseline.json yet, dgov run bootstraps it once.
 # Clean complete full-plan runs refresh the accepted baseline after comparison.
 dgov run .dgov/plans/my-plan/
 
-# 7. Monitor progress in another terminal
+# 6. Monitor progress in another terminal
 dgov watch
 ```
 
-For the auto-plan path, replace steps 4–6 with `dgov plan create "<goal>"`. The
+For the auto-plan path, replace steps 3–5 with `dgov plan create "<goal>"`. The
 planner agent explores the repo and writes a plan tree; add `--run` to compile
 and execute it immediately.
 
@@ -97,31 +95,33 @@ patterns, and debt still belong in `dgov ledger`.
 ## Project configuration
 
 `.dgov/project.toml` carries everything repo-scoped: language, toolchain
-commands, LLM endpoint, tool policy, verification recipes, and coverage knobs.
-`dgov init` auto-detects most of it. Task-level `agent = "..."`
-overrides the model/router name only.
+commands, LLM providers, tool policy, verification recipes, and coverage knobs.
+`dgov init` auto-detects most of it. Task-level `provider = "..."` selects
+the endpoint, while `agent = "..."` overrides the model/router name.
 
-### LLM endpoint
+### LLM providers
 
-`dgov` talks to an OpenAI-compatible HTTP endpoint. Default:
+`dgov` talks to OpenAI-compatible HTTP endpoints. Example provider:
 
 ```toml
 [project]
-default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
-llm_base_url = "https://api.fireworks.ai/inference/v1"
-llm_api_key_env = "FIREWORKS_API_KEY"
+provider = "llm"
+
+[providers.llm]
+default_agent = "provider/model-name"
+base_url = "https://provider.example.com/v1"
+api_key_env = "PROVIDER_API_KEY"
 ```
 
-For Anthropic-compatible clients outside `dgov`, use the same Fireworks router
-with the Anthropic-compatible endpoint:
+For clients outside `dgov`, use the endpoint shape required by that provider:
 
 ```text
-base_url = "https://api.fireworks.ai/inference"
-model = "accounts/fireworks/routers/kimi-k2p6-turbo"
-api_key_env = "FIREWORKS_API_KEY"
+base_url = "https://provider.example.com/v1"
+model = "provider/model-name"
+api_key_env = "PROVIDER_API_KEY"
 ```
 
-Export the matching env var before `dgov compile` or `dgov run`.
+Export the matching env var before `dgov run`.
 
 ### Tool policy
 

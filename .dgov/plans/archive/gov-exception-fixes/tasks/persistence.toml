@@ -1,0 +1,34 @@
+[tasks.event-migration]
+summary = "Persistence: fix event schema migration and write errors"
+prompt = """
+Orient:
+1. Read src/dgov/persistence/sql.py, src/dgov/persistence/schema.py, src/dgov/persistence/connection.py, and src/dgov/persistence/events.py.
+2. Read tests/test_migration.py and tests/test_persistence_events.py.
+3. Fix ledger bug #192. Do not change unrelated persistence behavior.
+
+Edit:
+1. Update src/dgov/persistence/connection.py so migration brings legacy events tables up to the full current event schema, including the data column and every typed event column currently used by read_events().
+2. Keep the migration idempotent and explicit. A legacy database created with only id/ts/event/pane must work after _get_db().
+3. Update src/dgov/persistence/events.py so emit_event() does not swallow unrelated persistence failures as "database locked". It should fail fast with clear context for non-lock failures. If lock-drop behavior remains, make it specific to sqlite lock failures only.
+4. Add or update focused unit tests in tests/test_migration.py and tests/test_persistence_events.py that fail on the current bug:
+   - legacy events schema missing data/error/reason/etc migrates successfully;
+   - read_events() works after migration;
+   - emit_event() propagates a non-lock persistence failure instead of silently dropping it.
+
+Verify:
+1. uv run pytest -q -m unit tests/test_migration.py tests/test_persistence_events.py
+2. uv run ruff check src/dgov/persistence/connection.py src/dgov/persistence/events.py tests/test_migration.py tests/test_persistence_events.py
+3. uv run ruff format --check src/dgov/persistence/connection.py src/dgov/persistence/events.py tests/test_migration.py tests/test_persistence_events.py
+"""
+commit_message = "Fix event persistence migration"
+files.edit = [
+  "src/dgov/persistence/connection.py",
+  "src/dgov/persistence/events.py",
+  "tests/test_migration.py",
+  "tests/test_persistence_events.py",
+]
+files.read = [
+  "src/dgov/persistence/sql.py",
+  "src/dgov/persistence/schema.py",
+]
+test_cmd = "uv run pytest -q -m unit tests/test_migration.py tests/test_persistence_events.py"

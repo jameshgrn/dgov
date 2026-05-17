@@ -338,6 +338,7 @@ def _next_backoff_delay(backoff_iter: Iterator[float], exc: Exception) -> float:
 @dataclass(frozen=True)
 class OpenAICompatibleProvider:
     client: Any
+    name: str = ""
 
     def create_chat_completion(self, **kwargs: Any) -> Any:
         return call_with_rate_limit_backoff(
@@ -346,6 +347,6 @@ class OpenAICompatibleProvider:
         )
 
 
-def create_provider(*, base_url: str, api_key: str) -> OpenAICompatibleProvider:
+def create_provider(*, base_url: str, api_key: str, name: str = "") -> OpenAICompatibleProvider:
     client = OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
-    return OpenAICompatibleProvider(client)
+    return OpenAICompatibleProvider(client, name=name)

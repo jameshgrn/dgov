@@ -44,6 +44,37 @@ class TestHappyPath:
         assert tree.root_meta.summary == "test plan"
         assert tree.root_meta.sections == ("alpha",)
 
+    def test_parses_root_default_provider(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path / "_root.toml",
+            "[plan]\n"
+            'name = "test"\n'
+            'sections = ["alpha"]\n'
+            'default_agent = "gpt-test"\n'
+            'default_provider = "openai"\n',
+        )
+        (tmp_path / "alpha").mkdir()
+        tree = walk_tree(tmp_path)
+        assert tree.root_meta.default_agent == "gpt-test"
+        assert tree.root_meta.default_provider == "openai"
+
+    @pytest.mark.parametrize("field", ["name", "summary", "default_agent", "default_provider"])
+    def test_rejects_non_string_root_string_fields(self, tmp_path: Path, field: str) -> None:
+        value = "123" if field == "name" else '"test"'
+        fields = {
+            "name": value,
+            "summary": '"test plan"',
+            "sections": '["alpha"]',
+            "default_agent": '"gpt-test"',
+            "default_provider": '"openai"',
+        }
+        fields[field] = "123"
+        body = "\n".join(f"{key} = {field_value}" for key, field_value in fields.items())
+        _write(tmp_path / "_root.toml", f"[plan]\n{body}\n")
+
+        with pytest.raises(ValueError, match=rf"\[plan\]\.{field} must be a string"):
+            walk_tree(tmp_path)
+
     def test_preserves_section_order(self, tmp_path: Path) -> None:
         _minimal_root(tmp_path, '["charlie", "alpha", "bravo"]')
         for s in ("charlie", "alpha", "bravo"):
@@ -141,7 +172,7 @@ class TestErrors:
 
     def test_empty_name_rejected(self, tmp_path: Path) -> None:
         _write(tmp_path / "_root.toml", '[plan]\nname = ""\nsections = []\n')
-        with pytest.raises(ValueError, match="missing 'name'"):
+        with pytest.raises(ValueError, match=r"\[plan\]\.name must be a non-empty string"):
             walk_tree(tmp_path)
 
     def test_sections_not_list(self, tmp_path: Path) -> None:
@@ -317,6 +348,7 @@ summary = "sum"
 prompt = "prm"
 commit_message = "msg"
 agent = "acct/model"
+provider = "openai"
 role = "researcher"
 depends_on = ["a", "b/c.d"]
 timeout_s = 123
@@ -332,6 +364,7 @@ files.delete = ["gone.py"]
         assert unit.prompt == "prm"
         assert unit.commit_message == "msg"
         assert unit.agent == "acct/model"
+        assert unit.provider == "openai"
         assert unit.role == "researcher"
         assert unit.depends_on == ("a", "b/c.d")
         assert unit.timeout_s == 123
@@ -346,11 +379,47 @@ files.delete = ["gone.py"]
         plan = merge_tree(walk_tree(tmp_path))
         unit = plan.units["alpha/one.minimal"]
         assert unit.agent == ""
+        assert unit.provider == ""
         assert unit.role == "worker"
         assert unit.depends_on == ()
         assert unit.timeout_s == 0
         assert unit.iteration_budget is None
         assert unit.files.create == ()
+
+    @pytest.mark.parametrize(
+        "field",
+        ["summary", "prompt", "commit_message", "agent", "provider", "role", "test_cmd"],
+    )
+    def test_rejects_non_string_task_string_fields(self, tmp_path: Path, field: str) -> None:
+        fields = {
+            "summary": '"s"',
+            "prompt": '"p"',
+            "commit_message": '"c"',
+            "agent": '"acct/model"',
+            "provider": '"openai"',
+            "role": '"worker"',
+            "test_cmd": '"uv run pytest -q tests/test_plan_tree.py"',
+        }
+        fields[field] = "123"
+        body = "\n".join(f"{key} = {value}" for key, value in fields.items())
+        content = f"[tasks.bad]\n{body}\n"
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+
+        with pytest.raises(ValueError, match=rf"\[tasks\.\*\]\.{field} must be a string"):
+            merge_tree(walk_tree(tmp_path))
+
+    def test_rejects_unknown_task_role(self, tmp_path: Path) -> None:
+        content = """
+[tasks.bad]
+summary = "s"
+prompt = "p"
+commit_message = "c"
+role = "mystery"
+"""
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+
+        with pytest.raises(ValueError, match="role must be one of"):
+            merge_tree(walk_tree(tmp_path))
 
     def test_file_with_no_tasks_section(self, tmp_path: Path) -> None:
         _build_tree(tmp_path, ["alpha"], {"alpha/empty.toml": "# just a comment\n"})

@@ -54,6 +54,16 @@ def resolve_plan_input(path: Path) -> tuple[Path, Path | None]:
     return path, None
 
 
+def load_project_config_or_exit(root: str | Path):
+    """Load project config for CLI commands, converting parse failures to Click errors."""
+    from dgov.config import load_project_config
+
+    try:
+        return load_project_config(root)
+    except ValueError as exc:
+        raise click.ClickException(f"Project configuration error: {exc}") from None
+
+
 def print_dag_graph(units: dict) -> None:
     """Print an ASCII representation of a plan DAG.
 

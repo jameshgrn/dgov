@@ -8,9 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
-import os
-import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -19,12 +16,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from dgov.actions import InterruptGovernor, MergeTask
-from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
 from dgov.dispatch_run import DispatchRun
-from dgov.kernel import DagState
-from dgov.persistence import add_ledger_entry, clear_connection_cache
-from dgov.persistence.dispatch_runs import get_dispatch_run, save_dispatch_run
+from dgov.persistence import (
+    add_ledger_entry,
+    clear_connection_cache,
+    get_dispatch_run,
+    save_dispatch_run,
+)
 from dgov.runner import EventDagRunner, _test_failure_command
 from dgov.types import TaskState, WorkerExit, Worktree
 
@@ -43,13 +42,19 @@ def _dag(tasks: dict[str, DagTaskSpec]) -> DagDefinition:
     )
 
 
-def _task(slug: str, depends_on: tuple[str, ...] = (), agent: str = "test-agent") -> DagTaskSpec:
+def _task(
+    slug: str,
+    depends_on: tuple[str, ...] = (),
+    agent: str = "test-agent",
+    provider: str | None = None,
+) -> DagTaskSpec:
     return DagTaskSpec(
         slug=slug,
         summary=f"Test task {slug}",
         prompt=f"Do {slug}",
         commit_message=f"feat: {slug}",
         agent=agent,
+        provider=provider,
         depends_on=depends_on,
         files=DagFileSpec(create=(f"{slug}.py",)),
     )
@@ -424,7 +429,7 @@ class TestSingleTaskHappy:
         with _io_patches():
             runner = _make_runner(_single_dag())
             asyncio.run(runner.run())
-            assert runner.kernel.status == DagState.COMPLETED
+            assert runner.kernel.status.value == "completed"
 
     def test_worktree_cleaned_up(self):
         with _io_patches():
@@ -751,11 +756,30 @@ class TestDispatchRunRecording:
 
 
 class TestPreflight:
+    def test_preflight_skips_blank_provider_for_direct_runner(self, tmp_path: Path) -> None:
+        dag = DagDefinition(
+            name="preflight",
+            dag_file="test.toml",
+            project_root=str(tmp_path),
+            session_root=str(tmp_path),
+            tasks={"a": _task("a")},
+        )
+        runner = EventDagRunner(dag, session_root=str(tmp_path))
+
+        asyncio.run(runner._check_model_env())
+
     def test_preflight_uses_configured_api_key_env(self, tmp_path: Path, monkeypatch) -> None:
         dgov_dir = tmp_path / ".dgov"
         dgov_dir.mkdir()
         (dgov_dir / "project.toml").write_text(
-            '[project]\nllm_api_key_env = "CUSTOM_FIREWORKS_API_KEY"\n'
+            """
+[project]
+provider = "test-provider"
+
+[providers.test-provider]
+base_url = "https://provider.test/v1"
+api_key_env = "TEST_PROVIDER_API_KEY"
+"""
         )
         dag = DagDefinition(
             name="preflight",
@@ -765,8 +789,36 @@ class TestPreflight:
             tasks={"a": _task("a")},
         )
         runner = EventDagRunner(dag, session_root=str(tmp_path))
+        monkeypatch.setenv("TEST_PROVIDER_API_KEY", "test-key")
+        asyncio.run(runner._check_model_env())
+
+    def test_preflight_checks_task_provider_api_key_env(self, tmp_path: Path, monkeypatch) -> None:
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            """
+[project]
+provider = "fireworks"
+
+[providers.fireworks]
+base_url = "https://api.fireworks.ai/inference/v1"
+api_key_env = "FIREWORKS_API_KEY"
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+"""
+        )
+        dag = DagDefinition(
+            name="preflight",
+            dag_file="test.toml",
+            project_root=str(tmp_path),
+            session_root=str(tmp_path),
+            tasks={"a": _task("a", provider="openai")},
+        )
+        runner = EventDagRunner(dag, session_root=str(tmp_path))
         monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
-        monkeypatch.setenv("CUSTOM_FIREWORKS_API_KEY", "test-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
         asyncio.run(runner._check_model_env())
 
 
@@ -841,7 +893,7 @@ class TestPartialDAG:
             results = asyncio.run(runner.run())
             assert results["a"] == "merged"
             assert results["b"] == "failed"
-            assert runner.kernel.status == DagState.PARTIAL
+            assert runner.kernel.status.value == "partial"
 
 
 class TestTimeout:
@@ -1046,7 +1098,7 @@ class TestBootstrapPreparation:
     def test_worker_dispatch_uses_bootstrap_timeout(self):
         with _io_patches(), patch(_P_PREPARE_WT) as mock_prepare:
             runner = _make_runner(_single_dag())
-            runner.project_config = ProjectConfig(bootstrap_timeout=17)
+            runner.project_config = runner.project_config.__class__(bootstrap_timeout=17)
             asyncio.run(runner._dispatch(MagicMock(task_slug="a")))
 
         mock_prepare.assert_called_once()
@@ -1743,19 +1795,15 @@ class TestPythonSemanticGateSubprocess:
             captured["cmd"] = cmd
             captured["cwd"] = cwd
             captured["env"] = env
-            return subprocess.CompletedProcess(
-                cmd,
-                0,
-                stdout=json.dumps({
-                    "task_slug": "a",
-                    "gate_name": "python_semantic",
-                    "passed": True,
-                    "failure_class": None,
-                    "error_message": "",
-                    "evidence": [],
-                }),
-                stderr="",
+            result = MagicMock()
+            result.args = cmd
+            result.returncode = 0
+            result.stdout = (
+                '{"task_slug":"a","gate_name":"python_semantic","passed":true,'
+                '"failure_class":null,"error_message":"","evidence":[]}'
             )
+            result.stderr = ""
+            return result
 
         monkeypatch.setattr("dgov.settlement_flow.subprocess.run", _fake_run)
 
@@ -1774,14 +1822,19 @@ class TestPythonSemanticGateSubprocess:
         env = cast(dict[str, str], captured["env"])
         pythonpath = env.get("PYTHONPATH")
         assert isinstance(pythonpath, str)
-        assert pythonpath.split(os.pathsep)[0] == str(tmp_path)
+        assert pythonpath.split(":")[0] == str(tmp_path)
 
     def test_subprocess_failure_fails_closed(self, tmp_path, monkeypatch):
         """Runner should reject when candidate-side semantic execution fails."""
         from dgov.settlement_flow import run_python_semantic_gate_in_subprocess
 
         def _fake_run(cmd, cwd, capture_output, text, env, check):
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+            result = MagicMock()
+            result.args = cmd
+            result.returncode = 1
+            result.stdout = ""
+            result.stderr = "boom"
+            return result
 
         monkeypatch.setattr("dgov.settlement_flow.subprocess.run", _fake_run)
 
@@ -1870,7 +1923,6 @@ class TestRecoveryPipeline:
         """Rehydration applies task_done events to kernel."""
         from dgov.actions import TaskWaitDone
         from dgov.event_types import TaskDone
-        from dgov.persistence.schema import TaskState
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -1887,7 +1939,6 @@ class TestRecoveryPipeline:
         """Rehydration applies task_failed events with FAILED state."""
         from dgov.actions import TaskWaitDone
         from dgov.event_types import TaskFailed
-        from dgov.persistence.schema import TaskState
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -1904,7 +1955,6 @@ class TestRecoveryPipeline:
         """Rehydration detects timeout from error string and sets TIMED_OUT state."""
         from dgov.actions import TaskWaitDone
         from dgov.event_types import TaskFailed
-        from dgov.persistence.schema import TaskState
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -1936,7 +1986,6 @@ class TestRecoveryPipeline:
     def test_abandon_orphaned_task_marks_abandoned(self):
         """Orphan abandonment marks ACTIVE tasks as ABANDONED."""
         from dgov.actions import TaskWaitDone
-        from dgov.persistence.schema import TaskState
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -1969,7 +2018,6 @@ class TestRecoveryPipeline:
     def test_resume_single_task_emits_event(self):
         """Resume emits governor-resumed event for auditability."""
         from dgov.actions import GovernorAction, TaskGovernorResumed
-        from dgov.persistence.schema import TaskState
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -1994,8 +2042,6 @@ class TestRecoveryPipeline:
 
     def test_resume_skips_non_terminal_states(self):
         """Resume only processes terminal states (FAILED, ABANDONED, TIMED_OUT, SKIPPED)."""
-        from dgov.persistence.schema import TaskState
-
         with _io_patches():
             runner = _make_runner(_parallel_dag())
             # Set one pending, one done
@@ -2012,8 +2058,6 @@ class TestRecoveryPipeline:
 
     def test_resume_processes_all_terminal_states(self):
         """Resume processes FAILED, ABANDONED, TIMED_OUT, SKIPPED."""
-        from dgov.persistence.schema import TaskState
-
         dag = _dag({
             "failed": _task("failed"),
             "abandoned": _task("abandoned"),
@@ -2064,8 +2108,6 @@ class TestSettlementPhaseBoundaries:
     def test_prepare_and_commit_returns_false_for_researcher(self):
         """prepare_and_commit returns was_settlement=False for researcher role."""
         from unittest.mock import MagicMock
-
-        from dgov.dag_parser import DagFileSpec, DagTaskSpec
 
         researcher_task = DagTaskSpec(
             slug="research",
@@ -2213,8 +2255,6 @@ class TestSettlementPhaseBoundaries:
     def test_settlement_phase_skipped_for_read_only_role(self):
         """Researcher role skips settlement phases after prepare_commit."""
         from unittest.mock import patch
-
-        from dgov.dag_parser import DagFileSpec, DagTaskSpec
 
         researcher_task = DagTaskSpec(
             slug="research",

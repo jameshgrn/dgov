@@ -14,7 +14,7 @@ from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 
-from dgov.cli import cli
+from dgov.cli import cli, load_project_config_or_exit
 from dgov.event_types import (
     DgovEvent,
     EvtTaskDispatched,
@@ -546,10 +546,8 @@ def _cmd_watch(
     plan_name: str | None = None,
 ) -> None:
     """Stream events from the current run. Open in a second tab."""
-    from dgov.config import load_project_config
-
     console.print("dgov watch", style="bold cyan")
-    config = load_project_config(project_root)
+    config = load_project_config_or_exit(project_root)
     agents = config.agents if config else {}
     state = _initial_watch_state(project_root, watch_all, plan_name)
     _print_watch_scope(watch_all, plan_name, state.active_plan_name)

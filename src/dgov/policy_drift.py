@@ -11,6 +11,14 @@ _EXPECTED_BOOTSTRAP_FORCE_INCLUDE = {
     ".dgov/governor.md": "dgov/bootstrap_policy_data/governor.md",
     ".dgov/sops": "dgov/bootstrap_policy_data/sops",
 }
+_SWIFT_XCODE_BOOTSTRAP_TAGS = frozenset({
+    "swift",
+    "xcode",
+    "xcodebuild",
+    "swift-format",
+    "xcodegen",
+    "macos",
+})
 
 
 def find_policy_drift(project_root: Path) -> list[str]:
@@ -51,6 +59,7 @@ def _bootstrap_policy_drift(project_root: Path) -> list[str]:
             f"src/dgov/bootstrap_policy_data: {', '.join(mirrored_assets)}"
         )
     issues.extend(_bootstrap_policy_build_mapping_drift(project_root))
+    issues.extend(_project_local_bootstrap_sop_drift(repo_policy_dir / "sops"))
     return issues
 
 
@@ -74,6 +83,58 @@ def _bootstrap_policy_build_mapping_drift(project_root: Path) -> list[str]:
     if not missing:
         return []
     return ["Bootstrap policy wheel force-include missing: " + ", ".join(missing)]
+
+
+def _project_local_bootstrap_sop_drift(sops_dir: Path) -> list[str]:
+    if not sops_dir.is_dir():
+        return []
+    offenders: list[str] = []
+    for path in sorted(sops_dir.glob("*.md")):
+        if _is_swift_xcode_sop(path):
+            offenders.append(path.name)
+    if not offenders:
+        return []
+    names = ", ".join(offenders)
+    return [f"Project-local Swift/Xcode policy is in core bootstrap SOPs: {names}"]
+
+
+def _is_swift_xcode_sop(path: Path) -> bool:
+    if path.stem == "swift":
+        return True
+    fields = _front_matter_fields(path)
+    applies_to = _front_matter_list(fields.get("applies_to", ""))
+    return bool(applies_to & _SWIFT_XCODE_BOOTSTRAP_TAGS)
+
+
+def _front_matter_fields(path: Path) -> dict[str, str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Unable to read bootstrap SOP: {path}") from exc
+    if not text.startswith("---\n"):
+        return {}
+    end = text.find("\n---", 4)
+    if end == -1:
+        return {}
+    fields: dict[str, str] = {}
+    for line in text[4:end].splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        fields[key.strip()] = value.strip()
+    return fields
+
+
+def _front_matter_list(value: str) -> set[str]:
+    stripped = value.strip()
+    if not stripped.startswith("[") or not stripped.endswith("]"):
+        return set()
+    items: set[str] = set()
+    for raw_item in stripped[1:-1].split(","):
+        item = raw_item.strip().strip("\"'")
+        if item:
+            items.add(item)
+    return items
 
 
 def _wheel_force_include(pyproject: Path) -> dict[str, str]:

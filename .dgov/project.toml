@@ -3,9 +3,7 @@ language = "python"
 src_dir = "src/"
 test_dir = "tests/"
 source_extensions = [".py"]
-default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
-llm_base_url = "https://api.fireworks.ai/inference/v1"
-llm_api_key_env = "FIREWORKS_API_KEY"
+provider = "fireworks"
 test_cmd = "uv run pytest -q -m unit {test_dir} --tb=short"
 lint_cmd = "uv run ruff check {file}"
 format_cmd = "uv run ruff format {file}"
@@ -20,6 +18,11 @@ review_hooks = [
     "! file --mime {files} | grep -q 'charset=binary'",
     "! grep -rE '(sk-[a-zA-Z0-9]{24,}|AI_[A-Z0-9_]{24,})' {files}"
 ]
+
+[providers.fireworks]
+default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
+base_url = "https://api.fireworks.ai/inference/v1"
+api_key_env = "FIREWORKS_API_KEY"
 
 [tool_policy]
 restrict_run_bash = true

@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import click
 
-from dgov.cli import cli, print_dag_graph, resolve_plan_input, want_json
-from dgov.config import load_project_config
+from dgov.cli import (
+    cli,
+    load_project_config_or_exit,
+    print_dag_graph,
+    resolve_plan_input,
+    want_json,
+)
 from dgov.deploy_log import DeployRecord
 from dgov.plan import PlanSpec, PlanUnit, parse_plan_file, validate_plan
 from dgov.plan_tree import parse_compiled_source_mtime
@@ -86,9 +92,21 @@ def _parse_plan_safe(plan_file: Path) -> PlanSpec:
 
 def _collect_validation_issues(plan: PlanSpec, plan_file: Path) -> tuple[list, list]:
     """Validate plan and return (errors, warnings)."""
+    from dgov.plan import validate_execution_resolution
+
     project_root_path = resolve_project_root(Path(plan_file))
-    project_config = load_project_config(project_root_path)
+    project_config = load_project_config_or_exit(project_root_path)
     issues = validate_plan(plan, departments=project_config.departments)
+    issues.extend(
+        validate_execution_resolution(
+            plan,
+            project_agent=project_config.default_agent,
+            project_provider=project_config.llm_provider,
+            provider_agents=project_config.provider_default_agents(),
+            provider_names=tuple(project_config.providers),
+            require_provider=True,
+        )
+    )
     errors = [i for i in issues if i.severity == "error"]
     warnings = [i for i in issues if i.severity == "warning"]
     return errors, warnings
@@ -173,7 +191,8 @@ files.read = ["tests/test_module.py"]
 # files.delete = ["src/old_file.py"]
 
 # depends_on = ["other-section/other-file.other-task"]
-# agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
+# agent = "provider/model-name"
+# provider = "fireworks"
 '''
 
 
@@ -523,15 +542,28 @@ def _status_target(plan_root: Path | None, compiled_path: Path) -> str:
     return str(plan_root if plan_root is not None else compiled_path)
 
 
+def _load_compiled_toml_or_exit(compiled_path: Path) -> dict[str, Any]:
+    """Read a compiled plan TOML, converting parse/read failures to CLI errors."""
+    try:
+        return tomllib.loads(compiled_path.read_text())
+    except (tomllib.TOMLDecodeError, OSError) as exc:
+        message = f"Invalid compiled plan {compiled_path}: {exc}"
+        if want_json():
+            click.echo(
+                json.dumps({"status": "invalid_compiled_plan", "message": message}, indent=2)
+            )
+        else:
+            click.echo(f"Error: {message}", err=True)
+        raise click.exceptions.Exit(code=1) from None
+
+
 def _load_status_inputs(compiled_path: Path, plan_root: Path | None):
     """Load and parse status inputs from compiled plan and project."""
-    import tomllib
-
     from dgov.plan_review import load_run_envelope
 
     _check_compiled_exists(compiled_path, plan_root)
 
-    raw = tomllib.loads(compiled_path.read_text())
+    raw = _load_compiled_toml_or_exit(compiled_path)
     plan_section = raw.get("plan", {})
     plan_name = plan_section.get("name", "unknown")
     tasks_raw = raw.get("tasks", {})
@@ -799,9 +831,8 @@ def _load_remediation_inputs(
         raise click.exceptions.Exit(code=1) from None
 
     _check_compiled_exists(compiled_path, plan_root)
-    import tomllib
 
-    raw = tomllib.loads(compiled_path.read_text())
+    raw = _load_compiled_toml_or_exit(compiled_path)
     project_root = resolve_project_root(compiled_path)
     return plan_input, compiled_path, plan_root, project_root, raw
 
@@ -950,11 +981,10 @@ def _load_review_with_config(
     include_full_diff: bool,
 ):
     """Load project config and build the PlanReview."""
-    from dgov.config import load_project_config
     from dgov.plan_review import load_review
 
     project_root_path = resolve_project_root()
-    project_config = load_project_config(project_root_path)
+    project_config = load_project_config_or_exit(project_root_path)
 
     review = load_review(
         project_root=str(project_root_path),
@@ -978,6 +1008,7 @@ def _cmd_plan_review(
     """Build and render a PlanReview."""
     if not compiled_path.exists():
         _handle_not_compiled(compiled_path, plan_root)
+    _load_compiled_toml_or_exit(compiled_path)
 
     include_full_diff = diff_unit is not None
     review = _load_review_with_config(

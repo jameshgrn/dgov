@@ -13,14 +13,17 @@ from dgov.tool_policy import parse_tool_policy
 from dgov.verify import VerifyRecipe, load_verify_recipes
 from dgov.workers.config import (
     AtomicConfig,
+    ProviderConfig,
     atomic_config_from_payload,
     atomic_config_to_payload,
+    provider_configs_from_project_toml,
+    selected_provider_from_project_toml,
 )
 
 # -- Project config: per-repo conventions for workers --
 
 
-_DEFAULT_AGENT = "accounts/fireworks/routers/kimi-k2p6-turbo"
+_DEFAULT_AGENT = ""
 _DEFAULT_SCOPE_IGNORE_FILES = (".venv", "uv.lock", "__pycache__", "*.pyc")
 _RESERVED_SCOPE_IGNORE_PATHS = (
     ".sentrux/baseline.json",
@@ -46,6 +49,7 @@ class ProjectConfig(AtomicConfig):
     settlement_timeout: int = 120
     review_hooks: tuple[str, ...] = ()
     agents: dict[str, str] = field(default_factory=dict)
+    providers: dict[str, ProviderConfig] = field(default_factory=dict)
     scope_ignore_files: tuple[str, ...] = _DEFAULT_SCOPE_IGNORE_FILES
     setup_cmd: str | None = None
     coverage_cmd: str | None = None
@@ -90,17 +94,45 @@ class ProjectConfig(AtomicConfig):
                     return dept
         return None
 
-    def llm_runtime_settings(self) -> tuple[str, str]:
+    def provider_config(self, provider: str | None = None) -> ProviderConfig:
+        """Return provider endpoint config by name, or the active provider."""
+        name = (provider or self.llm_provider).strip()
+        if not name:
+            raise ValueError(
+                ".dgov/project.toml must set [project].provider, or the task must set provider"
+            )
+        if name in self.providers:
+            return self.providers[name]
+        raise ValueError(
+            f".dgov/project.toml selects provider {name!r}, but [providers.{name}] is not defined"
+        )
+
+    def provider_default_agents(self) -> dict[str, str]:
+        """Return provider-specific default model/router names."""
+        return {
+            name: provider.default_agent
+            for name, provider in self.providers.items()
+            if provider.default_agent
+        }
+
+    def llm_runtime_settings(self, provider: str | None = None) -> tuple[str, str]:
         """Return the configured OpenAI-compatible runtime endpoint settings."""
-        return self.llm_base_url, self.llm_api_key_env
+        endpoint = self.provider_config(provider)
+        return endpoint.base_url, endpoint.api_key_env
 
-    def to_worker_payload(self) -> dict[str, object]:
+    def to_worker_payload(self, provider: str | None = None) -> dict[str, object]:
         """Serialize the worker-facing config fields for subprocess dispatch."""
-        return atomic_config_to_payload(self.to_atomic_config())
+        return atomic_config_to_payload(self.to_atomic_config(provider))
 
-    def to_atomic_config(self) -> AtomicConfig:
+    def to_atomic_config(self, provider: str | None = None) -> AtomicConfig:
         """Project-facing subset needed by the worker. Drops governor-only fields."""
+        endpoint = self.provider_config(provider)
         atomic_values = {f.name: getattr(self, f.name) for f in fields(AtomicConfig)}
+        atomic_values.update(
+            llm_provider=endpoint.name,
+            llm_base_url=endpoint.base_url,
+            llm_api_key_env=endpoint.api_key_env,
+        )
         return AtomicConfig(**atomic_values)
 
     @classmethod
@@ -113,7 +145,14 @@ class ProjectConfig(AtomicConfig):
         """
         atomic = atomic_config_from_payload(raw)
         atomic_values = {f.name: getattr(atomic, f.name) for f in fields(AtomicConfig)}
-        return cls(**atomic_values)
+        providers = {}
+        if atomic.llm_provider:
+            providers[atomic.llm_provider] = ProviderConfig(
+                name=atomic.llm_provider,
+                base_url=atomic.llm_base_url,
+                api_key_env=atomic.llm_api_key_env,
+            )
+        return cls(**atomic_values, providers=providers)
 
     def to_prompt_section(self) -> str:
         """Render as text for injection into worker system prompt."""
@@ -121,6 +160,7 @@ class ProjectConfig(AtomicConfig):
             f"Language: {self.language}",
             f"Source: {self.src_dir}",
             f"Tests: {self.test_dir}",
+            f"LLM provider: {self.llm_provider}",
             f"LLM base URL: {self.llm_base_url}",
             f"LLM API key env: {self.llm_api_key_env}",
             f"Test command: {self.resolve_test_cmd()}",
@@ -142,8 +182,12 @@ class ProjectConfig(AtomicConfig):
 
 
 def _table(raw: Mapping[str, Any], key: str) -> dict[str, Any]:
-    value = raw.get(key, {})
-    return value if isinstance(value, dict) else {}
+    if key not in raw:
+        return {}
+    value = raw[key]
+    if not isinstance(value, dict):
+        raise ValueError(f".dgov/project.toml [{key}] must be a table")
+    return value
 
 
 def _tuple_if_list(value: Any) -> Any:
@@ -151,8 +195,8 @@ def _tuple_if_list(value: Any) -> Any:
 
 
 def _configured_scope_ignores(raw: Mapping[str, Any]) -> tuple[str, ...]:
-    scope_section = raw.get("scope", {})
-    ignore_raw = scope_section.get("ignore_files", ()) if isinstance(scope_section, dict) else ()
+    scope_section = _table(raw, "scope")
+    ignore_raw = scope_section.get("ignore_files", ())
     if not isinstance(ignore_raw, list):
         return ()
     return tuple(str(p).strip() for p in ignore_raw if str(p).strip())
@@ -201,13 +245,24 @@ def _sentrux_int(raw: Mapping[str, Any], key: str, default: int) -> int:
     return parsed
 
 
-def _worker_config_fields(proj: Mapping[str, Any]) -> dict[str, Any]:
+def _optional_project_string(proj: Mapping[str, Any], key: str) -> str:
+    raw = proj.get(key)
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        raise ValueError(f".dgov/project.toml [project].{key} must be a string")
+    return raw.strip()
+
+
+def _worker_config_fields(raw: Mapping[str, Any], proj: Mapping[str, Any]) -> dict[str, Any]:
+    provider = selected_provider_from_project_toml(raw)
     return {
         "language": proj.get("language", ProjectConfig.language),
         "src_dir": proj.get("src_dir", ProjectConfig.src_dir),
         "test_dir": proj.get("test_dir", ProjectConfig.test_dir),
-        "llm_base_url": proj.get("llm_base_url", ProjectConfig.llm_base_url),
-        "llm_api_key_env": proj.get("llm_api_key_env", ProjectConfig.llm_api_key_env),
+        "llm_provider": provider.name,
+        "llm_base_url": provider.base_url,
+        "llm_api_key_env": provider.api_key_env,
         "test_cmd": proj.get("test_cmd", ProjectConfig.test_cmd),
         "lint_cmd": proj.get("lint_cmd", ProjectConfig.lint_cmd),
         "format_cmd": proj.get("format_cmd", ProjectConfig.format_cmd),
@@ -222,16 +277,20 @@ def _worker_config_fields(proj: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _governor_config_fields(raw: Mapping[str, Any], proj: Mapping[str, Any]) -> dict[str, Any]:
+    provider = selected_provider_from_project_toml(raw)
+    default_agent = _optional_project_string(proj, "default_agent")
+    default_agent = default_agent or provider.default_agent or _DEFAULT_AGENT
     return {
         "source_extensions": _tuple_if_list(proj.get("source_extensions", (".py",))),
-        "default_agent": proj.get("default_agent", _DEFAULT_AGENT),
+        "default_agent": default_agent,
         "format_check_cmd": proj.get("format_check_cmd", ProjectConfig.format_check_cmd),
         "bootstrap_timeout": proj.get("bootstrap_timeout", 300),
         "settlement_timeout": proj.get("settlement_timeout", 120),
         "review_hooks": _tuple_if_list(proj.get("review_hooks", ())),
         "agents": _table(raw, "agents"),
+        "providers": provider_configs_from_project_toml(raw),
         "conventions": _table(raw, "conventions"),
-        "tool_policy": parse_tool_policy(raw.get("tool_policy", {})),
+        "tool_policy": parse_tool_policy(_table(raw, "tool_policy")),
         "scope_ignore_files": _scope_ignore_files(raw),
         "setup_cmd": proj.get("setup_cmd") or None,
         "coverage_cmd": proj.get("coverage_cmd") or None,
@@ -247,7 +306,7 @@ def _governor_config_fields(raw: Mapping[str, Any], proj: Mapping[str, Any]) -> 
 def _project_config_fields(raw: Mapping[str, Any]) -> dict[str, Any]:
     proj = _table(raw, "project")
     return {
-        **_worker_config_fields(proj),
+        **_worker_config_fields(raw, proj),
         **_governor_config_fields(raw, proj),
     }
 
@@ -263,9 +322,13 @@ def load_project_config(root: str | Path) -> ProjectConfig:
 
 
 def _read_toml(path: Path) -> dict:
-    """Read a TOML file, return empty dict on any error."""
+    """Read a TOML file, returning defaults only when the file is absent."""
     try:
         with path.open("rb") as f:
             return tomllib.load(f)
-    except (FileNotFoundError, tomllib.TOMLDecodeError, OSError):
+    except FileNotFoundError:
         return {}
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"Invalid TOML in {path}: {exc}") from exc
+    except OSError as exc:
+        raise ValueError(f"Could not read {path}: {exc}") from exc

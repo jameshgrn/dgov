@@ -14,7 +14,6 @@ import pytest
 from click.testing import CliRunner
 
 from dgov.cli import cli
-from dgov.event_types import RunCompleted
 
 pytestmark = pytest.mark.unit
 
@@ -25,6 +24,11 @@ def runner():
 
 
 def _write_plan_tree(tmp_path: Path, name: str = "compiled") -> Path:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir(parents=True, exist_ok=True)
+    project_toml = dgov_dir / "project.toml"
+    if not project_toml.exists():
+        project_toml.write_text(_provider_project_toml(), encoding="utf-8")
     plan_dir = tmp_path / ".dgov" / "plans" / name
     task_dir = plan_dir / "tasks"
     task_dir.mkdir(parents=True)
@@ -52,8 +56,22 @@ def _write_compiled(plan_dir: Path, name: str = "compiled") -> Path:
         'summary = "do a"\n'
         'prompt = "do a"\n'
         'commit_message = "a"\n'
+        'agent = "test-agent"\n'
     )
     return compiled
+
+
+def _provider_project_toml(extra: str = "") -> str:
+    return f"""
+[project]
+provider = "test-provider"
+{extra}
+
+[providers.test-provider]
+default_agent = "provider/model-name"
+base_url = "https://provider.example.com/v1"
+api_key_env = "TEST_PROVIDER_API_KEY"
+"""
 
 
 def _git_head(repo: Path) -> str:
@@ -204,7 +222,7 @@ def _assert_degraded_run_completed_event(
     ]
     assert len(run_completed_events) == 1
 
-    run_completed = cast(RunCompleted, run_completed_events[0])
+    run_completed = cast(Any, run_completed_events[0])
     assert run_completed.pane == expected_plan_name
     assert run_completed.plan_name == expected_plan_name
     assert run_completed.run_status == "degraded"
@@ -225,9 +243,12 @@ def _assert_degraded_run_completed_event(
     }
 
 
-def test_run_rejects_compiled_file_input(runner: CliRunner, tmp_path: Path) -> None:
+def test_run_rejects_compiled_file_input(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     plan_dir = _write_plan_tree(tmp_path, "compiled")
     compiled = _write_compiled(plan_dir, "compiled")
+    monkeypatch.chdir(tmp_path)
 
     result = runner.invoke(cli, ["run", str(compiled)])
 
@@ -272,6 +293,109 @@ def test_run_plan_dir_compiles_before_execution(
     }
 
 
+def test_run_resolves_relative_plan_path_from_current_directory(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_dir = _write_plan_tree(tmp_path, "compiled")
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    captured: dict[str, object] = {}
+
+    def _capture_compile(path: Path) -> None:
+        captured["compiled"] = path
+        _write_compiled(path, "compiled")
+
+    def _capture_run(plan_file: str, project_root: str, **kwargs: object) -> None:
+        captured["plan_file"] = plan_file
+        captured["project_root"] = project_root
+        captured["kwargs"] = kwargs
+
+    monkeypatch.chdir(subdir)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", _capture_compile)
+    monkeypatch.setattr("dgov.cli.run.run_compiled_plan", _capture_run)
+
+    result = runner.invoke(cli, ["run", "../.dgov/plans/compiled"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["compiled"] == plan_dir
+    assert captured["plan_file"] == str(plan_dir / "_compiled.toml")
+    assert captured["project_root"] == str(tmp_path)
+    assert captured["kwargs"] == {
+        "restart": False,
+        "continue_failed": False,
+        "only": None,
+        "plan_dir": plan_dir,
+        "yes": False,
+        "stream": False,
+        "verbose": False,
+    }
+
+
+def test_run_rejects_plan_path_outside_project_root_before_compile(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside_dir = tmp_path.parent
+    calls: list[Path] = []
+
+    def _capture_compile(path: Path) -> None:
+        calls.append(path)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", _capture_compile)
+
+    for bad_path in ("..", str(outside_dir)):
+        result = runner.invoke(cli, ["run", bad_path])
+
+        assert result.exit_code == 1
+        assert "plan path must stay under project root" in result.output
+
+    assert calls == []
+
+
+def test_run_reports_missing_plan_path_after_containment_check(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[Path] = []
+
+    def _capture_compile(path: Path) -> None:
+        calls.append(path)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", _capture_compile)
+
+    result = runner.invoke(cli, ["run", ".dgov/plans/missing"])
+
+    assert result.exit_code == 1
+    assert "plan path not found" in result.output
+    assert "pass a plan directory under this project root" in result.output
+    assert calls == []
+
+
+def test_run_compiled_plan_rejects_plan_file_outside_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dgov.cli.run import run_compiled_plan
+
+    project_root = tmp_path / "project"
+    outside_plan_dir = tmp_path / "outside"
+    project_root.mkdir()
+    outside_plan_dir.mkdir()
+    compiled_path = outside_plan_dir / "_compiled.toml"
+
+    def _fail_compile(*args: object, **kwargs: object) -> None:
+        pytest.fail("outside compiled plan reached DAG compilation")
+
+    monkeypatch.setattr("dgov.cli.run._compile_dag_for_run", _fail_compile)
+
+    with pytest.raises(click.ClickException, match="plan file must stay under project root"):
+        run_compiled_plan(
+            str(compiled_path),
+            str(project_root),
+            plan_dir=outside_plan_dir,
+        )
+
+
 def test_run_compiled_plan_rejects_department_violation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -282,7 +406,7 @@ def test_run_compiled_plan_rejects_department_violation(
     plan_dir = dgov_dir / "plans" / "constitution"
     plan_dir.mkdir(parents=True)
     (dgov_dir / "project.toml").write_text(
-        '[departments]\nCore = ["src/dgov/kernel.py"]\n',
+        _provider_project_toml() + '\n[departments]\nCore = ["src/dgov/kernel.py"]\n',
         encoding="utf-8",
     )
     compiled = plan_dir / "_compiled.toml"
@@ -299,6 +423,38 @@ def test_run_compiled_plan_rejects_department_violation(
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(click.ClickException, match="Constitutional violation"):
+        run_compiled_plan(
+            str(compiled),
+            str(tmp_path),
+            plan_dir=plan_dir,
+        )
+
+
+def test_run_compiled_plan_rejects_missing_provider_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dgov.cli.run import run_compiled_plan
+
+    dgov_dir = tmp_path / ".dgov"
+    plan_dir = dgov_dir / "plans" / "missing-provider"
+    plan_dir.mkdir(parents=True)
+    (dgov_dir / "project.toml").write_text("[project]\n", encoding="utf-8")
+    compiled = plan_dir / "_compiled.toml"
+    compiled.write_text(
+        '[plan]\nname = "missing-provider"\nsource_mtime_max = "2026-04-08T00:00:00Z"\n\n'
+        "[tasks.a]\n"
+        'summary = "Do a"\n'
+        'prompt = "Orient:\\nContext.\\n\\nEdit:\\n1. Change.\\n\\nVerify:\\n- Check."\n'
+        'commit_message = "a"\n'
+        'agent = "some/model"\n'
+        'files = ["README.md"]\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(click.ClickException, match="No provider for task"):
         run_compiled_plan(
             str(compiled),
             str(tmp_path),
@@ -659,7 +815,7 @@ def test_record_run_completion_uses_runner_run_source_snapshot(
 
     artifacts = cast(Any, _clean_complete_artifacts())
     artifacts.runner.run_source = "workshop"
-    captured_events: list[RunCompleted] = []
+    captured_events: list[object] = []
 
     monkeypatch.setenv("DGOV_RUN_SOURCE", "invalid source")
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
@@ -686,7 +842,7 @@ def test_record_run_completion_uses_runner_run_source_snapshot(
         plan_dir=None,
     )
 
-    assert captured_events[0].run_source == "workshop"
+    assert cast(Any, captured_events[0]).run_source == "workshop"
 
 
 def test_run_reports_degraded_when_final_sentrux_compare_degrades(

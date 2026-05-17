@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -19,82 +16,23 @@ from typing import cast
 import click
 
 from dgov.archive import archive_plan
-from dgov.cli import _output, cli, want_json
+from dgov.cli import _output, cli, load_project_config_or_exit, run_checks, want_json
 from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition
 from dgov.deploy_log import is_plan_complete
 from dgov.event_types import RunCompleted
 from dgov.persistence.events import emit_event
 from dgov.plan import PlanSpec, compile_plan, parse_plan_file
-from dgov.project_root import resolve_project_root
-from dgov.repo_snapshot import format_structural_offender_report, likely_structural_offenders
+from dgov.project_root import ProjectPathError, resolve_project_path, resolve_project_root
 from dgov.run_source import current_run_source
 from dgov.runner import EventDagRunner
-from dgov.sentrux_baseline import (
-    SentruxBaselineRefreshError,
-    refresh_sentrux_baseline_after_clean_run,
-    sentrux_baseline_path,
-)
-from dgov.sentrux_gate import SentruxGateAssessment, assess_sentrux_gate, changed_files_since
 
-
-@contextlib.contextmanager
-def _clean_head_worktree(project_root: str) -> Iterator[Path]:
-    """Yield a temporary worktree checked out at HEAD for read-only scanning.
-
-    The post-run sentrux gate needs to measure the committed state, not the
-    governor's live working tree. A transient git worktree at HEAD gives us
-    a clean view without disturbing the main checkout. See ledger bug #26.
-    """
-    tmp_root = Path(tempfile.mkdtemp(prefix="dgov-sentrux-"))
-    wt_path = tmp_root / "head"
-    created = False
-    try:
-        subprocess.run(
-            ["git", "worktree", "add", "--detach", str(wt_path), "HEAD"],
-            cwd=project_root,
-            check=True,
-            capture_output=True,
-        )
-        created = True
-        yield wt_path
-    finally:
-        if created:
-            subprocess.run(
-                ["git", "worktree", "remove", "-f", str(wt_path)],
-                cwd=project_root,
-                capture_output=True,
-            )
-        shutil.rmtree(tmp_root, ignore_errors=True)
-
-
-@contextlib.contextmanager
-def _detached_worktree(project_root: str, ref: str, prefix: str) -> Iterator[Path]:
-    """Yield a temporary detached worktree at ref."""
-    tmp_root = Path(tempfile.mkdtemp(prefix=prefix))
-    wt_path = tmp_root / "checkout"
-    created = False
-    try:
-        subprocess.run(
-            ["git", "worktree", "add", "--detach", str(wt_path), ref],
-            cwd=project_root,
-            check=True,
-            capture_output=True,
-        )
-        created = True
-        yield wt_path
-    finally:
-        if created:
-            subprocess.run(
-                ["git", "worktree", "remove", "-f", str(wt_path)],
-                cwd=project_root,
-                capture_output=True,
-            )
-        shutil.rmtree(tmp_root, ignore_errors=True)
+_clean_head_worktree = run_checks._clean_head_worktree
+_normalize_sentrux_assessment = run_checks._normalize_sentrux_assessment
 
 
 @cli.command(name="run")
-@click.argument("plan", type=click.Path(path_type=Path, exists=True))
+@click.argument("plan", type=click.Path(path_type=Path))
 @click.option(
     "--restart", is_flag=True, help="Restart the plan from the beginning, clearing prior state"
 )
@@ -134,15 +72,8 @@ def run_cmd(
 
     Example: dgov run .dgov/plans/my-plan/
     """
-    if not plan.is_dir():
-        click.echo("Error: dgov run requires a plan directory, not a file path.", err=True)
-        click.echo(
-            "Fix: run `dgov run <plan-dir>` so dgov compiles the current source first.", err=True
-        )
-        raise SystemExit(1)
-
-    project_root = str(resolve_project_root())
-    plan_dir = plan
+    project_root_path, plan_dir = _resolve_run_plan_dir(plan)
+    project_root = str(project_root_path)
     compile_plan_for_run(plan_dir)
     plan_file = plan_dir / "_compiled.toml"
     run_compiled_plan(
@@ -158,9 +89,40 @@ def run_cmd(
     )
 
 
+def _resolve_run_plan_dir(plan: Path) -> tuple[Path, Path]:
+    project_root_path = resolve_project_root()
+    try:
+        plan_dir = resolve_project_path(project_root_path, plan, label="plan path")
+    except ProjectPathError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise click.exceptions.Exit(code=1) from None
+    _require_run_plan_dir(plan_dir)
+    return project_root_path, plan_dir
+
+
+def _require_run_plan_dir(plan_dir: Path) -> None:
+    if not plan_dir.exists():
+        click.echo(f"Error: plan path not found: {plan_dir}", err=True)
+        click.echo("Fix: pass a plan directory under this project root.", err=True)
+        raise click.exceptions.Exit(code=1)
+    if plan_dir.is_dir():
+        return
+    click.echo("Error: dgov run requires a plan directory, not a file path.", err=True)
+    click.echo(
+        "Fix: run `dgov run <plan-dir>` so dgov compiles the current source first.", err=True
+    )
+    raise SystemExit(1)
+
+
 def compile_plan_for_run(plan_dir: Path) -> None:
     """Compile the current plan tree before every public run."""
     from dgov.cli.compile import compile_plan_dir
+
+    project_root = resolve_project_root()
+    try:
+        plan_dir = resolve_project_path(project_root, plan_dir, label="plan path")
+    except ProjectPathError as exc:
+        raise click.ClickException(str(exc)) from None
 
     compile_plan_dir(plan_dir, dry_run=False, recompile_sops=False, graph=False)
 
@@ -399,278 +361,23 @@ def _ensure_git_ready(project_root: str, yes: bool = False) -> None:
 
 
 def _sentrux_baseline_path(project_root: str) -> Path:
-    return sentrux_baseline_path(project_root)
+    return run_checks.sentrux_baseline_path(project_root)
 
 
 def _read_sentrux_baseline_quality(project_root: str) -> int | None:
-    """Read the saved baseline quality from .sentrux/baseline.json when available.
-
-    Supports quality_signal floats by scaling them (x10000) to match the
-    sentrux check scale.
-    """
-    baseline_path = _sentrux_baseline_path(project_root)
-    if not baseline_path.exists():
-        return None
-    try:
-        data = json.loads(baseline_path.read_text())
-    except (OSError, ValueError, TypeError):
-        return None
-
-    for key in ("quality", "quality_score", "quality_signal"):
-        value = data.get(key)
-        if isinstance(value, (int, float)):
-            if key == "quality_signal" and isinstance(value, float) and value <= 1.0:
-                return int(value * 10000)
-            return int(value)
-    return None
-
-
-def _baseline_from_empty_project(baseline_path: Path) -> bool:
-    if not baseline_path.exists():
-        return False
-    try:
-        bdata = json.loads(baseline_path.read_text())
-    except Exception:
-        return False
-    return bdata.get("total_import_edges") == 0
-
-
-def _bootstrap_sentrux_baseline(project_root: str, baseline_path: Path) -> int | None:
-    """Create a missing baseline once so fresh repos/worktrees can run."""
-    root = str(Path(project_root).resolve())
-    click.echo(f"[sentrux] No baseline found at {baseline_path}; bootstrapping baseline...")
-    try:
-        run_sentrux(["gate", "--save", root], timeout=30.0)
-    except subprocess.CalledProcessError as exc:
-        details = (exc.stderr or exc.stdout or str(exc)).strip()
-        click.echo(f"Error: failed to create sentrux baseline at {baseline_path}.", err=True)
-        if details:
-            click.echo(details, err=True)
-        raise click.exceptions.Exit(code=1) from exc
-    except subprocess.TimeoutExpired as exc:
-        click.echo(f"Error: timed out creating sentrux baseline at {baseline_path}.", err=True)
-        raise click.exceptions.Exit(code=1) from exc
-
-    click.echo(f"[sentrux] Baseline saved at {baseline_path}")
-    return _read_sentrux_baseline_quality(root)
+    return run_checks.read_sentrux_baseline_quality(project_root)
 
 
 def _require_sentrux_baseline(project_root: str) -> int | None:
-    """Ensure sentrux is installed and a baseline exists for comparison."""
-    root = str(Path(project_root).resolve())
-    if not sentrux_available():
-        click.echo(
-            "Error: sentrux not found. Install: https://github.com/sentrux/sentrux",
-            err=True,
-        )
-        raise click.exceptions.Exit(code=1)
-
-    baseline_path = _sentrux_baseline_path(root)
-    if not baseline_path.exists():
-        return _bootstrap_sentrux_baseline(root, baseline_path)
-
-    return _read_sentrux_baseline_quality(root)
+    return run_checks.require_sentrux_baseline(
+        project_root,
+        run_sentrux=run_sentrux,
+        sentrux_available=sentrux_available,
+    )
 
 
 def _parse_sentrux_gate_output(output: str) -> tuple[bool, int | None]:
-    degradation = False
-    quality_after: int | None = None
-    for line in output.splitlines():
-        if line.startswith("Quality:") and "->" in line:
-            quality_after = _parse_quality(line)
-        elif "No degradation" in line or "✓ No degradation" in line:
-            degradation = False
-        elif "degradation" in line.lower() or "degraded" in line.lower():
-            degradation = True
-    return degradation, quality_after
-
-
-def _head_structural_offenders(scan_dir: Path, project_root: str) -> dict[str, object] | None:
-    try:
-        return likely_structural_offenders(
-            scan_dir,
-            cache_root=Path(project_root),
-        )
-    except Exception:
-        return None
-
-
-def _assess_head_sentrux_degradation(
-    *,
-    scan_dir: Path,
-    project_root: str,
-    baseline_path: Path,
-    output: str,
-    returncode: int,
-    base_ref: str | None,
-    config: ProjectConfig | None,
-) -> SentruxGateAssessment:
-    pc = config or ProjectConfig()
-    changed_files = (
-        changed_files_since(Path(project_root), base_ref, pc.source_extensions) if base_ref else []
-    )
-    return assess_sentrux_gate(
-        scan_root=scan_dir,
-        project_root=Path(project_root),
-        baseline_path=baseline_path,
-        sentrux_output=output,
-        sentrux_returncode=returncode,
-        changed_files=changed_files,
-        base_ref=base_ref,
-        mode=pc.sentrux_mode,
-        stale_commits=pc.sentrux_stale_commits,
-        stale_days=pc.sentrux_stale_days,
-    )
-
-
-def _scan_head_against_sentrux_baseline(
-    project_root: str,
-    baseline_path: Path,
-    *,
-    base_ref: str | None = None,
-    config: ProjectConfig | None = None,
-) -> tuple[
-    subprocess.CompletedProcess[str],
-    dict[str, object] | None,
-    SentruxGateAssessment | None,
-]:
-    with _clean_head_worktree(project_root) as scan_dir:
-        scan_sentrux_dir = scan_dir / ".sentrux"
-        if scan_sentrux_dir.exists():
-            shutil.rmtree(scan_sentrux_dir)
-        shutil.copytree(baseline_path.parent, scan_sentrux_dir)
-        result = run_sentrux(["gate", str(scan_dir)], timeout=30.0, check=False)
-        offenders = _head_structural_offenders(scan_dir, project_root)
-        output = (result.stdout or "") + (result.stderr or "")
-        degradation, _ = _parse_sentrux_gate_output(output)
-        assessment = None
-        if degradation:
-            assessment = _assess_head_sentrux_degradation(
-                scan_dir=scan_dir,
-                project_root=project_root,
-                baseline_path=baseline_path,
-                output=output,
-                returncode=result.returncode,
-                base_ref=base_ref,
-                config=config,
-            )
-        return result, offenders, assessment
-
-
-def _initial_sentrux_gate_result(baseline_quality: int | None) -> dict[str, object]:
-    return {
-        "degradation": None,
-        "quality_before": baseline_quality,
-        "quality_after": None,
-        "structural_offenders": None,
-    }
-
-
-def _record_sentrux_compare_error(
-    gate_result: dict[str, object],
-    *,
-    message: str,
-    echo: str,
-) -> dict[str, object]:
-    gate_result["error"] = message
-    if not want_json():
-        click.echo(echo, err=True)
-    return gate_result
-
-
-def _empty_baseline_sentrux_result(gate_result: dict[str, object]) -> dict[str, object]:
-    gate_result["degradation"] = False
-    if not want_json():
-        click.echo("[sentrux] Gate result: ✓ clean (empty baseline skipped)")
-    return gate_result
-
-
-def _failed_sentrux_process_result(
-    gate_result: dict[str, object],
-    *,
-    result: subprocess.CompletedProcess[str],
-    output: str,
-    degradation: bool,
-) -> dict[str, object] | None:
-    if result.returncode == 0 or degradation:
-        return None
-    error = output.strip() or "Sentrux gate failed."
-    return _record_sentrux_compare_error(
-        gate_result,
-        message=error,
-        echo=f"[sentrux] Gate comparison failed: {error}",
-    )
-
-
-def _complete_sentrux_gate_result(
-    gate_result: dict[str, object],
-    *,
-    degradation: bool,
-    quality_after: int | None,
-    offenders: dict[str, object] | None,
-    error: str | None = None,
-    warning: str | None = None,
-) -> dict[str, object]:
-    gate_result["degradation"] = degradation
-    gate_result["quality_after"] = quality_after
-    if error:
-        gate_result["error"] = error
-    if warning:
-        gate_result["warning"] = warning
-    if degradation and offenders is not None:
-        gate_result["structural_offenders"] = offenders
-    if not want_json():
-        status = "✓ clean" if not degradation else "✗ degradation detected"
-        click.echo(f"[sentrux] Gate result: {status}")
-        if warning:
-            click.echo(warning, err=True)
-    return gate_result
-
-
-def _normalize_sentrux_assessment(
-    assessment: SentruxGateAssessment | None,
-    offenders: dict[str, object] | None,
-    degradation: bool,
-) -> tuple[bool, dict[str, object] | None, str | None, str | None]:
-    """Return normalized degradation, offenders, error and warning from assessment."""
-    if assessment is None:
-        return degradation, offenders, None, None
-    return (
-        assessment.should_fail,
-        assessment.current_report or offenders,
-        assessment.error if assessment.should_fail else None,
-        assessment.warning,
-    )
-
-
-def _build_sentrux_gate_result_from_scan(
-    gate_result: dict[str, object],
-    result: subprocess.CompletedProcess[str],
-    offenders: dict[str, object] | None,
-    assessment: SentruxGateAssessment | None,
-) -> dict[str, object]:
-    """Build final gate result from raw sentrux scan output, or None if process failed outright."""
-    output = (result.stdout or "") + (result.stderr or "")
-    degradation, quality_after = _parse_sentrux_gate_output(output)
-    failed_result = _failed_sentrux_process_result(
-        gate_result,
-        result=result,
-        output=output,
-        degradation=degradation,
-    )
-    if failed_result is not None:
-        return failed_result
-    degradation, offenders, error, warning = _normalize_sentrux_assessment(
-        assessment, offenders, degradation
-    )
-    return _complete_sentrux_gate_result(
-        gate_result,
-        degradation=degradation,
-        quality_after=quality_after,
-        offenders=offenders,
-        error=error,
-        warning=warning,
-    )
+    return run_checks.parse_sentrux_gate_output(output)
 
 
 def _sentrux_compare(
@@ -679,115 +386,18 @@ def _sentrux_compare(
     base_ref: str | None = None,
     config: ProjectConfig | None = None,
 ) -> dict[str, object]:
-    """Run `sentrux gate` and build a gate_result dict comparing against baseline."""
-    root = str(Path(project_root).resolve())
-    gate_result = _initial_sentrux_gate_result(baseline_quality)
-    if not want_json():
-        click.echo("[sentrux] Comparing against baseline...")
-
-    baseline_path = _sentrux_baseline_path(root)
-    if _baseline_from_empty_project(baseline_path):
-        return _empty_baseline_sentrux_result(gate_result)
-
-    try:
-        result, offenders, assessment = _scan_head_against_sentrux_baseline(
-            root,
-            baseline_path,
-            base_ref=base_ref,
-            config=config,
-        )
-    except subprocess.CalledProcessError as e:
-        return _record_sentrux_compare_error(
-            gate_result,
-            message=f"Sentrux gate setup failed: {e}",
-            echo=f"[sentrux] Gate setup failed: {e}",
-        )
-    except subprocess.TimeoutExpired as e:
-        return _record_sentrux_compare_error(
-            gate_result,
-            message=f"Sentrux gate timed out: {e}",
-            echo=f"[sentrux] Gate comparison failed: {e}",
-        )
-
-    return _build_sentrux_gate_result_from_scan(gate_result, result, offenders, assessment)
-
-
-def _branch_verification_base(project_root: str) -> str | None:
-    """Return the merge-base used for whole-branch verification."""
-    candidates: list[str] = []
-    origin_head = _git_stdout(project_root, ["rev-parse", "--abbrev-ref", "origin/HEAD"])
-    if origin_head and origin_head != "origin/HEAD":
-        candidates.append(origin_head)
-    candidates.extend(["origin/main", "origin/master", "main", "master"])
-
-    seen: set[str] = set()
-    for candidate in candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        base = _git_stdout(project_root, ["merge-base", "HEAD", candidate])
-        if base:
-            return base
-    return None
-
-
-def _branch_changed_source_files(
-    project_root: str,
-    base_ref: str,
-    source_extensions: tuple[str, ...],
-) -> list[str]:
-    output = _git_stdout(project_root, ["diff", "--name-only", base_ref, "HEAD"])
-    if not output:
-        return []
-    seen: set[str] = set()
-    files: list[str] = []
-    for path in output.splitlines():
-        if path in seen or not any(path.endswith(ext) for ext in source_extensions):
-            continue
-        seen.add(path)
-        files.append(path)
-    return files
+    return run_checks.sentrux_compare(
+        project_root,
+        baseline_quality,
+        base_ref=base_ref,
+        config=config,
+        run_sentrux=run_sentrux,
+        want_json=want_json,
+    )
 
 
 def _branch_verification_gate(project_root: str, config: object) -> dict[str, object]:
-    """Run final verification over all source files changed since the merge base."""
-    from dgov.config import ProjectConfig
-    from dgov.settlement import validate_sandbox
-
-    if not isinstance(config, ProjectConfig):
-        return {"status": "skipped", "reason": "invalid project config"}
-
-    base_ref = _branch_verification_base(project_root)
-    if not base_ref:
-        return {"status": "skipped", "reason": "no merge base found"}
-
-    head_ref = _git_stdout(project_root, ["rev-parse", "HEAD"])
-    changed_files = _branch_changed_source_files(project_root, base_ref, config.source_extensions)
-    result: dict[str, object] = {
-        "status": "clean",
-        "base": base_ref,
-        "head": head_ref,
-        "changed_files": len(changed_files),
-    }
-    if not changed_files:
-        return result
-
-    with _detached_worktree(project_root, base_ref, "dgov-branch-base-") as baseline_path:
-        gate = validate_sandbox(
-            Path(project_root),
-            base_ref,
-            project_root,
-            config=config,
-            type_baseline_path=baseline_path,
-        )
-
-    if gate.passed:
-        return result
-    return {
-        **result,
-        "status": "failed",
-        "error": gate.error or "Branch verification failed",
-    }
+    return run_checks.branch_verification_gate(project_root, config, git_stdout=_git_stdout)
 
 
 def _branch_verification_failed(branch_result: dict[str, object]) -> bool:
@@ -964,7 +574,7 @@ def _emit_sentrux_warning(gate_result: dict[str, object]) -> None:
     click.echo(f"  sentrux: {sentrux_message}", err=True)
     offenders = gate_result.get("structural_offenders")
     if isinstance(offenders, dict):
-        report = format_structural_offender_report({str(k): v for k, v in offenders.items()})
+        report = run_checks.format_offender_report(cast("dict[object, object]", offenders))
         click.echo(report, err=True)
 
 
@@ -1020,7 +630,7 @@ def _append_sentrux_log_lines(lines: list[str], gate_result: dict[str, object]) 
     offenders = gate_result.get("structural_offenders")
     if not isinstance(offenders, dict):
         return
-    summary = format_structural_offender_report({str(k): v for k, v in offenders.items()}).replace(
+    summary = run_checks.format_offender_report(cast("dict[object, object]", offenders)).replace(
         "\n", " | "
     )
     lines.append(f"  sentrux_offenders: {summary[:400]}")
@@ -1143,10 +753,7 @@ def _refresh_sentrux_baseline_after_clean_run(project_root: str) -> None:
     if not want_json():
         click.echo("[sentrux] Refreshing accepted baseline after clean run...")
 
-    try:
-        committed = refresh_sentrux_baseline_after_clean_run(root_str, run_sentrux=run_sentrux)
-    except SentruxBaselineRefreshError as exc:
-        raise click.ClickException(str(exc)) from exc
+    committed = run_checks.refresh_accepted_sentrux_baseline(root_str, run_sentrux=run_sentrux)
 
     if not want_json():
         status = "committed" if committed else "already current"
@@ -1241,6 +848,10 @@ def _compile_dag_for_run(plan_file: str, pc: ProjectConfig, only: str | None) ->
         dag = compile_plan(
             plan,
             project_agent=pc.default_agent,
+            project_provider=pc.llm_provider,
+            provider_agents=pc.provider_default_agents(),
+            provider_names=tuple(pc.providers),
+            require_provider=True,
             departments=pc.departments,
         )
     except (ConstitutionalViolation, PlanValidationError) as exc:
@@ -1607,10 +1218,14 @@ def run_compiled_plan(
     verbose: bool = False,
 ) -> str:
     """Execute a plan TOML with Sentrux quality gates."""
-    from dgov.config import load_project_config
-
-    pc = load_project_config(project_root)
-    dag = _compile_dag_for_run(plan_file, pc, only)
+    project_root_path, resolved_plan_file, resolved_plan_dir = _resolve_compiled_run_paths(
+        project_root,
+        plan_file,
+        plan_dir,
+    )
+    project_root = str(project_root_path)
+    pc = load_project_config_or_exit(project_root)
+    dag = _compile_dag_for_run(str(resolved_plan_file), pc, only)
     _ensure_git_ready(project_root, yes=yes)
     baseline_quality = _require_sentrux_baseline(project_root)
     artifacts = _execute_plan_with_gates(
@@ -1626,12 +1241,30 @@ def run_compiled_plan(
         artifacts,
         dag=dag,
         project_root=project_root,
-        plan_file=plan_file,
+        plan_file=str(resolved_plan_file),
         only=only,
-        plan_dir=plan_dir,
+        plan_dir=resolved_plan_dir,
         verbose=verbose,
         stream=stream,
     )
+
+
+def _resolve_compiled_run_paths(
+    project_root: str,
+    plan_file: str,
+    plan_dir: Path | None,
+) -> tuple[Path, Path, Path | None]:
+    project_root_path = Path(project_root).resolve()
+    try:
+        resolved_plan_file = resolve_project_path(project_root_path, plan_file, label="plan file")
+        resolved_plan_dir = (
+            resolve_project_path(project_root_path, plan_dir, label="plan directory")
+            if plan_dir is not None
+            else None
+        )
+    except ProjectPathError as exc:
+        raise click.ClickException(str(exc)) from None
+    return project_root_path, resolved_plan_file, resolved_plan_dir
 
 
 def _append_run_log(

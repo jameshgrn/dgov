@@ -1,0 +1,32 @@
+[tasks.config-validation]
+summary = "Config: reject malformed project table sections"
+prompt = """
+Orient:
+1. Read src/dgov/config.py, src/dgov/workers/config.py, tests/test_config.py, and tests/test_worker.py.
+2. Fix ledger bug #191. Do not introduce provider defaults, compatibility shims, or unrelated config fields.
+
+Edit:
+1. Update table-section parsing so missing sections still default as before, but malformed non-table sections fail fast with clear .dgov/project.toml context.
+2. Apply the behavior consistently to the project-facing config loader and worker-facing provider/config helpers.
+3. Add focused tests that fail on the current behavior:
+   - top-level project = "bad" raises a clear [project] table error;
+   - top-level providers = "bad" raises a clear [providers] table error;
+   - malformed [tool_policy], [conventions], [sentrux], [scope], or other table-like sections touched by the helper fail clearly where applicable.
+4. Preserve existing missing-file and partial-config defaults.
+
+Verify:
+1. uv run pytest -q -m unit tests/test_config.py tests/test_worker.py
+2. uv run ruff check src/dgov/config.py src/dgov/workers/config.py tests/test_config.py tests/test_worker.py
+3. uv run ruff format --check src/dgov/config.py src/dgov/workers/config.py tests/test_config.py tests/test_worker.py
+"""
+commit_message = "Reject malformed config tables"
+files.edit = [
+  "src/dgov/config.py",
+  "src/dgov/workers/config.py",
+  "tests/test_config.py",
+  "tests/test_worker.py",
+]
+files.read = [
+  ".dgov/project.toml",
+]
+test_cmd = "uv run pytest -q -m unit tests/test_config.py tests/test_worker.py"

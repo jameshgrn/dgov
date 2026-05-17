@@ -1,0 +1,325 @@
+[plan]
+name = "gov-exception-fixes"
+source_mtime_max = "2026-05-17T15:12:55.430530Z"
+sop_set_hash = "160dc3be30f404e5c5b128af7cdddfde9f5e4d8643c341fd805e53cf2c957dc1"
+
+[tasks."tasks/config.config-validation"]
+summary = "Config: reject malformed project table sections"
+prompt = """
+[SOP: Large File Handling]
+Summary: Use targeted reads and surgical edits on large files to preserve context window and diff clarity.
+Applies To: python, javascript, typescript, large-file, chunk, binary
+Priority: MUST
+
+When:
+- reading or editing files over ~200 lines
+- working with data files, configs, or generated code
+
+Do:
+- use file_symbols first to locate the target function or class
+- use read_file with line ranges for focused context
+- use head, tail, or word_count to gauge size before full reads
+- use edit_file or apply_patch for surgical changes
+
+Do Not:
+- read an entire large file when you only need one function
+- use write_file on files larger than 100 lines when edit_file suffices
+- read the same large file multiple times without narrowing the range
+
+Verify:
+- confirm your edit did not introduce unintended changes in untouched sections
+- check that git_diff shows only the intended hunks
+
+Escalate:
+- if the task requires understanding the full file structure (request file_symbols output first)
+
+[SOP: Python Toolchain & Code Style]
+Summary: Python toolchain defaults and code-style rules for focused, explicit changes.
+Applies To: python, lint, format, style, ruff, naming, convention
+Priority: MUST
+
+When:
+- editing Python source or tests
+- choosing lint, format, or type-check commands
+- touching functions or stateful code that could drift toward cleverness or flag piles
+
+Do:
+- prefer explicit, readable logic over dense cleverness
+- keep semantic functions pure and isolate orchestration side effects
+
+Do Not:
+- leave commented-out code behind
+- add docstrings, comments, or type annotations to code you did not change
+- add premature abstractions before the pattern is repeated enough to justify them
+- accumulate boolean flags or mutate input objects while also returning the same reference
+
+Verify:
+- fix every warning from lint, type checks, and targeted tests
+- run the narrowest relevant Python verification commands for the files you changed
+- review the final diff for unintended rewrites or formatting churn
+
+Escalate:
+- if the requested fix requires a broader refactor than the claimed files allow
+- if repo toolchain commands in `project.toml` do not match the actual project
+
+[SOP: Assign Return Values at API Boundaries]
+Summary: Prevent silent no-ops from unassigned getter, factory, and builder calls.
+Applies To: python, javascript, typescript, api, plugin, return, interface, contract
+Priority: MUST
+
+When:
+- calling methods that return a value you need (getters, factories, builders, parsers)
+- working with unfamiliar APIs or libraries where return types are not obvious
+- chaining operations where an intermediate result must be captured
+
+Do:
+- always assign the return value of `.get()`, `.create()`, `.build()`, `.parse()`, `.copy()`, `.replace()`, `.with_*()`, and similar factory/transform methods
+- verify that the variable you assign to is actually used downstream
+- check the API docs or source for whether a method mutates in-place vs returns a new value
+- when calling a method on an external object, confirm the method exists on that type
+
+Do Not:
+- call a getter or factory method as a standalone expression (bare `self.x.get(...)` on its own line)
+- assume a method mutates the receiver; many APIs return a new object instead
+- call methods that do not exist on the receiver type (e.g. `.grab()` on a class without it)
+- use `result.model_dump()` on a plain dict or `obj.engine()` on a class that lacks it
+
+Verify:
+- search your diff for bare method calls on their own line that are not `print`, `logger.*`, `.append()`, `.extend()`, `.add()`, `.remove()`, `.close()`, `.emit()`, or similar void methods
+- for every assignment from an external API call, confirm the method exists and returns what you expect
+- if a parameter is set via a builder pattern, confirm the final object reflects the change
+
+Escalate:
+- if the API documentation is ambiguous about return type vs in-place mutation
+- if the method you need does not exist on the target class
+
+[SOP: Testing Conventions]
+Summary: Testing rules for targeted execution, scope discipline, and behavior-first verification.
+Applies To: tests, test, pytest, verification, coverage, assert, unit
+Priority: MUST
+
+When:
+- writing or editing tests
+- choosing verification commands after a code change
+- investigating test failures during worker verification
+
+Do:
+- use `pytest -q`
+- run targeted subsets with markers like `-m unit` or `-m integration`
+- test behavior and edge cases, not just implementation details
+- mock boundaries only: network, filesystem, and external services
+- confirm a relevant test would fail before claiming the fix is real
+
+Do Not:
+- run the full test suite
+- mock logic or internal state just to force a passing result
+
+Verify:
+- rerun the exact targeted command that covers the changed behavior
+- confirm scope violations are avoided before settlement
+
+Escalate:
+- if the right test file is outside the current claim
+- if any verification command points to an unclaimed file, report the exact command and path instead of widening scope ad hoc
+- if the change needs broader integration coverage than the task currently allows
+
+Orient:
+1. Read src/dgov/config.py, src/dgov/workers/config.py, tests/test_config.py, and tests/test_worker.py.
+2. Fix ledger bug #191. Do not introduce provider defaults, compatibility shims, or unrelated config fields.
+
+Edit:
+1. Update table-section parsing so missing sections still default as before, but malformed non-table sections fail fast with clear .dgov/project.toml context.
+2. Apply the behavior consistently to the project-facing config loader and worker-facing provider/config helpers.
+3. Add focused tests that fail on the current behavior:
+   - top-level project = "bad" raises a clear [project] table error;
+   - top-level providers = "bad" raises a clear [providers] table error;
+   - malformed [tool_policy], [conventions], [sentrux], [scope], or other table-like sections touched by the helper fail clearly where applicable.
+4. Preserve existing missing-file and partial-config defaults.
+
+Verify:
+1. uv run pytest -q -m unit tests/test_config.py tests/test_worker.py
+2. uv run ruff check src/dgov/config.py src/dgov/workers/config.py tests/test_config.py tests/test_worker.py
+3. uv run ruff format --check src/dgov/config.py src/dgov/workers/config.py tests/test_config.py tests/test_worker.py
+"""
+commit_message = "Reject malformed config tables"
+timeout_s = 0
+test_cmd = "uv run pytest -q -m unit tests/test_config.py tests/test_worker.py"
+sop_mapping = ["large-file-handling", "python-style", "return-values", "testing"]
+files.edit = ["src/dgov/config.py", "src/dgov/workers/config.py", "tests/test_config.py", "tests/test_worker.py"]
+files.read = [".dgov/project.toml"]
+
+[tasks."tasks/persistence.event-migration"]
+summary = "Persistence: fix event schema migration and write errors"
+prompt = """
+[SOP: Error Handling & Philosophy]
+Summary: Error handling rules for failing fast, preserving context, and avoiding silent failure.
+Applies To: errors, error, exceptions, failure, raise, catch, fallback, validation
+Priority: MUST
+
+When:
+- adding or changing exception handling
+- introducing new failure paths or validation checks
+- touching code that currently swallows errors or returns ambiguous failure values
+
+Do:
+- fail fast with clear, actionable messages
+- include operation, input context, and a suggested fix when reporting errors
+- remove obsolete branches or shims instead of layering deprecation clutter
+- keep control flow explicit when handling failures
+
+Do Not:
+- swallow exceptions silently
+- add speculative features or extra flags while touching failure paths
+- hide important failure details behind generic error text
+
+Verify:
+- exercise at least one error path, not just the happy path
+- confirm failure messages still identify what operation failed and why
+- confirm exceptions propagate to the right boundary instead of disappearing
+
+Escalate:
+- if the right failure contract is unclear at the interface or architecture level
+- if a fix would require changing cross-module error semantics
+
+[SOP: Large File Handling]
+Summary: Use targeted reads and surgical edits on large files to preserve context window and diff clarity.
+Applies To: python, javascript, typescript, large-file, chunk, binary
+Priority: MUST
+
+When:
+- reading or editing files over ~200 lines
+- working with data files, configs, or generated code
+
+Do:
+- use file_symbols first to locate the target function or class
+- use read_file with line ranges for focused context
+- use head, tail, or word_count to gauge size before full reads
+- use edit_file or apply_patch for surgical changes
+
+Do Not:
+- read an entire large file when you only need one function
+- use write_file on files larger than 100 lines when edit_file suffices
+- read the same large file multiple times without narrowing the range
+
+Verify:
+- confirm your edit did not introduce unintended changes in untouched sections
+- check that git_diff shows only the intended hunks
+
+Escalate:
+- if the task requires understanding the full file structure (request file_symbols output first)
+
+[SOP: Python Toolchain & Code Style]
+Summary: Python toolchain defaults and code-style rules for focused, explicit changes.
+Applies To: python, lint, format, style, ruff, naming, convention
+Priority: MUST
+
+When:
+- editing Python source or tests
+- choosing lint, format, or type-check commands
+- touching functions or stateful code that could drift toward cleverness or flag piles
+
+Do:
+- prefer explicit, readable logic over dense cleverness
+- keep semantic functions pure and isolate orchestration side effects
+
+Do Not:
+- leave commented-out code behind
+- add docstrings, comments, or type annotations to code you did not change
+- add premature abstractions before the pattern is repeated enough to justify them
+- accumulate boolean flags or mutate input objects while also returning the same reference
+
+Verify:
+- fix every warning from lint, type checks, and targeted tests
+- run the narrowest relevant Python verification commands for the files you changed
+- review the final diff for unintended rewrites or formatting churn
+
+Escalate:
+- if the requested fix requires a broader refactor than the claimed files allow
+- if repo toolchain commands in `project.toml` do not match the actual project
+
+[SOP: Assign Return Values at API Boundaries]
+Summary: Prevent silent no-ops from unassigned getter, factory, and builder calls.
+Applies To: python, javascript, typescript, api, plugin, return, interface, contract
+Priority: MUST
+
+When:
+- calling methods that return a value you need (getters, factories, builders, parsers)
+- working with unfamiliar APIs or libraries where return types are not obvious
+- chaining operations where an intermediate result must be captured
+
+Do:
+- always assign the return value of `.get()`, `.create()`, `.build()`, `.parse()`, `.copy()`, `.replace()`, `.with_*()`, and similar factory/transform methods
+- verify that the variable you assign to is actually used downstream
+- check the API docs or source for whether a method mutates in-place vs returns a new value
+- when calling a method on an external object, confirm the method exists on that type
+
+Do Not:
+- call a getter or factory method as a standalone expression (bare `self.x.get(...)` on its own line)
+- assume a method mutates the receiver; many APIs return a new object instead
+- call methods that do not exist on the receiver type (e.g. `.grab()` on a class without it)
+- use `result.model_dump()` on a plain dict or `obj.engine()` on a class that lacks it
+
+Verify:
+- search your diff for bare method calls on their own line that are not `print`, `logger.*`, `.append()`, `.extend()`, `.add()`, `.remove()`, `.close()`, `.emit()`, or similar void methods
+- for every assignment from an external API call, confirm the method exists and returns what you expect
+- if a parameter is set via a builder pattern, confirm the final object reflects the change
+
+Escalate:
+- if the API documentation is ambiguous about return type vs in-place mutation
+- if the method you need does not exist on the target class
+
+[SOP: Testing Conventions]
+Summary: Testing rules for targeted execution, scope discipline, and behavior-first verification.
+Applies To: tests, test, pytest, verification, coverage, assert, unit
+Priority: MUST
+
+When:
+- writing or editing tests
+- choosing verification commands after a code change
+- investigating test failures during worker verification
+
+Do:
+- use `pytest -q`
+- run targeted subsets with markers like `-m unit` or `-m integration`
+- test behavior and edge cases, not just implementation details
+- mock boundaries only: network, filesystem, and external services
+- confirm a relevant test would fail before claiming the fix is real
+
+Do Not:
+- run the full test suite
+- mock logic or internal state just to force a passing result
+
+Verify:
+- rerun the exact targeted command that covers the changed behavior
+- confirm scope violations are avoided before settlement
+
+Escalate:
+- if the right test file is outside the current claim
+- if any verification command points to an unclaimed file, report the exact command and path instead of widening scope ad hoc
+- if the change needs broader integration coverage than the task currently allows
+
+Orient:
+1. Read src/dgov/persistence/sql.py, src/dgov/persistence/schema.py, src/dgov/persistence/connection.py, and src/dgov/persistence/events.py.
+2. Read tests/test_migration.py and tests/test_persistence_events.py.
+3. Fix ledger bug #192. Do not change unrelated persistence behavior.
+
+Edit:
+1. Update src/dgov/persistence/connection.py so migration brings legacy events tables up to the full current event schema, including the data column and every typed event column currently used by read_events().
+2. Keep the migration idempotent and explicit. A legacy database created with only id/ts/event/pane must work after _get_db().
+3. Update src/dgov/persistence/events.py so emit_event() does not swallow unrelated persistence failures as "database locked". It should fail fast with clear context for non-lock failures. If lock-drop behavior remains, make it specific to sqlite lock failures only.
+4. Add or update focused unit tests in tests/test_migration.py and tests/test_persistence_events.py that fail on the current bug:
+   - legacy events schema missing data/error/reason/etc migrates successfully;
+   - read_events() works after migration;
+   - emit_event() propagates a non-lock persistence failure instead of silently dropping it.
+
+Verify:
+1. uv run pytest -q -m unit tests/test_migration.py tests/test_persistence_events.py
+2. uv run ruff check src/dgov/persistence/connection.py src/dgov/persistence/events.py tests/test_migration.py tests/test_persistence_events.py
+3. uv run ruff format --check src/dgov/persistence/connection.py src/dgov/persistence/events.py tests/test_migration.py tests/test_persistence_events.py
+"""
+commit_message = "Fix event persistence migration"
+timeout_s = 0
+test_cmd = "uv run pytest -q -m unit tests/test_migration.py tests/test_persistence_events.py"
+sop_mapping = ["error-handling", "large-file-handling", "python-style", "return-values", "testing"]
+files.edit = ["src/dgov/persistence/connection.py", "src/dgov/persistence/events.py", "tests/test_migration.py", "tests/test_persistence_events.py"]
+files.read = ["src/dgov/persistence/sql.py", "src/dgov/persistence/schema.py"]

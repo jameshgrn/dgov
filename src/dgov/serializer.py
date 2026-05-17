@@ -19,15 +19,26 @@ def _format_timestamp(source_mtime_max: float) -> str:
     return datetime.fromtimestamp(source_mtime_max, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def _format_plan_section(name: str, timestamp: str, sop_set_hash: str) -> list[str]:
+def _format_plan_section(
+    name: str,
+    timestamp: str,
+    sop_set_hash: str,
+    default_agent: str,
+    default_provider: str,
+) -> list[str]:
     """Format the [plan] section header with metadata."""
-    return [
+    lines = [
         "[plan]",
         f"name = {_toml_str(name)}",
         f"source_mtime_max = {_toml_str(timestamp)}",
         f"sop_set_hash = {_toml_str(sop_set_hash)}",
-        "",
     ]
+    if default_agent:
+        lines.append(f"default_agent = {_toml_str(default_agent)}")
+    if default_provider:
+        lines.append(f"default_provider = {_toml_str(default_provider)}")
+    lines.append("")
+    return lines
 
 
 def _format_prompt_fields(unit: PlanUnit) -> list[str]:
@@ -125,6 +136,7 @@ def _format_task_section(fq_id: str, unit: PlanUnit, mapping: tuple[str, ...]) -
 
     # Optional string fields
     lines.extend(_format_optional_string_field(unit.agent, "agent"))
+    lines.extend(_format_optional_string_field(unit.provider, "provider"))
     lines.extend(_format_role_field(unit.role))
 
     # Arrays
@@ -175,7 +187,15 @@ def serialize_compiled_toml(
     ts = _format_timestamp(source_mtime_max)
 
     lines: list[str] = []
-    lines.extend(_format_plan_section(meta.name, ts, br.sop_set_hash))
+    lines.extend(
+        _format_plan_section(
+            meta.name,
+            ts,
+            br.sop_set_hash,
+            meta.default_agent,
+            meta.default_provider,
+        )
+    )
     lines.extend(_format_all_task_sections(plan, br.sop_mapping))
 
     return "\n".join(lines)

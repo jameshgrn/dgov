@@ -69,6 +69,46 @@ def test_policy_drift_accepts_derived_bootstrap_policy_assets(tmp_path: Path) ->
     assert find_policy_drift(tmp_path) == []
 
 
+def test_policy_drift_flags_project_local_swift_xcode_bootstrap_sops(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path / ".dgov" / "governor.md", "repo governor\n")
+    _write(
+        tmp_path / ".dgov" / "sops" / "swift.md",
+        """---
+name: swift
+title: Swift Toolchain & Project Setup
+summary: Swift and Xcode project rules.
+applies_to: [swift, xcode, xcodebuild, swift-format, xcodegen, macos]
+priority: must
+---
+## When
+- editing Swift source
+## Do
+- prefer project-local wrappers
+## Do Not
+- hardcode wrappers in core
+## Verify
+- run project-local checks
+## Escalate
+- if tooling is missing
+""",
+    )
+    _write(tmp_path / "src" / "dgov" / "bootstrap_policy_data" / "__init__.py", "")
+    _write(
+        tmp_path / "pyproject.toml",
+        """
+[tool.hatch.build.targets.wheel.force-include]
+".dgov/governor.md" = "dgov/bootstrap_policy_data/governor.md"
+".dgov/sops" = "dgov/bootstrap_policy_data/sops"
+""",
+    )
+
+    assert find_policy_drift(tmp_path) == [
+        "Project-local Swift/Xcode policy is in core bootstrap SOPs: swift.md"
+    ]
+
+
 def test_pyproject_packages_bootstrap_policy_from_repo_canonical_files() -> None:
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     force_include = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]

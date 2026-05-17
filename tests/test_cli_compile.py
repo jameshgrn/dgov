@@ -73,12 +73,25 @@ def _make_plan_tree(root: Path, *, sections: list[str] | None = None) -> Path:
     return plan_dir
 
 
+def _provider_project_toml(project_settings: str = "") -> str:
+    return f"""
+[project]
+provider = "test-provider"
+{project_settings}
+
+[providers.test-provider]
+default_agent = "provider/model-name"
+base_url = "https://provider.example.com/v1"
+api_key_env = "TEST_PROVIDER_API_KEY"
+"""
+
+
 # -- Happy path --
 
 
 def test_compile_happy_path(runner: CliRunner, tmp_path: Path) -> None:
     plan_dir = _make_plan_tree(tmp_path)
-    result = runner.invoke(cli, ["compile", str(plan_dir), "--dry-run"])
+    result = runner.invoke(cli, ["compile", str(plan_dir)])
     assert result.exit_code == 0, result.output
     assert "3 units" in result.output
     assert "_compiled.toml" in result.output
@@ -94,12 +107,27 @@ def test_compile_happy_path(runner: CliRunner, tmp_path: Path) -> None:
     assert len(data["tasks"]) == 3
 
 
+def test_compile_reports_malformed_project_config(runner: CliRunner, tmp_path: Path) -> None:
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        root = Path(td)
+        dgov_dir = root / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text("this is not valid toml {{{")
+        plan_dir = _make_plan_tree(root)
+
+        result = runner.invoke(cli, ["compile", str(plan_dir), "--dry-run"])
+
+    assert result.exit_code == 1
+    assert "Invalid TOML" in result.output
+    assert ".dgov/project.toml" in result.output
+
+
 def test_compile_round_trips_through_parser(runner: CliRunner, tmp_path: Path) -> None:
     """_compiled.toml should parse via the existing parse_plan_file."""
     from dgov.plan import parse_plan_file
 
     plan_dir = _make_plan_tree(tmp_path)
-    result = runner.invoke(cli, ["compile", str(plan_dir), "--dry-run"])
+    result = runner.invoke(cli, ["compile", str(plan_dir)])
     assert result.exit_code == 0, result.output
 
     compiled_path = plan_dir / "_compiled.toml"
@@ -115,6 +143,38 @@ def test_compile_round_trips_through_parser(runner: CliRunner, tmp_path: Path) -
     # Check depends_on resolved correctly
     entry = plan_spec.units["cli/commands.entry"]
     assert "core/setup.config" in entry.depends_on
+
+
+def test_compile_preserves_root_default_agent(runner: CliRunner, tmp_path: Path) -> None:
+    plan_dir = _make_plan_tree(tmp_path)
+    (plan_dir / "_root.toml").write_text(
+        "[plan]\n"
+        'name = "test-plan"\n'
+        'summary = "Test"\n'
+        'sections = ["core", "cli"]\n'
+        'default_agent = "plan/default-agent"\n',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(cli, ["compile", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    data = tomllib.loads((plan_dir / "_compiled.toml").read_text())
+    assert data["plan"]["default_agent"] == "plan/default-agent"
+
+
+def test_compile_reports_non_string_root_provider_field(runner: CliRunner, tmp_path: Path) -> None:
+    plan_dir = _make_plan_tree(tmp_path)
+    (plan_dir / "_root.toml").write_text(
+        '[plan]\nname = "test-plan"\nsummary = "Test"\nsections = ["core", "cli"]\n'
+        "default_provider = 123\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(cli, ["compile", str(plan_dir)])
+
+    assert result.exit_code == 1
+    assert "[plan].default_provider must be a string" in result.output
 
 
 def test_compile_preserves_files(runner: CliRunner, tmp_path: Path) -> None:
@@ -190,7 +250,7 @@ def test_compile_cycle_fails(runner: CliRunner, tmp_path: Path) -> None:
         '[tasks.b]\nsummary = "b"\nprompt = "b"\ncommit_message = "b"\n'
         'depends_on = ["a"]\n'
     )
-    result = runner.invoke(cli, ["compile", str(plan_dir), "--dry-run"])
+    result = runner.invoke(cli, ["compile", str(plan_dir)])
     assert result.exit_code != 0
     assert (
         "cycle" in result.output.lower()
@@ -267,7 +327,7 @@ def test_compile_warns_when_setup_cmd_depends_on_plan_created_file(
     dgov_dir = tmp_path / ".dgov"
     dgov_dir.mkdir()
     (dgov_dir / "project.toml").write_text(
-        '[project]\nsetup_cmd = "xcodegen generate --spec project.yml"\n',
+        _provider_project_toml('setup_cmd = "xcodegen generate --spec project.yml"'),
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
@@ -298,7 +358,7 @@ def test_compile_warns_when_verify_tool_missing_from_worker_path(
 ) -> None:
     dgov_dir = tmp_path / ".dgov"
     dgov_dir.mkdir()
-    (dgov_dir / "project.toml").write_text("[project]\n", encoding="utf-8")
+    (dgov_dir / "project.toml").write_text(_provider_project_toml(), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
     plan_dir = tmp_path / "tool-plan"
@@ -321,6 +381,67 @@ def test_compile_warns_when_verify_tool_missing_from_worker_path(
 
     assert result.exit_code == 0, result.output
     assert "Verify command references tool 'definitely-missing-dgov-tool'" in result.output
+
+
+def test_compile_rejects_unknown_task_provider(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text(_provider_project_toml(), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    plan_dir = tmp_path / "provider-plan"
+    section_dir = plan_dir / "tasks"
+    section_dir.mkdir(parents=True)
+    (plan_dir / "_root.toml").write_text(
+        '[plan]\nname = "provider-plan"\nsummary = ""\nsections = ["tasks"]\n'
+    )
+    (section_dir / "main.toml").write_text(
+        "[tasks.main]\n"
+        'summary = "Update docs"\n'
+        'prompt = "Orient:\\nRead README.md.\\n\\nEdit:\\n'
+        '1. Update README.md.\\n\\nVerify:\\n- Review diff."\n'
+        'commit_message = "Update docs"\n'
+        'provider = "missing"\n'
+        'agent = "some/model"\n'
+        'files.edit = ["README.md"]\n'
+    )
+
+    result = runner.invoke(cli, ["compile", str(plan_dir)])
+
+    assert result.exit_code != 0
+    assert "Unknown provider 'missing'" in result.output
+
+
+def test_compile_rejects_missing_provider_config(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text("[project]\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    plan_dir = tmp_path / "missing-provider-plan"
+    section_dir = plan_dir / "tasks"
+    section_dir.mkdir(parents=True)
+    (plan_dir / "_root.toml").write_text(
+        '[plan]\nname = "missing-provider-plan"\nsummary = ""\nsections = ["tasks"]\n'
+    )
+    (section_dir / "main.toml").write_text(
+        "[tasks.main]\n"
+        'summary = "Update docs"\n'
+        'prompt = "Orient:\\nRead README.md.\\n\\nEdit:\\n'
+        '1. Update README.md.\\n\\nVerify:\\n- Review diff."\n'
+        'commit_message = "Update docs"\n'
+        'agent = "some/model"\n'
+        'files.edit = ["README.md"]\n'
+    )
+
+    result = runner.invoke(cli, ["compile", str(plan_dir)])
+
+    assert result.exit_code != 0
+    assert "No provider for task" in result.output
 
 
 def test_verify_prompt_command_scan_ignores_sop_prose_snippets() -> None:
@@ -403,7 +524,7 @@ def test_compile_does_not_warn_zero_sop_for_docs_only_task(
 ) -> None:
     dgov_dir = tmp_path / ".dgov"
     dgov_dir.mkdir()
-    (dgov_dir / "project.toml").write_text("[project]\n", encoding="utf-8")
+    (dgov_dir / "project.toml").write_text(_provider_project_toml(), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
     plan_dir = tmp_path / "docs-plan"

@@ -202,6 +202,47 @@ class TestPrepareWorktree:
         with pytest.raises(RuntimeError, match="install uv"):
             prepare_worktree(wt, language="python")
 
+    def test_prepare_worktree_reports_python_bootstrap_context(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wt_path = tmp_path / "wt"
+        wt_path.mkdir()
+        (wt_path / "pyproject.toml").write_text(
+            "[project]\nname = 'demo'\nversion = '0.1.0'\nrequires-python = '>=3.10'\n"
+        )
+        (wt_path / ".python-version").write_text("3.10\n")
+        wt = Worktree(path=wt_path, branch="dgov/task-a", commit="abc123")
+
+        def _fake_run(cmd, **kwargs):
+            if cmd == ["uv", "sync"]:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    1,
+                    "",
+                    "ModuleNotFoundError: No module named 'tomllib'",
+                )
+            if cmd == ["uv", "python", "find"]:
+                return subprocess.CompletedProcess(cmd, 0, "/opt/python3.10\n", "")
+            if cmd == [
+                "/opt/python3.10",
+                "-c",
+                "import platform; print(platform.python_version())",
+            ]:
+                return subprocess.CompletedProcess(cmd, 0, "3.10.13\n", "")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        monkeypatch.setattr("dgov.worktree.subprocess.run", _fake_run)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            prepare_worktree(wt, language="python")
+
+        message = str(excinfo.value)
+        assert "ModuleNotFoundError: No module named 'tomllib'" in message
+        assert "pyproject requires-python: >=3.10" in message
+        assert ".python-version: 3.10" in message
+        assert "selected worktree interpreter: /opt/python3.10 (Python 3.10.13)" in message
+        assert "align [project].requires-python and .python-version" in message
+
 
 @pytest.mark.unit
 class TestCommitInWorktree:
