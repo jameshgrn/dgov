@@ -7,8 +7,8 @@ priority: must
 ---
 ## When
 - a task involves editing, adding, or restructuring docs/knowledge/ articles
-- a worker needs to record an architecture decision, concept explanation, or operational workflow
-- a project wants to surface repo-specific conventions through Obsidian or dgov kb commands
+- a worker needs to explain an architecture decision already recorded in canonical repo state
+- a project wants to surface source-backed conventions through Obsidian or dgov kb commands
 - a task prompt references a knowledge base article during the Orient phase
 - traversal, related edges, or graph queries are needed to navigate between articles
 
@@ -22,6 +22,7 @@ priority: must
 - use `status` values from the allowed set: `draft`, `living`, `stable`
 - write article body as plain Markdown with the first `#` heading matching the `title`
 - use `.dgov/sops/` for worker execution guidance and `dgov ledger` for durable decisions
+- promote new durable rules, decisions, bugs, or debt to the ledger or governing policy before explaining them in the KB
 
 ## Do Not
 - cite `docs/knowledge/` articles as self-authoritative sources
