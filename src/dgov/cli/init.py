@@ -698,6 +698,11 @@ def _tool_policy_lines(language: str) -> list[str]:
 def _scope_lines(ignore_files: list[str]) -> list[str]:
     return [
         "[scope]",
+        "# Optional project-level merge surface. deny_files wins over allow_files and",
+        "# cannot be bypassed by plan file claims. Leave allow_files empty for claim-only scope.",
+        "allow_files = []",
+        "deny_files = []",
+        "",
         "# Files exempted from scope-violation checks in addition to dgov's built-in",
         "# Python defaults: .venv, uv.lock, __pycache__, and *.pyc.",
         "# Add repo-specific managed files here when workers may touch them incidentally.",

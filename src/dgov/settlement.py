@@ -357,6 +357,41 @@ def _check_reserved_paths(actual_files: frozenset[str]) -> ReviewResult | None:
     return None
 
 
+def _matches_path_policy(path: str, patterns: Sequence[str]) -> bool:
+    return any(fnmatch(path, pattern) for pattern in patterns)
+
+
+def check_scope_path_policy(
+    actual_files: frozenset[str],
+    scope_allow_files: Sequence[str] = (),
+    scope_deny_files: Sequence[str] = (),
+) -> ReviewResult | None:
+    """Reject changed files that violate project-level allow/deny patterns."""
+    denied = sorted(path for path in actual_files if _matches_path_policy(path, scope_deny_files))
+    if denied:
+        return ReviewResult(
+            passed=False,
+            verdict="path_policy_violation",
+            actual_files=actual_files,
+            error=f"Touched project-denied files: {denied}",
+        )
+
+    if not scope_allow_files:
+        return None
+
+    outside = sorted(
+        path for path in actual_files if not _matches_path_policy(path, scope_allow_files)
+    )
+    if outside:
+        return ReviewResult(
+            passed=False,
+            verdict="path_policy_violation",
+            actual_files=actual_files,
+            error=f"Touched files outside project allowlist: {outside}",
+        )
+    return None
+
+
 def is_scope_ignored(
     path: str,
     ignored_exact: frozenset[str],
@@ -661,11 +696,14 @@ def _review_policy_failure(
     task_slug: str | None,
     pane_slug: str | None,
     scope_ignore_files: Sequence[str],
+    scope_allow_files: Sequence[str],
+    scope_deny_files: Sequence[str],
     read_files: Sequence[str],
 ) -> ReviewResult | None:
     for result in (
         _check_size(actual_files, max_diff_lines),
         _check_reserved_paths(actual_files),
+        check_scope_path_policy(actual_files, scope_allow_files, scope_deny_files),
         check_scope(actual_files, claimed_files, scope_ignore_files, read_files),
         check_transient_scope(
             project_root,
@@ -690,6 +728,8 @@ def _perform_review(
     task_slug: str | None,
     pane_slug: str | None,
     scope_ignore_files: Sequence[str],
+    scope_allow_files: Sequence[str],
+    scope_deny_files: Sequence[str],
     read_files: Sequence[str],
 ) -> ReviewResult:
     """Perform review checks without exception handling.
@@ -711,6 +751,8 @@ def _perform_review(
         task_slug,
         pane_slug,
         scope_ignore_files,
+        scope_allow_files,
+        scope_deny_files,
         read_files,
     )
     if failure is not None:
@@ -727,6 +769,8 @@ def review_sandbox(
     task_slug: str | None = None,
     pane_slug: str | None = None,
     scope_ignore_files: Sequence[str] = (),
+    scope_allow_files: Sequence[str] = (),
+    scope_deny_files: Sequence[str] = (),
     read_files: Sequence[str] = (),
 ) -> ReviewResult:
     """FAST review gate — git sanity checks in microseconds.
@@ -752,6 +796,8 @@ def review_sandbox(
             task_slug,
             pane_slug,
             scope_ignore_files,
+            scope_allow_files,
+            scope_deny_files,
             read_files,
         )
     except Exception as exc:

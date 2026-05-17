@@ -50,6 +50,8 @@ class ProjectConfig(AtomicConfig):
     review_hooks: tuple[str, ...] = ()
     agents: dict[str, str] = field(default_factory=dict)
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
+    scope_allow_files: tuple[str, ...] = ()
+    scope_deny_files: tuple[str, ...] = ()
     scope_ignore_files: tuple[str, ...] = _DEFAULT_SCOPE_IGNORE_FILES
     setup_cmd: str | None = None
     coverage_cmd: str | None = None
@@ -202,6 +204,18 @@ def _configured_scope_ignores(raw: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(str(p).strip() for p in ignore_raw if str(p).strip())
 
 
+def _scope_patterns(raw: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    scope_section = _table(raw, "scope")
+    if key not in scope_section:
+        return ()
+    patterns_raw = scope_section[key]
+    if not isinstance(patterns_raw, list):
+        raise ValueError(f".dgov/project.toml [scope].{key} must be a list of strings")
+    if not all(isinstance(pattern, str) for pattern in patterns_raw):
+        raise ValueError(f".dgov/project.toml [scope].{key} must be a list of strings")
+    return tuple(pattern.strip() for pattern in patterns_raw if pattern.strip())
+
+
 def _validate_scope_ignores(configured_scope_ignores: tuple[str, ...]) -> None:
     bad = sorted(
         path
@@ -291,6 +305,8 @@ def _governor_config_fields(raw: Mapping[str, Any], proj: Mapping[str, Any]) -> 
         "providers": provider_configs_from_project_toml(raw),
         "conventions": _table(raw, "conventions"),
         "tool_policy": parse_tool_policy(_table(raw, "tool_policy")),
+        "scope_allow_files": _scope_patterns(raw, "allow_files"),
+        "scope_deny_files": _scope_patterns(raw, "deny_files"),
         "scope_ignore_files": _scope_ignore_files(raw),
         "setup_cmd": proj.get("setup_cmd") or None,
         "coverage_cmd": proj.get("coverage_cmd") or None,

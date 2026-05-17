@@ -1408,6 +1408,8 @@ class EventDagRunner:
             task_slug=action.task_slug,
             pane_slug=action.pane_slug,
             scope_ignore_files=self.project_config.scope_ignore_files,
+            scope_allow_files=self.project_config.scope_allow_files,
+            scope_deny_files=self.project_config.scope_deny_files,
         )
 
     def _fail_structural_review(

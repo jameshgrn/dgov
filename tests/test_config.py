@@ -397,14 +397,19 @@ deny_shell_commands = ["pip", "python -m pip"]
 class TestScopeIgnoreFiles:
     def test_default_is_empty(self):
         assert ProjectConfig().scope_ignore_files == (".venv", "uv.lock", "__pycache__", "*.pyc")
+        assert ProjectConfig().scope_allow_files == ()
+        assert ProjectConfig().scope_deny_files == ()
 
     def test_loads_from_scope_section(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"
         dgov_dir.mkdir()
         (dgov_dir / "project.toml").write_text(
-            '[project]\n\n[scope]\nignore_files = ["uv.lock", "go.sum"]\n'
+            '[project]\n\n[scope]\nallow_files = ["src/**"]\n'
+            'deny_files = ["src/private/**"]\nignore_files = ["uv.lock", "go.sum"]\n'
         )
         pc = load_project_config(tmp_path)
+        assert pc.scope_allow_files == ("src/**",)
+        assert pc.scope_deny_files == ("src/private/**",)
         assert pc.scope_ignore_files == (
             ".venv",
             "uv.lock",
@@ -413,15 +418,37 @@ class TestScopeIgnoreFiles:
             "go.sum",
         )
 
+    @pytest.mark.parametrize("key", ["allow_files", "deny_files"])
+    def test_rejects_non_list_scope_path_policy(self, tmp_path, key):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(f'[project]\n\n[scope]\n{key} = "src/**"\n')
+
+        with pytest.raises(ValueError, match=rf"\[scope\]\.{key} must be a list of strings"):
+            load_project_config(tmp_path)
+
+    @pytest.mark.parametrize("key", ["allow_files", "deny_files"])
+    def test_rejects_non_string_scope_path_policy_entries(self, tmp_path, key):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(f"[project]\n\n[scope]\n{key} = [123]\n")
+
+        with pytest.raises(ValueError, match=rf"\[scope\]\.{key} must be a list of strings"):
+            load_project_config(tmp_path)
+
     def test_scope_ignore_files_is_governor_only(self):
         """scope_ignore_files is consumed by settlement, not the worker, so it
         must not appear in the worker payload. Keeps AtomicConfig minimal."""
         pc = _project_with_provider("test-provider", scope_ignore_files=("uv.lock",))
         payload = pc.to_worker_payload()
         assert "scope_ignore_files" not in payload
+        assert "scope_allow_files" not in payload
+        assert "scope_deny_files" not in payload
         # After round-trip, scope_ignore_files falls back to default ().
         restored = ProjectConfig.from_worker_payload(payload)
         assert restored.scope_ignore_files == (".venv", "uv.lock", "__pycache__", "*.pyc")
+        assert restored.scope_allow_files == ()
+        assert restored.scope_deny_files == ()
 
     def test_rejects_reserved_paths(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"

@@ -122,6 +122,8 @@ def _mock_review_pass(
     task_slug=None,
     pane_slug=None,
     scope_ignore_files=(),
+    scope_allow_files=(),
+    scope_deny_files=(),
     read_files=(),
 ):
     from dgov.settlement import ReviewResult
@@ -137,6 +139,8 @@ def _mock_review_fail(
     task_slug=None,
     pane_slug=None,
     scope_ignore_files=(),
+    scope_allow_files=(),
+    scope_deny_files=(),
     read_files=(),
 ):
     from dgov.settlement import ReviewResult
