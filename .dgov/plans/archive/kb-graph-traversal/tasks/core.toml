@@ -1,0 +1,68 @@
+[tasks.graph-core]
+summary = "Add knowledge-base graph primitives"
+prompt = """
+Orient:
+Read src/dgov/kb.py and tests/test_kb.py first. The KB is source-backed explanation, not durable memory; do not add typed edge fields or new authority surfaces. Keep the schema minimal: article nodes, source nodes, related edges, and source edges.
+
+Edit:
+1. In src/dgov/kb.py, add dataclasses/functions that expose a graph view of the validated knowledge base.
+2. Represent article nodes by article id and source nodes by repo-relative source path.
+3. Represent edges from article id to related article id with relation "related" and from article id to source path with relation "source".
+4. Add helpers for related traversal by depth and shortest path between article ids using only article-to-article related edges.
+5. Tighten validation for duplicate related entries and duplicate source entries without changing the frontmatter schema.
+6. In tests/test_kb.py, cover graph export, depth traversal, shortest path, duplicate related entries, and duplicate source entries.
+
+Verify:
+uv run pytest -q -m unit tests/test_kb.py
+uv run ruff check src/dgov/kb.py tests/test_kb.py
+uv run ty check src/dgov/kb.py tests/test_kb.py
+"""
+commit_message = "Add knowledge base graph primitives"
+files = { edit = ["src/dgov/kb.py", "tests/test_kb.py"], read = ["docs/knowledge/README.md", "docs/knowledge/_index.md"] }
+test_cmd = "uv run pytest -q -m unit tests/test_kb.py"
+
+[tasks.kb-cli]
+summary = "Expose knowledge-base traversal commands"
+prompt = """
+Orient:
+Read src/dgov/cli/kb.py, src/dgov/kb.py, and tests/test_cli_kb.py. Keep CLI behavior deterministic and repo-local. Do not make Obsidian a required dependency for validation or graph traversal.
+
+Edit:
+1. In src/dgov/cli/kb.py, add dgov kb graph with JSON output by default and readable text output otherwise.
+2. Add dgov kb related <id> --depth <n> to show reachable article ids through related edges.
+3. Add dgov kb path <from-id> <to-id> to show the shortest related-edge path.
+4. Add dgov kb open <id> that opens the article in Obsidian by exact repo-relative path when the obsidian CLI exists, otherwise prints an obsidian://open URI.
+5. Use exact path targeting; do not rely on fuzzy filename resolution.
+6. In tests/test_cli_kb.py, cover graph JSON, related traversal, path lookup, and open fallback output without requiring Obsidian to be installed.
+
+Verify:
+uv run pytest -q -m unit tests/test_cli_kb.py
+uv run ruff check src/dgov/cli/kb.py tests/test_cli_kb.py
+uv run ty check src/dgov/cli/kb.py tests/test_cli_kb.py
+"""
+commit_message = "Expose knowledge base traversal commands"
+depends_on = ["graph-core"]
+files = { edit = ["src/dgov/cli/kb.py", "tests/test_cli_kb.py"], read = ["src/dgov/kb.py"] }
+test_cmd = "uv run pytest -q -m unit tests/test_cli_kb.py"
+
+[tasks.docs]
+summary = "Document KB traversal and Obsidian workflow"
+prompt = """
+Orient:
+Read docs/knowledge/README.md, docs/knowledge/_index.md, README.md, docs/docs/pages/cli-reference.mdx, and the KB CLI implementation. The docs should explain the workflow without turning Obsidian into a source of truth.
+
+Edit:
+1. Update docs/knowledge/README.md to define the traversal schema: article nodes, source nodes, related edges, and source edges.
+2. Add docs/knowledge/operations/obsidian-workflow.md describing how to use the repo root as an Obsidian vault, use dgov for validation/traversal, use Obsidian for browsing, and avoid committing personal workspace state.
+3. Update docs/knowledge/_index.md to link the new Obsidian workflow article.
+4. Update README.md to list the new kb traversal commands briefly.
+5. Update docs/docs/pages/cli-reference.mdx to document graph, related, path, and open subcommands.
+
+Verify:
+uv run dgov kb validate
+uv run ruff check docs/knowledge/README.md docs/knowledge/_index.md docs/knowledge/operations/obsidian-workflow.md README.md docs/docs/pages/cli-reference.mdx
+"""
+commit_message = "Document knowledge base traversal workflow"
+depends_on = ["kb-cli"]
+files = { create = ["docs/knowledge/operations/obsidian-workflow.md"], edit = ["docs/knowledge/README.md", "docs/knowledge/_index.md", "README.md", "docs/docs/pages/cli-reference.mdx"], read = ["src/dgov/cli/kb.py", "src/dgov/kb.py"] }
+test_cmd = "uv run dgov kb validate"

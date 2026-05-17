@@ -75,6 +75,25 @@ and execute it immediately.
 - worker edits to `.sentrux/baseline.json` and `.sentrux/dgov-baseline.json` are rejected during review
 - post-run sentrux degradation marks the run `degraded` and prints a warning
 
+## Knowledge base
+
+This repo includes a source-backed knowledge vault in `docs/knowledge/`.
+Articles explain dgov concepts and architecture while citing canonical source
+files through frontmatter.
+
+```bash
+dgov kb list
+dgov kb show sentrux
+dgov kb validate
+dgov kb graph              # dump article + source graph
+dgov kb related <id>       # follow related edges
+dgov kb path <from> <to>   # shortest path between articles
+dgov kb open <id>          # open an article in Obsidian
+```
+
+The KB is explanatory material, not durable memory. Bugs, rules, decisions,
+patterns, and debt still belong in `dgov ledger`.
+
 ## Project configuration
 
 `.dgov/project.toml` carries everything repo-scoped: language, toolchain

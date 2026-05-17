@@ -1,0 +1,4 @@
+[plan]
+name = "kb-graph-traversal"
+summary = "Add source-backed knowledge-base graph traversal and Obsidian usage guidance."
+sections = ["tasks"]

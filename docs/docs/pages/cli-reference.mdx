@@ -22,6 +22,7 @@ Every `dgov` command and flag, grouped by purpose.
 | [`dgov tools audit`](#dgov-tools-audit) | Observability | Worker tool-call telemetry |
 | [`dgov diagnose`](#dgov-diagnose) | Observability | Match known failure shapes to next actions |
 | [`dgov ledger`](#dgov-ledger) | Observability | Record bugs, rules, decisions, debt |
+| [`dgov kb`](#dgov-kb) | Observability | Browse and validate the repo knowledge base |
 | [`dgov preflight`](#dgov-preflight) | Gates | Run settlement gates on local changes |
 | [`dgov verify`](#dgov-verify) | Gates | Run project-local verification recipes |
 | [`dgov scope status`](#dgov-scope-status) | Gates | Preview settlement scope status |
@@ -397,6 +398,70 @@ dgov ledger list -q "race condition"        # keyword search
 dgov ledger list -c rule -s resolved        # resolved rules
 
 dgov ledger resolve 3                       # mark entry #3 resolved
+```
+
+### `dgov kb`
+
+Browse and validate the repo knowledge base under `docs/knowledge/`. Articles
+are Markdown files with strict frontmatter: stable ID, kind, status, canonical
+source paths, and related article IDs.
+
+```bash
+dgov kb list
+dgov kb show sentrux
+dgov kb validate
+dgov --json kb list
+```
+
+`dgov kb validate` checks that article IDs are unique, sources exist and point
+outside the KB, related IDs resolve, and each article's first H1 matches its
+frontmatter title.
+
+#### `dgov kb graph`
+
+Dump the full knowledge graph: article nodes, source nodes, and edges.
+
+```bash
+dgov kb graph
+```
+
+In JSON mode, the payload contains `articles`, `sources`, and `edges` with
+`relation` values of `source` or `related`.
+
+#### `dgov kb related`
+
+Show article IDs reachable through `related` edges from a starting article,
+within a given depth.
+
+```bash
+dgov kb related sentrux
+dgov kb related sentrux --depth 2
+```
+
+| Flag | Description |
+|------|-------------|
+| `--depth INTEGER` | Traversal depth (default: 1) |
+| `-r, --root TEXT` | Project root |
+
+#### `dgov kb path`
+
+Show the shortest `related`-edge path between two articles.
+
+```bash
+dgov kb path sentrux settlement-flow
+```
+
+| Flag | Description |
+|------|-------------|
+| `-r, --root TEXT` | Project root |
+
+#### `dgov kb open`
+
+Open a knowledge base article in Obsidian. If the `obsidian` CLI is available,
+it calls `obsidian open <path>`; otherwise it prints an `obsidian://` URI.
+
+```bash
+dgov kb open sentrux
 ```
 
 ---

@@ -118,6 +118,7 @@ def cli(
       dgov init                  Bootstrap .dgov/project.toml and governor.md
       dgov init-plan <name>      Initialize a new plan directory
       dgov fix <prompt>          Create and run a one-off fix plan
+      dgov kb validate           Validate the repo knowledge base
       dgov watch                 Stream events live
       dgov tools audit           Summarize worker tool-call telemetry
       dgov archive-plan <name>   Manually archive a plan
@@ -279,6 +280,7 @@ from dgov.cli import (  # noqa: E402
     diagnose as diagnose,
     fix as fix,
     init as init,
+    kb as kb,
     ledger as ledger,
     plan as plan,
     preflight as preflight,
