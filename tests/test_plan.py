@@ -249,12 +249,16 @@ summary = "Stay focused"
 prompt = "Do it"
 commit_message = "Done"
 iteration_budget = 12
+self_review = true
+max_fork_depth = 0
 """
         )
 
         result = parse_plan_file(str(plan_file))
 
         assert result.units["focused"].iteration_budget == 12
+        assert result.units["focused"].self_review is True
+        assert result.units["focused"].max_fork_depth == 0
 
     def test_raises_file_not_found(self, tmp_path):
         with pytest.raises(FileNotFoundError):
@@ -544,6 +548,8 @@ class TestCompilePlan:
                     commit_message="Done",
                     files=PlanUnitFiles(),
                     iteration_budget=12,
+                    self_review=True,
+                    max_fork_depth=0,
                 )
             },
         )
@@ -551,6 +557,8 @@ class TestCompilePlan:
         result = compile_plan(plan, project_agent="test-agent")
 
         assert result.tasks["task-1"].iteration_budget == 12
+        assert result.tasks["task-1"].self_review is True
+        assert result.tasks["task-1"].max_fork_depth == 0
 
     def test_uses_default_timeout_when_unit_has_none(self):
         plan = PlanSpec(

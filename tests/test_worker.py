@@ -58,6 +58,19 @@ def test_check_path_traversal_blocked(tools: AtomicTools) -> None:
     assert "traversal" in result.lower()
 
 
+def test_check_path_blocks_sibling_prefix_escape(tmp_path: Path) -> None:
+    worktree = tmp_path / "repo"
+    sibling = tmp_path / "repo_evil"
+    worktree.mkdir()
+    sibling.mkdir()
+    tools = AtomicTools(worktree, AtomicConfig())
+
+    result = tools.write_file("../repo_evil/owned.txt", "escaped\n")
+
+    assert result.startswith("Error:")
+    assert not (sibling / "owned.txt").exists()
+
+
 # -- read_file --
 
 

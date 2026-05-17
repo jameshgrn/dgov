@@ -100,6 +100,8 @@ class PlanUnit:
     test_cmd: str | None = None
     prompt_file: str | None = None
     sop_mapping: tuple[str, ...] = ()
+    self_review: bool = False
+    max_fork_depth: int = 1
 
 
 @dataclass(frozen=True)
@@ -167,6 +169,8 @@ def _dag_task_to_plan_unit(
         test_cmd=task.test_cmd,
         prompt_file=task.prompt_file,
         sop_mapping=task.sop_mapping,
+        self_review=task.self_review,
+        max_fork_depth=task.max_fork_depth,
         files=PlanUnitFiles(
             create=task.files.create,
             edit=task.files.edit,
@@ -346,6 +350,8 @@ def _compile_plan_task(
         iteration_budget=unit.iteration_budget,
         test_cmd=unit.test_cmd,
         sop_mapping=unit.sop_mapping,
+        self_review=unit.self_review,
+        max_fork_depth=unit.max_fork_depth,
     )
 
 
@@ -587,6 +593,8 @@ def _to_dag_definition_for_import_analysis(plan: PlanSpec) -> DagDefinition:
             ),
             timeout_s=unit.timeout_s or plan.default_timeout_s,
             iteration_budget=unit.iteration_budget,
+            self_review=unit.self_review,
+            max_fork_depth=unit.max_fork_depth,
             test_cmd=unit.test_cmd,
         )
     return DagDefinition(

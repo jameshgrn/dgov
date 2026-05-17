@@ -188,7 +188,9 @@ class AtomicTools:
     def _check_path(self, path: str) -> Path | str:
         """Resolve and validate path is within worktree. Returns Path or error string."""
         target = (self.worktree / path).resolve()
-        if not str(target).startswith(str(self.worktree)):
+        try:
+            target.relative_to(self.worktree)
+        except ValueError:
             return "Error: Path traversal attempt blocked."
         return target
 

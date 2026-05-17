@@ -633,3 +633,41 @@ def test_compile_multiline_prompt(runner: CliRunner, tmp_path: Path) -> None:
     prompt = spec.units["s/work.multi"].prompt
     assert "Line 1" in prompt
     assert "Line 2" in prompt
+
+
+def test_compile_preserves_prompt_file_and_worker_controls(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    plan_dir = tmp_path / "controls"
+    plan_dir.mkdir()
+    (plan_dir / "_root.toml").write_text(
+        '[plan]\nname = "controls"\nsummary = ""\nsections = ["s"]\n'
+    )
+    (plan_dir / "prompt.md").write_text("Orient:\nRead.\n\nEdit:\n1. Change.\n\nVerify:\nCheck.\n")
+    s_dir = plan_dir / "s"
+    s_dir.mkdir()
+    (s_dir / "work.toml").write_text(
+        "[tasks.guarded]\n"
+        'summary = "guarded"\n'
+        'prompt_file = "prompt.md"\n'
+        'commit_message = "guarded"\n'
+        "self_review = true\n"
+        "max_fork_depth = 0\n"
+    )
+
+    result = runner.invoke(cli, ["compile", str(plan_dir), "--dry-run"])
+    assert result.exit_code == 0, result.output
+
+    data = tomllib.loads((plan_dir / "_compiled.toml").read_text())
+    task = data["tasks"]["s/work.guarded"]
+    assert task["prompt_file"] == "prompt.md"
+    assert task["self_review"] is True
+    assert task["max_fork_depth"] == 0
+
+    from dgov.plan import parse_plan_file
+
+    spec = parse_plan_file(str(plan_dir / "_compiled.toml"))
+    unit = spec.units["s/work.guarded"]
+    assert unit.prompt.startswith("Orient:")
+    assert unit.self_review is True
+    assert unit.max_fork_depth == 0

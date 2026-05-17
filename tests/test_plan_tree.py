@@ -346,6 +346,7 @@ class TestMergerHappyPath:
 [tasks.full]
 summary = "sum"
 prompt = "prm"
+prompt_file = "prompts/full.md"
 commit_message = "msg"
 agent = "acct/model"
 provider = "openai"
@@ -353,6 +354,9 @@ role = "researcher"
 depends_on = ["a", "b/c.d"]
 timeout_s = 123
 iteration_budget = 42
+test_cmd = "uv run pytest -q tests/test_full.py"
+self_review = true
+max_fork_depth = 0
 files.create = ["new.py"]
 files.edit = ["old.py"]
 files.delete = ["gone.py"]
@@ -362,6 +366,7 @@ files.delete = ["gone.py"]
         unit = plan.units["alpha/one.full"]
         assert unit.summary == "sum"
         assert unit.prompt == "prm"
+        assert unit.prompt_file == "prompts/full.md"
         assert unit.commit_message == "msg"
         assert unit.agent == "acct/model"
         assert unit.provider == "openai"
@@ -369,6 +374,9 @@ files.delete = ["gone.py"]
         assert unit.depends_on == ("a", "b/c.d")
         assert unit.timeout_s == 123
         assert unit.iteration_budget == 42
+        assert unit.test_cmd == "uv run pytest -q tests/test_full.py"
+        assert unit.self_review is True
+        assert unit.max_fork_depth == 0
         assert unit.files.create == ("new.py",)
         assert unit.files.edit == ("old.py",)
         assert unit.files.delete == ("gone.py",)
@@ -384,11 +392,23 @@ files.delete = ["gone.py"]
         assert unit.depends_on == ()
         assert unit.timeout_s == 0
         assert unit.iteration_budget is None
+        assert unit.prompt_file == ""
+        assert unit.self_review is False
+        assert unit.max_fork_depth == 1
         assert unit.files.create == ()
 
     @pytest.mark.parametrize(
         "field",
-        ["summary", "prompt", "commit_message", "agent", "provider", "role", "test_cmd"],
+        [
+            "summary",
+            "prompt",
+            "prompt_file",
+            "commit_message",
+            "agent",
+            "provider",
+            "role",
+            "test_cmd",
+        ],
     )
     def test_rejects_non_string_task_string_fields(self, tmp_path: Path, field: str) -> None:
         fields = {
@@ -406,6 +426,27 @@ files.delete = ["gone.py"]
         _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
 
         with pytest.raises(ValueError, match=rf"\[tasks\.\*\]\.{field} must be a string"):
+            merge_tree(walk_tree(tmp_path))
+
+    @pytest.mark.parametrize("field", ["timeout_s", "iteration_budget", "max_fork_depth"])
+    def test_rejects_non_integer_task_int_fields(self, tmp_path: Path, field: str) -> None:
+        content = (
+            '[tasks.bad]\nsummary = "s"\nprompt = "p"\n'
+            f'commit_message = "c"\n{field} = "not-an-int"\n'
+        )
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+
+        with pytest.raises(ValueError, match=rf"\[tasks\.\*\]\.{field} must be an integer"):
+            merge_tree(walk_tree(tmp_path))
+
+    def test_rejects_non_boolean_self_review(self, tmp_path: Path) -> None:
+        content = (
+            '[tasks.bad]\nsummary = "s"\nprompt = "p"\n'
+            'commit_message = "c"\nself_review = "true"\n'
+        )
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+
+        with pytest.raises(ValueError, match=r"\[tasks\.\*\]\.self_review must be a boolean"):
             merge_tree(walk_tree(tmp_path))
 
     def test_rejects_unknown_task_role(self, tmp_path: Path) -> None:

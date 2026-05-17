@@ -296,6 +296,32 @@ def _task_string(data: dict[str, Any], key: str, source: Path, default: str = ""
     return value
 
 
+def _task_int(
+    data: dict[str, Any],
+    key: str,
+    source: Path,
+    default: int | None = None,
+) -> int | None:
+    value = data.get(key, default)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"[tasks.*].{key} must be an integer in {source}")
+    return value
+
+
+def _task_int_default(data: dict[str, Any], key: str, source: Path, default: int) -> int:
+    value = _task_int(data, key, source, default=default)
+    return default if value is None else value
+
+
+def _task_bool(data: dict[str, Any], key: str, source: Path, default: bool = False) -> bool:
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"[tasks.*].{key} must be a boolean in {source}")
+    return value
+
+
 def _task_role(data: dict[str, Any], source: Path) -> Literal["worker", "researcher", "reviewer"]:
     value = _task_string(data, "role", source, default="worker")
     if value not in {"worker", "researcher", "reviewer"}:
@@ -331,10 +357,13 @@ def _unit_from_task(fq_id: str, data: dict[str, Any], source: Path) -> PlanUnit:
         agent=_task_string(data, "agent", source),
         provider=_task_string(data, "provider", source),
         role=_task_role(data, source),
-        timeout_s=data.get("timeout_s", 0),
-        iteration_budget=data.get("iteration_budget"),
+        timeout_s=_task_int_default(data, "timeout_s", source, default=0),
+        iteration_budget=_task_int(data, "iteration_budget", source),
         test_cmd=_task_string(data, "test_cmd", source),
+        prompt_file=_task_string(data, "prompt_file", source),
         sop_mapping=_str_list(data.get("sop_mapping", []), "sop_mapping", source),
+        self_review=_task_bool(data, "self_review", source),
+        max_fork_depth=_task_int_default(data, "max_fork_depth", source, default=1),
     )
 
 

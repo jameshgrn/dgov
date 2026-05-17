@@ -67,6 +67,20 @@ def _format_optional_int_field(value: int | None, key: str) -> list[str]:
     return []
 
 
+def _format_bool_field(value: bool, key: str) -> list[str]:
+    """Format a boolean field only when it differs from the false default."""
+    if value:
+        return [f"{key} = true"]
+    return []
+
+
+def _format_max_fork_depth_field(value: int) -> list[str]:
+    """Format max_fork_depth only when it differs from the schema default."""
+    if value != 1:
+        return [f"max_fork_depth = {value}"]
+    return []
+
+
 def _format_string_array_field(items: tuple[str, ...] | list[str], key: str) -> list[str]:
     """Format a string array field if items are present."""
     if items:
@@ -148,6 +162,8 @@ def _format_task_section(fq_id: str, unit: PlanUnit, mapping: tuple[str, ...]) -
 
     # Optional test command
     lines.extend(_format_optional_string_field(unit.test_cmd, "test_cmd"))
+    lines.extend(_format_bool_field(unit.self_review, "self_review"))
+    lines.extend(_format_max_fork_depth_field(unit.max_fork_depth))
 
     # sop_mapping comes after test_cmd, before files
     lines.extend(_format_string_array_field(mapping, "sop_mapping"))
