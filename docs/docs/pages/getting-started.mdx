@@ -83,6 +83,7 @@ git rev-parse --is-inside-work-tree >/dev/null || git init
 
 dgov init
 dgov init --preflight   # optional: print bootstrap and worker-environment checks
+dgov agents sync        # optional: refresh local ~/.agents/skills dgov skills
 
 # Then edit .dgov/project.toml provider placeholders and export the matching key.
 export PROVIDER_API_KEY=your-key-here
@@ -115,6 +116,11 @@ baseline metadata automatically.
 is missing without overwriting existing project config. Pass `--force` to
 overwrite. Pass `--project-type` when auto-detection needs an explicit
 language hint.
+
+`dgov agents sync` installs or refreshes shipped dgov machine-agent skills
+such as `dgov-ledger`, `dgov-plan`, and `dgov-pane`. Their canonical source is
+`agent-guidance/skills/`; local `~/.agents/skills/dgov-*` copies are derived
+machine state.
 
 ## 2. Author a plan
 

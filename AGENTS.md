@@ -1,6 +1,6 @@
 # dgov Agent Guidance
 
-Instruction Pack Version: `1.1.1`
+Instruction Pack Version: `1.1.2`
 Status: `LOCKED`
 Canonical Source: `AGENTS.md`
 Mirrors: `CLAUDE.md`, `GEMINI.md`
@@ -32,6 +32,15 @@ treat this pack as stale.
 - Do not restate general governance rules inside task prompts.
 - Update repo-level guidance in `.dgov/governor.md` or `.dgov/sops/*.md`,
   not in one-off prompts.
+
+## Agent Skill Bundle
+
+- dgov-owned machine-agent skills live in `agent-guidance/skills/`.
+- Built distributions derive `dgov.agent_skill_data` from that source via
+  Hatch force-include; do not hand-maintain mirrors under `src/dgov/`.
+- Sync local installed copies with `uv run dgov agents sync`.
+- Treat `~/.agents/skills/dgov-*` as derived machine state, not canonical
+  source.
 
 ## Toolchain
 

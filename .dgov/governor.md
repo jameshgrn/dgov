@@ -24,6 +24,11 @@ system level. Workers may be probabilistic. Governance should not be.
   bootstrap policy sources. Built distributions derive
   `dgov.bootstrap_policy_data` from those files; do not hand-maintain Markdown
   mirrors under `src/dgov/bootstrap_policy_data/`.
+- dgov-owned machine-agent skills are canonical under `agent-guidance/skills/`.
+  Built distributions derive `dgov.agent_skill_data` from those files; do not
+  hand-maintain skill mirrors under `src/dgov/agent_skill_data/`. Local
+  `~/.agents/skills/dgov-*` copies are derived machine state refreshed with
+  `uv run dgov agents sync`.
 
 ## Governor Invocation
 
@@ -114,6 +119,16 @@ mechanical signal must be checked by hand.
 - Next action: Update the SOP or charter section first; then dispatch the
   implementation work.
 - Do not: Repeat the guidance inside a single task prompt.
+
+**agent_skill_drift**
+- Evidence: A dgov skill under `~/.agents/skills/dgov-*` references removed
+  CLI commands, contradicts `.dgov/governor.md`, or differs from the shipped
+  source bundle.
+- Class: Governance repair.
+- Next action: Update `agent-guidance/skills/`, verify package force-include
+  and drift checks, then run `uv run dgov agents sync` on the machine that
+  needs the refreshed skills.
+- Do not: Edit local `~/.agents/skills/dgov-*` as the only fix.
 
 ### Updating this catalog
 

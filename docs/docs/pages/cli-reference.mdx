@@ -7,6 +7,7 @@ Every `dgov` command and flag, grouped by purpose.
 | Command | Group | Description |
 |---------|-------|-------------|
 | [`dgov init`](#dgov-init) | Bootstrap | Scaffold `.dgov/project.toml`, `governor.md`, and `sops/` |
+| [`dgov agents sync`](#dgov-agents-sync) | Bootstrap | Install/update shipped dgov machine-agent skills |
 | [`dgov init-plan`](#dgov-init-plan) | Plans | Create an empty plan tree |
 | [`dgov plan create`](#dgov-plan-create) | Plans | Auto-generate a plan tree from a goal |
 | [`dgov compile`](#dgov-compile) | Plans | Compile a plan tree to `_compiled.toml` |
@@ -74,6 +75,24 @@ Detected fields written to `[project]`:
 - `[scope] ignore_files` seeded from detected lockfiles
 
 See [LLM Providers](/llm-providers) for provider variations.
+
+### `dgov agents sync`
+
+Install or refresh the dgov-maintained skills in a local machine-agent skill
+directory. The command updates only shipped dgov skill names and leaves other
+skills alone.
+
+```bash
+dgov agents sync
+dgov agents sync --skills-dir ~/.agents/skills
+```
+
+| Flag | Description |
+|------|-------------|
+| `--skills-dir` | Local agent skill directory to update (default: `~/.agents/skills`) |
+
+The canonical source is `agent-guidance/skills/`; packaged installs load the
+same bundle through `dgov.agent_skill_data`.
 
 ---
 
@@ -473,8 +492,8 @@ dgov kb open sentrux
 Run the settlement acceptance gates against the local working tree without
 spawning a worker. The result tells you whether the current checkout would
 pass the gates a dispatched task has to clear. It also checks dgov source
-policy drift: guidance mirrors and bootstrap policy packaging must match the
-canonical repo files.
+policy drift: guidance mirrors, bootstrap policy packaging, and agent skill
+packaging must match the canonical repo files.
 
 ```bash
 dgov preflight

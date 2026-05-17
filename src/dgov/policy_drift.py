@@ -11,6 +11,9 @@ _EXPECTED_BOOTSTRAP_FORCE_INCLUDE = {
     ".dgov/governor.md": "dgov/bootstrap_policy_data/governor.md",
     ".dgov/sops": "dgov/bootstrap_policy_data/sops",
 }
+_EXPECTED_AGENT_SKILL_FORCE_INCLUDE = {
+    "agent-guidance/skills": "dgov/agent_skill_data/skills",
+}
 _SWIFT_XCODE_BOOTSTRAP_TAGS = frozenset({
     "swift",
     "xcode",
@@ -26,6 +29,7 @@ def find_policy_drift(project_root: Path) -> list[str]:
     issues: list[str] = []
     issues.extend(_guidance_file_drift(project_root))
     issues.extend(_bootstrap_policy_drift(project_root))
+    issues.extend(_agent_skill_drift(project_root))
     return issues
 
 
@@ -83,6 +87,48 @@ def _bootstrap_policy_build_mapping_drift(project_root: Path) -> list[str]:
     if not missing:
         return []
     return ["Bootstrap policy wheel force-include missing: " + ", ".join(missing)]
+
+
+def _agent_skill_drift(project_root: Path) -> list[str]:
+    source_skills_dir = project_root / "agent-guidance" / "skills"
+    packaged_skills_dir = project_root / "src" / "dgov" / "agent_skill_data" / "skills"
+    package_dir = project_root / "src" / "dgov" / "agent_skill_data"
+    if not source_skills_dir.is_dir() and not package_dir.is_dir():
+        return []
+
+    issues: list[str] = []
+    mirrored_assets = _agent_skill_asset_mirrors(packaged_skills_dir)
+    if mirrored_assets:
+        issues.append(
+            "Agent skill assets are mirrored under "
+            f"src/dgov/agent_skill_data/skills: {', '.join(mirrored_assets)}"
+        )
+    if source_skills_dir.is_dir():
+        issues.extend(_agent_skill_build_mapping_drift(project_root))
+    return issues
+
+
+def _agent_skill_asset_mirrors(packaged_skills_dir: Path) -> list[str]:
+    if not packaged_skills_dir.is_dir():
+        return []
+    return [
+        f"{path.parent.name}/SKILL.md"
+        for path in sorted(
+            packaged_skills_dir.glob("*/SKILL.md"), key=lambda item: item.parent.name
+        )
+    ]
+
+
+def _agent_skill_build_mapping_drift(project_root: Path) -> list[str]:
+    force_include = _wheel_force_include(project_root / "pyproject.toml")
+    missing = [
+        f"{source} -> {target}"
+        for source, target in _EXPECTED_AGENT_SKILL_FORCE_INCLUDE.items()
+        if force_include.get(source) != target
+    ]
+    if not missing:
+        return []
+    return ["Agent skill wheel force-include missing: " + ", ".join(missing)]
 
 
 def _project_local_bootstrap_sop_drift(sops_dir: Path) -> list[str]:

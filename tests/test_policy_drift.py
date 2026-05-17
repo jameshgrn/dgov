@@ -69,6 +69,38 @@ def test_policy_drift_accepts_derived_bootstrap_policy_assets(tmp_path: Path) ->
     assert find_policy_drift(tmp_path) == []
 
 
+def test_policy_drift_flags_stale_agent_skill_mirrors(tmp_path: Path) -> None:
+    _write(tmp_path / "agent-guidance" / "skills" / "dgov-plan" / "SKILL.md", "source\n")
+    _write(tmp_path / "src" / "dgov" / "agent_skill_data" / "__init__.py", "")
+    _write(
+        tmp_path / "src" / "dgov" / "agent_skill_data" / "skills" / "dgov-plan" / "SKILL.md",
+        "mirror\n",
+    )
+    _write(
+        tmp_path / "pyproject.toml",
+        """
+[tool.hatch.build.targets.wheel.force-include]
+"agent-guidance/skills" = "dgov/agent_skill_data/skills"
+""",
+    )
+
+    assert find_policy_drift(tmp_path) == [
+        "Agent skill assets are mirrored under "
+        "src/dgov/agent_skill_data/skills: dgov-plan/SKILL.md"
+    ]
+
+
+def test_policy_drift_flags_missing_agent_skill_force_include(tmp_path: Path) -> None:
+    _write(tmp_path / "agent-guidance" / "skills" / "dgov-plan" / "SKILL.md", "source\n")
+    _write(tmp_path / "src" / "dgov" / "agent_skill_data" / "__init__.py", "")
+    _write(tmp_path / "pyproject.toml", "[tool.hatch.build.targets.wheel.force-include]\n")
+
+    assert find_policy_drift(tmp_path) == [
+        "Agent skill wheel force-include missing: "
+        "agent-guidance/skills -> dgov/agent_skill_data/skills"
+    ]
+
+
 def test_policy_drift_flags_project_local_swift_xcode_bootstrap_sops(
     tmp_path: Path,
 ) -> None:
@@ -115,3 +147,4 @@ def test_pyproject_packages_bootstrap_policy_from_repo_canonical_files() -> None
 
     assert force_include[".dgov/governor.md"] == "dgov/bootstrap_policy_data/governor.md"
     assert force_include[".dgov/sops"] == "dgov/bootstrap_policy_data/sops"
+    assert force_include["agent-guidance/skills"] == "dgov/agent_skill_data/skills"

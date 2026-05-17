@@ -26,6 +26,7 @@ For a local checkout:
 git clone https://github.com/jameshgrn/dgov
 cd dgov
 uv tool install --from . dgov
+dgov agents sync
 ```
 
 ## Quick start
@@ -91,6 +92,19 @@ dgov kb open <id>          # open an article in Obsidian
 
 The KB is explanatory material, not durable memory. Bugs, rules, decisions,
 patterns, and debt still belong in `dgov ledger`.
+
+## Agent skills
+
+dgov ships machine-agent skills for ledger, plan, and retired pane guidance.
+Install or refresh the local copies with:
+
+```bash
+dgov agents sync
+```
+
+The canonical source is `agent-guidance/skills/`. Local
+`~/.agents/skills/dgov-*` files are derived machine state and should be
+refreshed from the command above instead of hand-edited.
 
 ## Project configuration
 
@@ -186,6 +200,7 @@ dgov                       # Show status
 dgov status                # Show status (explicit)
 dgov --json status         # Show status as JSON
 dgov init                  # Bootstrap .dgov/project.toml, governor.md, sops/
+dgov agents sync           # Install/update shipped dgov agent skills
 
 # Plans
 dgov init-plan <name>      # Scaffold an empty plan tree
@@ -294,6 +309,7 @@ depends_on = ["add-feature"]
 | `sop_bundler.py` | Load SOPs, pick per unit, prepend to prompts |
 | `prompt_builder.py` | Assemble final worker prompts from SOPs + plan context |
 | `bootstrap_policy.py`, `bootstrap_policy_data/` | Default SOPs and governor templates for `dgov init` |
+| `agent_skills.py`, `agent_skill_data/` | Shipped machine-agent skills for `dgov agents sync` |
 | `deploy_log.py` | Append-only JSONL deploy history |
 | `archive.py` | Plan archival on success |
 | `config.py` | ProjectConfig + `load_project_config()` |

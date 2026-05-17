@@ -126,6 +126,7 @@ def cli(
       dgov run <dir>             Compile and run a plan directory
       dgov compile <dir>         Compile plan tree to _compiled.toml
       dgov init                  Bootstrap .dgov/project.toml and governor.md
+      dgov agents sync           Install/update shipped dgov agent skills
       dgov init-plan <name>      Initialize a new plan directory
       dgov fix <prompt>          Create and run a one-off fix plan
       dgov kb validate           Validate the repo knowledge base
@@ -284,6 +285,7 @@ def _echo_status_task(task: dict) -> None:
 
 # Register subcommand modules — must be at bottom after cli is defined
 from dgov.cli import (  # noqa: E402
+    agents as agents,
     clean as clean,
     compile as compile,
     coverage as coverage,
