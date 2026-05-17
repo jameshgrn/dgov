@@ -98,6 +98,27 @@ class TestGrep:
         result = tools.grep("import foo")
         assert "src/bar.py:1:" in result
 
+    def test_searches_when_worktree_parent_is_hidden(self, tmp_path, worker_module):
+        worktree = tmp_path / ".dgov-worktrees-demo" / "task-a"
+        (worktree / "src").mkdir(parents=True)
+        (worktree / "src" / "foo.py").write_text("def hidden_parent_hit():\n    return True\n")
+        tools = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+
+        result = tools.grep("hidden_parent_hit")
+
+        assert "src/foo.py:1:" in result
+
+    def test_does_not_follow_symlink_outside_worktree(self, tools, worktree):
+        outside_dir = worktree.parent / f"{worktree.name}-outside"
+        outside_dir.mkdir()
+        outside = outside_dir / "outside.txt"
+        outside.write_text("outside_secret\n")
+        (worktree / "src" / "outside_link.txt").symlink_to(outside)
+
+        result = tools.grep("outside_secret")
+
+        assert result == "No matches found."
+
     def test_no_matches(self, tools):
         result = tools.grep("nonexistent_pattern_xyz")
         assert result == "No matches found."
@@ -383,6 +404,56 @@ class TestRunBashPolicy:
         result = t.run_bash("uv run pytest tests/test_foo.py -q")
         assert result.startswith("Error:")
         assert "run_tests()" in result
+
+    def test_rejects_uv_run_with_options_pytest_when_wrappers_required(
+        self, worktree, worker_module
+    ):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                require_wrapped_verify_tools=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash("uv run --extra dev pytest tests/test_foo.py -q")
+        assert result.startswith("Error:")
+        assert "run_tests()" in result
+
+    def test_rejects_uv_run_with_options_ruff_when_wrappers_required(
+        self, worktree, worker_module
+    ):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                require_wrapped_verify_tools=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash("uv run --extra dev ruff check src/foo.py")
+        assert result.startswith("Error:")
+        assert "lint_check()" in result
+
+    @pytest.mark.parametrize(
+        "command, expected_hint",
+        [
+            ("uv run --with pytest pytest tests/test_foo.py -q", "run_tests()"),
+            ("uv run --env-file .env ruff check src/foo.py", "lint_check()"),
+            ("uv run -q ty check", "type_check()"),
+        ],
+    )
+    def test_rejects_uv_run_with_more_options_when_wrappers_required(
+        self, worktree, worker_module, command, expected_hint
+    ):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                require_wrapped_verify_tools=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash(command)
+        assert result.startswith("Error:")
+        assert expected_hint in result
 
     def test_rejects_uv_run_python_module_pytest_when_wrappers_required(
         self, worktree, worker_module
