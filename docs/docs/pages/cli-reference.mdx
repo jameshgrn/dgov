@@ -22,6 +22,7 @@ Every `dgov` command and flag, grouped by purpose.
 | [`dgov tools audit`](#dgov-tools-audit) | Observability | Worker tool-call telemetry |
 | [`dgov diagnose`](#dgov-diagnose) | Observability | Match known failure shapes to next actions |
 | [`dgov ledger`](#dgov-ledger) | Observability | Record bugs, rules, decisions, debt |
+| [`dgov kb`](#dgov-kb) | Observability | Browse and validate the repo knowledge base |
 | [`dgov preflight`](#dgov-preflight) | Gates | Run settlement gates on local changes |
 | [`dgov verify`](#dgov-verify) | Gates | Run project-local verification recipes |
 | [`dgov scope status`](#dgov-scope-status) | Gates | Preview settlement scope status |
@@ -398,6 +399,23 @@ dgov ledger list -c rule -s resolved        # resolved rules
 
 dgov ledger resolve 3                       # mark entry #3 resolved
 ```
+
+### `dgov kb`
+
+Browse and validate the repo knowledge base under `docs/knowledge/`. Articles
+are Markdown files with strict frontmatter: stable ID, kind, status, canonical
+source paths, and related article IDs.
+
+```bash
+dgov kb list
+dgov kb show sentrux
+dgov kb validate
+dgov --json kb list
+```
+
+`dgov kb validate` checks that article IDs are unique, sources exist and point
+outside the KB, related IDs resolve, and each article's first H1 matches its
+frontmatter title.
 
 ---
 
