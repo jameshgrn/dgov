@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from dgov.persistence import (
@@ -68,3 +70,27 @@ def test_ledger_crud(session_root):
 @pytest.mark.unit
 def test_resolve_missing_entry(session_root):
     assert resolve_ledger_entry(session_root, 999) is False
+
+
+@pytest.mark.unit
+def test_ledger_list_retries_database_locked(session_root, monkeypatch):
+    from dgov.persistence import connection as connection_module, ledger as ledger_module
+
+    add_ledger_entry(session_root, "rule", "Retry ledger reads after locks")
+    monkeypatch.setattr(connection_module, "_LOCK_BACKOFF_S", 0)
+    original_migrate = ledger_module._migrate_ledger
+    calls = 0
+
+    def _flaky_migrate(conn):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return original_migrate(conn)
+
+    monkeypatch.setattr(ledger_module, "_migrate_ledger", _flaky_migrate)
+
+    entries = list_ledger_entries(session_root)
+
+    assert calls == 2
+    assert [entry.content for entry in entries] == ["Retry ledger reads after locks"]

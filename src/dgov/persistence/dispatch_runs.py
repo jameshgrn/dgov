@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 
 from dgov.dispatch_run import DispatchRun
 from dgov.persistence.connection import _get_db, _retry_on_lock
 from dgov.run_source import normalize_run_source
+
+logger = logging.getLogger(__name__)
 
 _DISPATCH_RUN_COLUMNS = (
     "id",
@@ -36,6 +39,20 @@ _DISPATCH_RUN_COLUMNS = (
     "iteration_count",
     "terminated_at",
 )
+
+
+def _decode_drift_evidence(raw_evidence: object, run_id: object) -> tuple[str, ...]:
+    if not isinstance(raw_evidence, str):
+        return ()
+    try:
+        decoded = json.loads(raw_evidence or "[]")
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning("Corrupt drift_evidence for dispatch run %s: %s", run_id, exc)
+        return ()
+    if not isinstance(decoded, list):
+        logger.warning("Invalid drift_evidence for dispatch run %s: expected JSON array", run_id)
+        return ()
+    return tuple(str(item) for item in decoded)
 
 
 def _serialize_dispatch_run(dispatch_run: DispatchRun) -> dict[str, object]:
@@ -75,11 +92,10 @@ def _serialize_dispatch_run(dispatch_run: DispatchRun) -> dict[str, object]:
 def _row_to_dispatch_run_dict(row: sqlite3.Row) -> dict:
     row_dict = dict(row)
     row_dict["drift_against_plan"] = bool(row_dict["drift_against_plan"])
-    raw_evidence = row_dict["drift_evidence"]
-    if isinstance(raw_evidence, str):
-        row_dict["drift_evidence"] = tuple(json.loads(raw_evidence or "[]"))
-    else:
-        row_dict["drift_evidence"] = ()
+    row_dict["drift_evidence"] = _decode_drift_evidence(
+        row_dict["drift_evidence"],
+        row_dict.get("id", "?"),
+    )
     return row_dict
 
 

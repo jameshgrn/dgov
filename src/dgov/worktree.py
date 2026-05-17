@@ -13,7 +13,8 @@ import logging
 import os
 import shutil
 import subprocess
-from collections.abc import Mapping
+import tomllib
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from dgov.types import Worktree
@@ -171,7 +172,13 @@ def prepare_worktree(
         return
 
     cmd = ["uv", "sync", "--locked"] if (wt.path / "uv.lock").is_file() else ["uv", "sync"]
-    _run_prepare_cmd(wt.path, cmd, timeout_s=timeout_s, env=env)
+    _run_prepare_cmd(
+        wt.path,
+        cmd,
+        timeout_s=timeout_s,
+        env=env,
+        failure_context=lambda: _python_bootstrap_context(wt.path, env),
+    )
 
 
 def _run_prepare_shell(
@@ -217,6 +224,7 @@ def _run_prepare_cmd(
     *,
     timeout_s: int,
     env: dict[str, str],
+    failure_context: Callable[[], str] | None = None,
 ) -> None:
     """Run a built-in worktree preparation command."""
     try:
@@ -234,13 +242,14 @@ def _run_prepare_cmd(
         raise RuntimeError(
             f"Worktree preparation failed because '{binary}' is not in PATH. "
             f"Fix: install {binary} or set [project].setup_cmd to prepare {worktree_path}."
+            f"{_failure_context_text(failure_context)}"
         ) from exc
     except subprocess.TimeoutExpired as exc:
         command = " ".join(cmd)
         raise RuntimeError(
             f"Worktree preparation timed out after {timeout_s}s running '{command}' in "
             f"{worktree_path}. Fix: run the command manually in the worktree and verify it "
-            "succeeds."
+            f"succeeds.{_failure_context_text(failure_context)}"
         ) from exc
 
     if result.returncode == 0:
@@ -251,8 +260,107 @@ def _run_prepare_cmd(
     raise RuntimeError(
         f"Worktree preparation failed running '{command}' in {worktree_path}. "
         "Fix: run the command manually in the worktree and resolve the dependency error.\n"
-        f"{output}"
+        f"{output}{_failure_context_text(failure_context)}"
     )
+
+
+def _failure_context_text(failure_context: Callable[[], str] | None) -> str:
+    if failure_context is None:
+        return ""
+    try:
+        context = failure_context()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"\nPython bootstrap context unavailable: {exc}"
+    return f"\n{context}" if context else ""
+
+
+def _python_bootstrap_context(worktree_path: Path, env: dict[str, str]) -> str:
+    return "\n".join([
+        "Python bootstrap context:",
+        f"- pyproject requires-python: {_pyproject_requires_python(worktree_path)}",
+        f"- .python-version: {_python_version_file(worktree_path)}",
+        f"- selected worktree interpreter: {_selected_python_interpreter(worktree_path, env)}",
+        (
+            "Fix: align [project].requires-python and .python-version with the Python "
+            "features this repo uses, then run uv sync manually in the worktree."
+        ),
+    ])
+
+
+def _pyproject_requires_python(worktree_path: Path) -> str:
+    pyproject_path = worktree_path / "pyproject.toml"
+    try:
+        data = tomllib.loads(pyproject_path.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        return f"unavailable ({exc})"
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return "not declared"
+    requires_python = project.get("requires-python")
+    return (
+        requires_python if isinstance(requires_python, str) and requires_python else "not declared"
+    )
+
+
+def _python_version_file(worktree_path: Path) -> str:
+    version_path = worktree_path / ".python-version"
+    try:
+        value = version_path.read_text().strip()
+    except OSError:
+        return "not present"
+    return value or "empty"
+
+
+def _selected_python_interpreter(worktree_path: Path, env: dict[str, str]) -> str:
+    try:
+        result = subprocess.run(
+            ["uv", "python", "find"],
+            cwd=worktree_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except FileNotFoundError:
+        return "unavailable (uv is not in PATH)"
+    except subprocess.TimeoutExpired:
+        return "unavailable (uv python find timed out)"
+    if result.returncode != 0:
+        output = ((result.stdout or "") + (result.stderr or "")).strip()
+        detail = output[-200:] if output else f"exit {result.returncode}"
+        return f"unavailable ({detail})"
+    interpreter = _last_output_line(result.stdout)
+    if not interpreter:
+        return "unavailable (uv python find returned no path)"
+    version = _interpreter_version(interpreter, worktree_path, env)
+    return f"{interpreter} ({version})" if version else interpreter
+
+
+def _interpreter_version(interpreter: str, worktree_path: Path, env: dict[str, str]) -> str:
+    try:
+        result = subprocess.run(
+            [interpreter, "-c", "import platform; print(platform.python_version())"],
+            cwd=worktree_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    version = _last_output_line(result.stdout)
+    return f"Python {version}" if version else ""
+
+
+def _last_output_line(output: str | None) -> str:
+    if not output:
+        return ""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
 
 
 def _try_fast_forward_merge(

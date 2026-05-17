@@ -266,6 +266,40 @@ class TestSynthesizeHint:
         assert "files.edit" in hint
         assert "split" in hint
 
+    def test_scope_violation_extracts_exact_unclaimed_paths(self):
+        hint = synthesize_hint(
+            verdict="scope_violation",
+            error="Touched unclaimed files: ['src/other.py', 'tests/test_other.py']",
+            iterations=12,
+            iteration_budget=30,
+        )
+        assert hint is not None
+        assert "src/other.py, tests/test_other.py" in hint
+        assert "files.edit" in hint
+
+    def test_transient_scope_violation_extracts_exact_path(self):
+        hint = synthesize_hint(
+            verdict="scope_violation",
+            error="Transiently touched unclaimed files via worker tools: ['debug_tmp.py']",
+            iterations=12,
+            iteration_budget=30,
+        )
+        assert hint is not None
+        assert "debug_tmp.py" in hint
+        assert "files.edit" in hint
+
+    def test_read_scope_violation_hint_names_read_only_path(self):
+        hint = synthesize_hint(
+            verdict="read_scope_violation",
+            error=("Edited read-only files: ['src/reference.py']. Revert changes to these files"),
+            iterations=12,
+            iteration_budget=30,
+        )
+        assert hint is not None
+        assert "src/reference.py" in hint
+        assert "files.read" in hint
+        assert "files.edit" in hint
+
     def test_scope_violation_without_error(self):
         hint = synthesize_hint(
             verdict="scope_violation",
@@ -293,6 +327,29 @@ class TestSynthesizeHint:
         assert hint is not None
         assert "autofix" in hint
 
+    def test_timed_out_hint(self):
+        hint = synthesize_hint(None, "Wall-clock timeout after 900s", None, 30)
+        assert hint is not None
+        assert "timed out" in hint
+        assert "timeout_s" in hint
+
+    def test_worker_error_hint(self):
+        hint = synthesize_hint(None, "Provider API key missing", None, 30)
+        assert hint is not None
+        assert "worker failed before settlement" in hint
+
+    def test_settlement_retries_add_context(self):
+        hint = synthesize_hint(
+            "scope_violation",
+            "Touched unclaimed files: ['src/other.py']",
+            10,
+            30,
+            settlement_retries=2,
+        )
+        assert hint is not None
+        assert hint.startswith("after 2 settlement retries:")
+        assert "src/other.py" in hint
+
     def test_unknown_verdict_returns_none(self):
         assert synthesize_hint("mystery", None, 10, 30) is None
 
@@ -318,6 +375,52 @@ def test_build_unit_review_uses_worker_exhaustion_error_for_budget_hint() -> Non
 
     assert unit.hint is not None
     assert "5-iteration model-turn budget" in unit.hint
+
+
+def test_build_unit_review_uses_task_failed_timeout_for_hint() -> None:
+    unit = _build_unit_review(
+        unit_id="tasks/main.a",
+        task_data={"summary": "do a"},
+        deploy_record=None,
+        unit_events=[
+            _lifecycle(1, "dag_task_dispatched", "tasks/main.a", "plan"),
+            _lifecycle(
+                2,
+                "task_failed",
+                "tasks/main.a",
+                "plan",
+                error="Wall-clock timeout after 20s",
+            ),
+        ],
+        project_root=".",
+        include_full_diff=False,
+        iteration_budget=30,
+    )
+
+    assert unit.status == "failed"
+    assert unit.error == "Wall-clock timeout after 20s"
+    assert unit.hint is not None
+    assert "timeout_s" in unit.hint
+
+
+def test_build_unit_review_uses_task_failed_worker_error_for_hint() -> None:
+    unit = _build_unit_review(
+        unit_id="tasks/main.a",
+        task_data={"summary": "do a"},
+        deploy_record=None,
+        unit_events=[
+            _lifecycle(1, "dag_task_dispatched", "tasks/main.a", "plan"),
+            _lifecycle(2, "task_failed", "tasks/main.a", "plan", error="Provider API key missing"),
+        ],
+        project_root=".",
+        include_full_diff=False,
+        iteration_budget=30,
+    )
+
+    assert unit.status == "failed"
+    assert unit.error == "Provider API key missing"
+    assert unit.hint is not None
+    assert "worker failed before settlement" in unit.hint
 
 
 # ---------------------------------------------------------------------------

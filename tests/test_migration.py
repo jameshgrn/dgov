@@ -42,3 +42,29 @@ def test_migrate_schema_adds_missing_columns(tmp_path: Path, monkeypatch):
     assert "plan_name" in cols
 
     conn.close()
+
+
+@pytest.mark.unit
+def test_get_db_retries_locked_connection_bootstrap(tmp_path: Path, monkeypatch) -> None:
+    """Connection setup should retry if WAL/schema bootstrap hits a transient lock."""
+    from dgov.persistence import connection as connection_module
+
+    session_root = str(tmp_path)
+    clear_connection_cache()
+    monkeypatch.setattr(connection_module, "_LOCK_BACKOFF_S", 0)
+    original_open = connection_module._open_db_connection
+    calls = 0
+
+    def _flaky_open(db_path: str):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return original_open(db_path)
+
+    monkeypatch.setattr(connection_module, "_open_db_connection", _flaky_open)
+
+    conn = _get_db(session_root)
+
+    assert calls == 2
+    assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone() is not None

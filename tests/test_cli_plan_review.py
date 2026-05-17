@@ -325,6 +325,34 @@ def test_review_json_output_is_valid(
     assert unit["settlement"] == "ok"
 
 
+def test_review_reports_invalid_compiled_toml(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "do a"})
+    (plan_dir / "_compiled.toml").write_text("this is not valid toml {{{")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
+
+    assert result.exit_code == 1
+    assert "Invalid compiled plan" in result.output
+
+
+def test_review_reports_invalid_compiled_toml_json(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "do a"})
+    (plan_dir / "_compiled.toml").write_text("this is not valid toml {{{")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["--json", "plan", "review", str(plan_dir)])
+
+    assert result.exit_code == 1
+    data = json.loads(result.output)
+    assert data["status"] == "invalid_compiled_plan"
+    assert "_compiled.toml" in data["message"]
+
+
 def test_review_renders_run_level_status_and_advisory(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

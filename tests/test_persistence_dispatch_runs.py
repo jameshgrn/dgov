@@ -80,6 +80,21 @@ def test_save_and_get_dispatch_run_round_trips(tmp_path: Path) -> None:
     assert row["terminated_at"] is None
 
 
+def test_get_dispatch_run_ignores_corrupt_drift_evidence(tmp_path: Path) -> None:
+    run = _dispatch_run()
+    save_dispatch_run(str(tmp_path), run)
+    conn = _get_db(str(tmp_path))
+    conn.execute(
+        "UPDATE dispatch_runs SET drift_evidence = ? WHERE id = ?",
+        ("{not-json", run.id),
+    )
+
+    row = get_dispatch_run(str(tmp_path), run.id)
+
+    assert row is not None
+    assert row["drift_evidence"] == ()
+
+
 def test_save_dispatch_run_is_idempotent(tmp_path: Path) -> None:
     run = _dispatch_run()
 

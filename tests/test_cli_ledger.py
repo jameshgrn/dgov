@@ -9,6 +9,7 @@ from click.testing import CliRunner
 
 from dgov.cli import cli
 from dgov.persistence import list_ledger_entries
+from dgov.persistence.connection import _get_db
 
 pytestmark = pytest.mark.unit
 
@@ -39,6 +40,24 @@ def test_probation_ledger_add_accepts_affected_paths(runner: CliRunner, tmp_path
         entries = list_ledger_entries(str(root))
         assert len(entries) == 1
         assert entries[0].affected_paths == ("src/dgov", "tests/test_kernel.py")
+
+
+def test_ledger_list_ignores_corrupt_affected_paths(runner: CliRunner, tmp_path: Path) -> None:
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        root = Path(td)
+        result = runner.invoke(cli, ["ledger", "add", "rule", "Kernel path rule"])
+        assert result.exit_code == 0, result.output
+        conn = _get_db(str(root))
+        conn.execute(
+            "UPDATE ledger SET affected_paths = ?, affected_tags = ?",
+            ("{not-json", "{}"),
+        )
+
+        entries = list_ledger_entries(str(root))
+
+        assert len(entries) == 1
+        assert entries[0].affected_paths == ()
+        assert entries[0].affected_tags == ()
 
 
 def test_ledger_add_and_list_decision_category(runner: CliRunner, tmp_path: Path) -> None:

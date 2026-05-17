@@ -42,6 +42,32 @@ def test_build_repo_snapshot_caches_commit_snapshot(tmp_path: Path) -> None:
     assert any(fn.qualname == "helper" for fn in snapshot.functions)
 
 
+def test_build_repo_snapshot_ignores_corrupt_cache(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / "src").mkdir()
+    (repo / "src" / "mod.py").write_text("def helper(x):\n    return x + 1\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    commit_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    cache_root = tmp_path / "cache"
+    cache_path = cache_root / ".dgov" / "runtime" / "repo_snapshot" / f"{commit_sha}.json"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("{not-json")
+
+    snapshot = build_repo_snapshot(repo, cache_root=cache_root)
+
+    assert any(fn.qualname == "helper" for fn in snapshot.functions)
+    assert '"functions"' in cache_path.read_text()
+
+
 def test_likely_structural_offenders_reports_long_and_complex_functions(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

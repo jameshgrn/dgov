@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import subprocess
 import time
 from dataclasses import asdict, dataclass
@@ -20,6 +21,7 @@ _LONG_FUNCTION_LINES = 45
 _COMPLEX_FUNCTION_CC = 10
 _COG_COMPLEX_FUNCTION = 15
 _MAX_REPORT_ITEMS = 5
+_log = logging.getLogger(__name__)
 _IGNORE_PARTS = {
     ".git",
     ".mypy_cache",
@@ -263,6 +265,17 @@ def _decode_snapshot(data: dict[str, object]) -> RepoSnapshot:
     )
 
 
+def _load_cached_snapshot(cache_path: Path) -> RepoSnapshot | None:
+    try:
+        data = json.loads(cache_path.read_text())
+        if not isinstance(data, dict):
+            raise TypeError("cached snapshot root must be a JSON object")
+        return _decode_snapshot(data)
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        _log.warning("Ignoring invalid repo snapshot cache %s: %s", cache_path, exc)
+        return None
+
+
 def build_repo_snapshot(
     scan_root: Path,
     *,
@@ -278,7 +291,9 @@ def build_repo_snapshot(
         dirty = True
     cache_path = _snapshot_cache_path(cache_project_root, commit_sha)
     if not dirty and cache_path.exists():
-        return _decode_snapshot(json.loads(cache_path.read_text()))
+        cached = _load_cached_snapshot(cache_path)
+        if cached is not None:
+            return cached
 
     file_snapshots: list[FileSnapshot] = []
     functions: list[FunctionMetric] = []
