@@ -47,9 +47,9 @@ is the canonical graph because it validates sources and resolves edges.
 
 ## Do not commit workspace state
 
-Obsidian creates `.obsidian/` in the vault root. Do not commit it. The repo's
-`.gitignore` should already ignore `.obsidian/` after `dgov init`; if not, add
-it manually:
+Obsidian creates `.obsidian/` in the vault root. Do not commit it. This repo's
+`.gitignore` ignores `.obsidian/`; target repos should add the same rule before
+opening the repo root as a vault:
 
 ```gitignore
 # Obsidian
