@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+import urllib.parse
 from pathlib import Path
 
 import click
 
 from dgov.cli import cli, want_json
-from dgov.kb import KnowledgeArticle, KnowledgeIssue, article_by_id, collect_knowledge_base
+from dgov.kb import (
+    KnowledgeArticle,
+    KnowledgeIssue,
+    article_by_id,
+    build_knowledge_graph,
+    collect_knowledge_base,
+)
 from dgov.project_root import resolve_project_root
 
 
@@ -105,6 +114,133 @@ def kb_validate(root: str) -> None:
 
     if issues:
         raise click.exceptions.Exit(code=1)
+
+
+@kb_cmd.command(name="graph")
+@click.option("--root", "-r", default=".", help="Project root")
+def kb_graph(root: str) -> None:
+    """Show the knowledge base graph."""
+    project_root = resolve_project_root(Path(root))
+    articles, issues = collect_knowledge_base(project_root)
+    _exit_on_issues(issues)
+    graph = build_knowledge_graph(articles)
+
+    if want_json():
+        payload = {
+            "articles": sorted(graph.article_nodes),
+            "sources": sorted(graph.source_nodes),
+            "edges": [
+                {"source": e.source, "target": e.target, "relation": e.relation}
+                for e in graph.edges
+            ],
+        }
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    if not graph.article_nodes:
+        click.echo("No knowledge base articles found.")
+        return
+
+    click.echo(f"Articles ({len(graph.article_nodes)}):")
+    for aid in sorted(graph.article_nodes):
+        click.echo(f"  {aid}")
+
+    if graph.source_nodes:
+        click.echo(f"Sources ({len(graph.source_nodes)}):")
+        for src in sorted(graph.source_nodes):
+            click.echo(f"  {src}")
+
+    if graph.edges:
+        click.echo("Edges:")
+        for edge in graph.edges:
+            click.echo(f"  {edge.source} --[{edge.relation}]--> {edge.target}")
+
+
+@kb_cmd.command(name="related")
+@click.argument("article_id")
+@click.option("--depth", "-d", default=1, type=int, help="Traversal depth")
+@click.option("--root", "-r", default=".", help="Project root")
+def kb_related(article_id: str, depth: int, root: str) -> None:
+    """Show article ids reachable through related edges."""
+    project_root = resolve_project_root(Path(root))
+    articles, issues = collect_knowledge_base(project_root)
+    _exit_on_issues(issues)
+    graph = build_knowledge_graph(articles)
+
+    if article_id not in graph.article_nodes:
+        click.echo(f"Error: unknown article id: {article_id}", err=True)
+        raise click.exceptions.Exit(code=1)
+
+    related = graph.related_by_depth(article_id, depth)
+
+    if want_json():
+        click.echo(
+            json.dumps({"start": article_id, "depth": depth, "related": sorted(related)}, indent=2)
+        )
+        return
+
+    if not related:
+        click.echo(f"No articles related to {article_id} within depth {depth}.")
+        return
+
+    click.echo(f"Articles related to {article_id} (depth {depth}):")
+    for rid in sorted(related):
+        click.echo(f"  {rid}")
+
+
+@kb_cmd.command(name="path")
+@click.argument("from_id")
+@click.argument("to_id")
+@click.option("--root", "-r", default=".", help="Project root")
+def kb_path(from_id: str, to_id: str, root: str) -> None:
+    """Show the shortest related-edge path between two articles."""
+    project_root = resolve_project_root(Path(root))
+    articles, issues = collect_knowledge_base(project_root)
+    _exit_on_issues(issues)
+    graph = build_knowledge_graph(articles)
+
+    if from_id not in graph.article_nodes:
+        click.echo(f"Error: unknown article id: {from_id}", err=True)
+        raise click.exceptions.Exit(code=1)
+    if to_id not in graph.article_nodes:
+        click.echo(f"Error: unknown article id: {to_id}", err=True)
+        raise click.exceptions.Exit(code=1)
+
+    path = graph.shortest_related_path(from_id, to_id)
+
+    if want_json():
+        click.echo(json.dumps({"from": from_id, "to": to_id, "path": path}, indent=2))
+        return
+
+    if path is None:
+        click.echo(f"No related-edge path from {from_id} to {to_id}.")
+        return
+
+    click.echo(" -> ".join(path))
+
+
+@kb_cmd.command(name="open")
+@click.argument("article_id")
+@click.option("--root", "-r", default=".", help="Project root")
+def kb_open(article_id: str, root: str) -> None:
+    """Open a knowledge base article in Obsidian."""
+    project_root = resolve_project_root(Path(root))
+    articles, issues = collect_knowledge_base(project_root)
+    _exit_on_issues(issues)
+
+    by_id = {a.id: a for a in articles}
+    article = by_id.get(article_id)
+    if article is None:
+        click.echo(f"Error: unknown article id: {article_id}", err=True)
+        raise click.exceptions.Exit(code=1)
+
+    absolute_path = (project_root / article.relative_path).resolve()
+    if shutil.which("obsidian"):
+        subprocess.run(["obsidian", "open", article.relative_path], check=False)
+        return
+
+    uri = f"obsidian://open?path={urllib.parse.quote(str(absolute_path))}"
+    click.echo(uri)
 
 
 def _exit_on_issues(issues: list[KnowledgeIssue]) -> None:
