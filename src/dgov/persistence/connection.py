@@ -89,9 +89,18 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     existing_events_cols = {row[1] for row in cursor.fetchall()}
 
     new_events_cols = {
+        "data": "TEXT NOT NULL DEFAULT '{}'",
         "task_slug": "TEXT DEFAULT NULL",
         "plan_name": "TEXT DEFAULT NULL",
         "action": "TEXT DEFAULT NULL",
+        "commit_count": "TEXT DEFAULT NULL",
+        "error": "TEXT DEFAULT NULL",
+        "reason": "TEXT DEFAULT NULL",
+        "merge_sha": "TEXT DEFAULT NULL",
+        "branch": "TEXT DEFAULT NULL",
+        "new_slug": "TEXT DEFAULT NULL",
+        "target_agent": "TEXT DEFAULT NULL",
+        "message": "TEXT DEFAULT NULL",
         "run_source": "TEXT DEFAULT NULL",
     }
     for col, dtype in new_events_cols.items():

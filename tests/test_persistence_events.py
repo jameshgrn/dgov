@@ -805,3 +805,38 @@ class TestSettlementPhaseEvents:
         # Verify deserialized events match test constants
         self._assert_started_event_matches_test_constants(deserialize_event(events[0]))
         self._assert_completed_event_matches_test_constants(deserialize_event(events[1]))
+
+
+class TestEmitEventFailures:
+    """Tests that emit_event fails fast for non-lock persistence errors."""
+
+    def test_non_lock_operational_error_propagates(self, tmp_path, monkeypatch):
+        """emit_event should propagate non-lock OperationalError instead of swallowing."""
+        import sqlite3
+        from unittest.mock import MagicMock
+
+        from dgov.persistence import events as events_module
+
+        session_root = _session(tmp_path)
+
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = sqlite3.OperationalError("disk I/O error")
+        monkeypatch.setattr(events_module, "_get_db", lambda _root: mock_conn)
+
+        with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+            emit_event(session_root, event="worker_log", pane="p1")
+
+    def test_generic_exception_propagates(self, tmp_path, monkeypatch):
+        """emit_event should propagate generic exceptions instead of swallowing."""
+        from unittest.mock import MagicMock
+
+        from dgov.persistence import events as events_module
+
+        session_root = _session(tmp_path)
+
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = RuntimeError("unexpected failure")
+        monkeypatch.setattr(events_module, "_get_db", lambda _root: mock_conn)
+
+        with pytest.raises(RuntimeError, match="unexpected failure"):
+            emit_event(session_root, event="worker_log", pane="p1")

@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import sqlite3
 from datetime import UTC, datetime
 
 from dgov.event_types import DgovEvent, serialize_event
@@ -43,7 +44,9 @@ def _emit_raw(session_root: str, event: str, pane: str, **kwargs) -> None:
 
     try:
         _retry_on_lock(_do)
-    except Exception:
+    except sqlite3.OperationalError as exc:
+        if "database is locked" not in str(exc):
+            raise
         logger.warning("emit_event(%s, %s) dropped — database locked", event, pane)
 
 
