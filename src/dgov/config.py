@@ -182,8 +182,12 @@ class ProjectConfig(AtomicConfig):
 
 
 def _table(raw: Mapping[str, Any], key: str) -> dict[str, Any]:
-    value = raw.get(key, {})
-    return value if isinstance(value, dict) else {}
+    if key not in raw:
+        return {}
+    value = raw[key]
+    if not isinstance(value, dict):
+        raise ValueError(f".dgov/project.toml [{key}] must be a table")
+    return value
 
 
 def _tuple_if_list(value: Any) -> Any:
@@ -191,8 +195,8 @@ def _tuple_if_list(value: Any) -> Any:
 
 
 def _configured_scope_ignores(raw: Mapping[str, Any]) -> tuple[str, ...]:
-    scope_section = raw.get("scope", {})
-    ignore_raw = scope_section.get("ignore_files", ()) if isinstance(scope_section, dict) else ()
+    scope_section = _table(raw, "scope")
+    ignore_raw = scope_section.get("ignore_files", ())
     if not isinstance(ignore_raw, list):
         return ()
     return tuple(str(p).strip() for p in ignore_raw if str(p).strip())
@@ -286,7 +290,7 @@ def _governor_config_fields(raw: Mapping[str, Any], proj: Mapping[str, Any]) -> 
         "agents": _table(raw, "agents"),
         "providers": provider_configs_from_project_toml(raw),
         "conventions": _table(raw, "conventions"),
-        "tool_policy": parse_tool_policy(raw.get("tool_policy", {})),
+        "tool_policy": parse_tool_policy(_table(raw, "tool_policy")),
         "scope_ignore_files": _scope_ignore_files(raw),
         "setup_cmd": proj.get("setup_cmd") or None,
         "coverage_cmd": proj.get("coverage_cmd") or None,

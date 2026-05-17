@@ -70,8 +70,12 @@ def _coerce_tool_policy(v: object) -> ToolPolicy:
 
 
 def _table(raw: Mapping[str, Any], key: str) -> dict[str, Any]:
-    value = raw.get(key, {})
-    return value if isinstance(value, dict) else {}
+    if key not in raw:
+        return {}
+    value = raw[key]
+    if not isinstance(value, dict):
+        raise ValueError(f".dgov/project.toml [{key}] must be a table")
+    return value
 
 
 def _provider_name(proj: Mapping[str, Any], providers: Mapping[str, ProviderConfig]) -> str:
@@ -202,6 +206,6 @@ def worker_payload_from_project_toml(raw: dict[str, Any]) -> dict[str, object]:
     flat["llm_provider"] = provider.name
     flat["llm_base_url"] = provider.base_url
     flat["llm_api_key_env"] = provider.api_key_env
-    flat["conventions"] = raw.get("conventions", {})
-    flat["tool_policy"] = raw.get("tool_policy", {})
+    flat["conventions"] = _table(raw, "conventions")
+    flat["tool_policy"] = _table(raw, "tool_policy")
     return atomic_config_to_payload(atomic_config_from_payload(flat))

@@ -6,6 +6,8 @@ from dgov.config import ProjectConfig, load_project_config
 from dgov.tool_policy import ToolPolicy
 from dgov.workers.config import AtomicConfig, ProviderConfig
 
+pytestmark = pytest.mark.unit
+
 
 def _project_with_provider(
     name: str,
@@ -455,6 +457,27 @@ class TestScopeIgnoreFiles:
         (dgov_dir / "project.toml").write_text('[project]\nlanguage = "python"\n')
         pc = load_project_config(tmp_path)
         assert pc.scope_ignore_files == (".venv", "uv.lock", "__pycache__", "*.pyc")
+
+    @pytest.mark.parametrize(
+        "section",
+        [
+            "project",
+            "providers",
+            "conventions",
+            "tool_policy",
+            "sentrux",
+            "scope",
+            "agents",
+            "departments",
+        ],
+    )
+    def test_rejects_malformed_table_section(self, tmp_path, section):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(f'{section} = "bad"\n')
+
+        with pytest.raises(ValueError, match=rf"\[{section}\] must be a table"):
+            load_project_config(tmp_path)
 
 
 class TestTypeCheckCommand:

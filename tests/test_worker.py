@@ -34,6 +34,8 @@ from dgov.workers.runtime import (  # noqa: E402
     tool_choice_for_iteration,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture()
 def tools(tmp_path: Path) -> AtomicTools:
@@ -302,6 +304,24 @@ api_key_env = "OPENAI_API_KEY"
     assert config.llm_provider == "openai"
     assert config.llm_base_url == "https://api.openai.com/v1"
     assert config.llm_api_key_env == "OPENAI_API_KEY"
+
+
+@pytest.mark.parametrize(
+    "section",
+    [
+        "project",
+        "providers",
+        "conventions",
+        "tool_policy",
+    ],
+)
+def test_load_project_config_rejects_malformed_table_section(tmp_path: Path, section: str) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text(f'{section} = "bad"\n')
+
+    with pytest.raises(ValueError, match=rf"\[{section}\] must be a table"):
+        load_project_config(tmp_path)
 
 
 # -- get_tool_spec --
