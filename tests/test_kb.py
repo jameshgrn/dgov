@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from dgov.kb import article_by_id, collect_knowledge_base
+from dgov.kb import article_by_id, build_knowledge_graph, collect_knowledge_base
 
 pytestmark = pytest.mark.unit
 ROOT = Path(__file__).resolve().parents[1]
@@ -136,5 +136,109 @@ def test_collect_requires_first_h1_to_match_title(tmp_path: Path) -> None:
     _articles, issues = collect_knowledge_base(tmp_path)
 
     assert ("docs/knowledge/concepts/sentrux.md", "first H1 must match title") in {
+        (issue.path, issue.message) for issue in issues
+    }
+
+
+def test_build_knowledge_graph(tmp_path: Path) -> None:
+    _write_source(tmp_path)
+    _write(tmp_path / "docs" / "knowledge" / "a.md", _article("a"))
+    _write(
+        tmp_path / "docs" / "knowledge" / "b.md",
+        _article("b").replace("related: []", "related: [a]"),
+    )
+
+    articles, issues = collect_knowledge_base(tmp_path)
+    assert issues == []
+
+    graph = build_knowledge_graph(articles)
+    assert graph.article_nodes == {"a", "b"}
+    assert ".dgov/governor.md" in graph.source_nodes
+
+    edge_set = {(e.source, e.target, e.relation) for e in graph.edges}
+    assert ("a", ".dgov/governor.md", "source") in edge_set
+    assert ("b", ".dgov/governor.md", "source") in edge_set
+    assert ("b", "a", "related") in edge_set
+
+
+def test_related_by_depth(tmp_path: Path) -> None:
+    _write_source(tmp_path)
+    _write(
+        tmp_path / "docs" / "knowledge" / "a.md",
+        _article("a").replace("related: []", "related: [d]"),
+    )
+    _write(
+        tmp_path / "docs" / "knowledge" / "b.md",
+        _article("b").replace("related: []", "related: [a]"),
+    )
+    _write(
+        tmp_path / "docs" / "knowledge" / "c.md",
+        _article("c").replace("related: []", "related: [b]"),
+    )
+    _write(tmp_path / "docs" / "knowledge" / "d.md", _article("d"))
+
+    articles, issues = collect_knowledge_base(tmp_path)
+    assert issues == []
+    graph = build_knowledge_graph(articles)
+
+    assert graph.related_by_depth("a", depth=1) == {"d"}
+    assert graph.related_by_depth("c", depth=1) == {"b"}
+    assert graph.related_by_depth("c", depth=2) == {"b", "a"}
+    assert graph.related_by_depth("c", depth=3) == {"b", "a", "d"}
+
+
+def test_shortest_related_path(tmp_path: Path) -> None:
+    _write_source(tmp_path)
+    _write(
+        tmp_path / "docs" / "knowledge" / "a.md",
+        _article("a").replace("related: []", "related: [d]"),
+    )
+    _write(
+        tmp_path / "docs" / "knowledge" / "b.md",
+        _article("b").replace("related: []", "related: [a]"),
+    )
+    _write(
+        tmp_path / "docs" / "knowledge" / "c.md",
+        _article("c").replace("related: []", "related: [b]"),
+    )
+    _write(tmp_path / "docs" / "knowledge" / "d.md", _article("d"))
+
+    articles, issues = collect_knowledge_base(tmp_path)
+    assert issues == []
+    graph = build_knowledge_graph(articles)
+
+    assert graph.shortest_related_path("a", "a") == ["a"]
+    assert graph.shortest_related_path("c", "b") == ["c", "b"]
+    assert graph.shortest_related_path("c", "a") == ["c", "b", "a"]
+    assert graph.shortest_related_path("c", "d") == ["c", "b", "a", "d"]
+    assert graph.shortest_related_path("x", "a") is None
+
+
+def test_duplicate_related_entry(tmp_path: Path) -> None:
+    _write_source(tmp_path)
+    _write(tmp_path / "docs" / "knowledge" / "a.md", _article("a"))
+    _write(
+        tmp_path / "docs" / "knowledge" / "b.md",
+        _article("b").replace("related: []", "related: [a, a]"),
+    )
+
+    _articles, issues = collect_knowledge_base(tmp_path)
+    assert ("docs/knowledge/b.md", "duplicate related entry: a") in {
+        (issue.path, issue.message) for issue in issues
+    }
+
+
+def test_duplicate_source_entry(tmp_path: Path) -> None:
+    _write_source(tmp_path)
+    _write(
+        tmp_path / "docs" / "knowledge" / "a.md",
+        _article("a", source=".dgov/governor.md").replace(
+            "sources:\n  - .dgov/governor.md",
+            "sources:\n  - .dgov/governor.md\n  - .dgov/governor.md",
+        ),
+    )
+
+    _articles, issues = collect_knowledge_base(tmp_path)
+    assert ("docs/knowledge/a.md", "duplicate source entry: .dgov/governor.md") in {
         (issue.path, issue.message) for issue in issues
     }

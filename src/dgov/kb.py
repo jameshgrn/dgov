@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,64 @@ class KnowledgeArticle:
 class KnowledgeIssue:
     path: str
     message: str
+
+
+@dataclass(frozen=True)
+class KnowledgeEdge:
+    source: str
+    target: str
+    relation: str
+
+
+@dataclass(frozen=True)
+class KnowledgeGraph:
+    article_nodes: frozenset[str]
+    source_nodes: frozenset[str]
+    edges: tuple[KnowledgeEdge, ...]
+
+    def related_by_depth(self, start_id: str, depth: int) -> set[str]:
+        if depth < 0 or start_id not in self.article_nodes:
+            return set()
+        adj: dict[str, set[str]] = {aid: set() for aid in self.article_nodes}
+        for edge in self.edges:
+            if edge.relation == "related":
+                adj[edge.source].add(edge.target)
+        visited: set[str] = set()
+        current: set[str] = {start_id}
+        for _ in range(depth):
+            if not current:
+                break
+            visited.update(current)
+            next_level: set[str] = set()
+            for node in current:
+                for neighbor in adj.get(node, set()):
+                    if neighbor not in visited:
+                        next_level.add(neighbor)
+            current = next_level
+        visited.update(current)
+        visited.discard(start_id)
+        return visited
+
+    def shortest_related_path(self, start_id: str, end_id: str) -> list[str] | None:
+        if start_id not in self.article_nodes or end_id not in self.article_nodes:
+            return None
+        if start_id == end_id:
+            return [start_id]
+        adj: dict[str, set[str]] = {aid: set() for aid in self.article_nodes}
+        for edge in self.edges:
+            if edge.relation == "related":
+                adj[edge.source].add(edge.target)
+        queue: deque[tuple[str, list[str]]] = deque([(start_id, [start_id])])
+        visited: set[str] = {start_id}
+        while queue:
+            node, path = queue.popleft()
+            for neighbor in adj.get(node, set()):
+                if neighbor == end_id:
+                    return [*path, neighbor]
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append((neighbor, [*path, neighbor]))
+        return None
 
 
 class KnowledgeFormatError(ValueError):
@@ -68,6 +127,26 @@ def article_by_id(
         if article.id == article_id:
             return article, []
     return None, [KnowledgeIssue(str(KNOWLEDGE_DIR), f"unknown article id: {article_id}")]
+
+
+def build_knowledge_graph(
+    articles: list[KnowledgeArticle],
+) -> KnowledgeGraph:
+    article_nodes: set[str] = set()
+    source_nodes: set[str] = set()
+    edges: list[KnowledgeEdge] = []
+    for article in articles:
+        article_nodes.add(article.id)
+        for source in article.sources:
+            source_nodes.add(source)
+            edges.append(KnowledgeEdge(source=article.id, target=source, relation="source"))
+        for related in article.related:
+            edges.append(KnowledgeEdge(source=article.id, target=related, relation="related"))
+    return KnowledgeGraph(
+        article_nodes=frozenset(article_nodes),
+        source_nodes=frozenset(source_nodes),
+        edges=tuple(edges),
+    )
 
 
 def _article_paths(kb_dir: Path) -> list[Path]:
@@ -260,7 +339,14 @@ def _validate_article_sources(
     if not article.sources:
         return [KnowledgeIssue(article.relative_path, "sources must not be empty")]
     issues: list[KnowledgeIssue] = []
+    seen: set[str] = set()
     for source in article.sources:
+        if source in seen:
+            issues.append(
+                KnowledgeIssue(article.relative_path, f"duplicate source entry: {source}")
+            )
+            continue
+        seen.add(source)
         source_issue = _source_issue(project_root, source)
         if source_issue:
             issues.append(KnowledgeIssue(article.relative_path, source_issue))
@@ -271,7 +357,14 @@ def _validate_article_related(
     article: KnowledgeArticle, by_id: dict[str, KnowledgeArticle]
 ) -> list[KnowledgeIssue]:
     issues: list[KnowledgeIssue] = []
+    seen: set[str] = set()
     for related in article.related:
+        if related in seen:
+            issues.append(
+                KnowledgeIssue(article.relative_path, f"duplicate related entry: {related}")
+            )
+            continue
+        seen.add(related)
         issue = _related_issue(article, related, by_id)
         if issue:
             issues.append(KnowledgeIssue(article.relative_path, issue))
