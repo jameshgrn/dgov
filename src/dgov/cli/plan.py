@@ -763,6 +763,8 @@ def _plan_list_status(total: int, deployed: int) -> str:
 def _summarize_plan_entry(
     project_root: Path, plan_path: Path, *, archived: bool
 ) -> dict[str, Any]:
+    from dgov.plan_review import load_run_envelope
+
     compiled_path = plan_path / "_compiled.toml"
     base: dict[str, Any] = {
         "name": plan_path.name,
@@ -772,6 +774,9 @@ def _summarize_plan_entry(
         "total": 0,
         "deployed": 0,
         "status": "uncompiled",
+        "stale": False,
+        "run_status": None,
+        "remediation_needed": False,
     }
     if not compiled_path.exists():
         return base
@@ -780,16 +785,39 @@ def _summarize_plan_entry(
     except (tomllib.TOMLDecodeError, OSError):
         return base
     tasks = raw.get("tasks", {}) or {}
-    plan_name = raw.get("plan", {}).get("name", plan_path.name)
+    plan_section = raw.get("plan", {})
+    plan_name = plan_section.get("name", plan_path.name)
     deployed_map = _load_deployed_units(project_root, plan_name)
     deployed_count = sum(1 for uid in tasks if uid in deployed_map)
     total = len(tasks)
+
+    compiled_source_mtime = plan_section.get("source_mtime_max", "")
+    stale = _compute_staleness(compiled_path, plan_path, compiled_source_mtime)
+
+    run_envelope = load_run_envelope(str(project_root), compiled_path)
+    pending_count = total - deployed_count
+    remediation_needed = _needs_remediation(
+        run_status=run_envelope.run_status,
+        unit_count=total,
+        deployed_count=deployed_count,
+        pending_count=pending_count,
+    )
+
+    status = _plan_list_status(total, deployed_count)
+    if stale:
+        status = "stale"
+    elif remediation_needed:
+        status = "degraded"
+
     return {
         **base,
         "compiled": True,
         "total": total,
         "deployed": deployed_count,
-        "status": _plan_list_status(total, deployed_count),
+        "status": status,
+        "stale": stale,
+        "run_status": run_envelope.run_status,
+        "remediation_needed": remediation_needed,
     }
 
 
@@ -817,6 +845,10 @@ def _plan_list_marker(status: str) -> str:
         return click.style("◐", fg="yellow")
     if status == "compiled":
         return click.style("○", fg="cyan")
+    if status == "stale":
+        return click.style("⚠", fg="yellow")
+    if status == "degraded":
+        return click.style("⚠", fg="yellow")
     return click.style("·", dim=True)
 
 

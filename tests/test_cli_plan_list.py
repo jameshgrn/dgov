@@ -194,4 +194,159 @@ def test_list_json_output_uncompiled_plan(runner: CliRunner, tmp_path: Path, mon
         "total": 0,
         "deployed": 0,
         "status": "uncompiled",
+        "stale": False,
+        "run_status": None,
+        "remediation_needed": False,
     }
+
+
+def _compile_plan(runner: CliRunner, plan_dir: Path) -> None:
+    """Helper: compile a plan tree via CLI (dry-run)."""
+    result = runner.invoke(cli, ["compile", str(plan_dir), "--dry-run"])
+    assert result.exit_code == 0, result.output
+
+
+def _make_plan_tree_under_plans(plans: Path, name: str) -> Path:
+    """Create a minimal plan tree with two units under the plans directory."""
+    plan_dir = plans / name
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "_root.toml").write_text(
+        f'[plan]\nname = "{name}"\nsummary = "Test"\nsections = ["core"]\n'
+    )
+    core_dir = plan_dir / "core"
+    core_dir.mkdir()
+    (core_dir / "work.toml").write_text(
+        "[tasks.alpha]\n"
+        'summary = "Alpha"\nprompt = "Do alpha"\ncommit_message = "alpha"\n'
+        'files.create = ["a.py"]\n\n'
+        "[tasks.beta]\n"
+        'summary = "Beta"\nprompt = "Do beta"\ncommit_message = "beta"\n'
+        'depends_on = ["alpha"]\nfiles.create = ["b.py"]\n'
+    )
+    return plan_dir
+
+
+def _patched_run_envelope(monkeypatch: pytest.MonkeyPatch, **overrides) -> None:
+    """Stub plan_review.load_run_envelope so list tests can control run-level fields."""
+    from dgov.plan_review import RunEnvelope
+
+    envelope = overrides.get(
+        "envelope",
+        RunEnvelope(plan_name="test-plan", last_run_ts=None),
+    )
+    monkeypatch.setattr("dgov.plan_review.load_run_envelope", lambda *_args, **_kwargs: envelope)
+
+
+# -- Staleness --
+
+
+def test_list_stale_compiled_plan(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    root = _make_project_root(tmp_path)
+    plans = root / ".dgov" / "plans"
+    plan_dir = _make_plan_tree_under_plans(plans, "stale-plan")
+    monkeypatch.chdir(root)
+    _compile_plan(runner, plan_dir)
+
+    time.sleep(0.1)
+    source = plan_dir / "core" / "work.toml"
+    source.write_text(source.read_text() + "\n# touched\n")
+
+    result = runner.invoke(cli, ["plan", "list"])
+    assert result.exit_code == 0, result.output
+    assert "stale" in result.output.lower()
+    assert "complete" not in result.output.lower()
+
+
+def test_list_stale_compiled_plan_json(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    root = _make_project_root(tmp_path)
+    plans = root / ".dgov" / "plans"
+    plan_dir = _make_plan_tree_under_plans(plans, "stale-plan")
+    monkeypatch.chdir(root)
+    _compile_plan(runner, plan_dir)
+
+    time.sleep(0.1)
+    source = plan_dir / "core" / "work.toml"
+    source.write_text(source.read_text() + "\n# touched\n")
+
+    result = runner.invoke(cli, ["--json", "plan", "list"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert len(payload) == 1
+    entry = payload[0]
+    assert entry["status"] == "stale"
+    assert entry["stale"] is True
+
+
+# -- Degraded / remediation --
+
+
+def test_list_degraded_fully_deployed(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.deploy_log import append as deploy_append
+    from dgov.plan_review import RunEnvelope
+
+    root = _make_project_root(tmp_path)
+    plans = root / ".dgov" / "plans"
+    plan_dir = _make_plan_tree_under_plans(plans, "degraded-plan")
+    monkeypatch.chdir(root)
+    _patched_run_envelope(
+        monkeypatch,
+        envelope=RunEnvelope(
+            plan_name="degraded-plan",
+            last_run_ts="2026-04-10T12:00:00Z",
+            run_status="degraded",
+            sentrux_degradation=True,
+            sentrux_offender_summary="1 offender in src/module.py",
+        ),
+    )
+    _compile_plan(runner, plan_dir)
+    deploy_append(str(root), "degraded-plan", "core/work.alpha", "sha1", "2026-04-06T12:00:00Z")
+    deploy_append(str(root), "degraded-plan", "core/work.beta", "sha2", "2026-04-06T12:00:00Z")
+
+    result = runner.invoke(cli, ["plan", "list"])
+    assert result.exit_code == 0, result.output
+    assert "degraded" in result.output.lower()
+    assert "complete" not in result.output.lower()
+
+
+def test_list_degraded_fully_deployed_json(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.deploy_log import append as deploy_append
+    from dgov.plan_review import RunEnvelope
+
+    root = _make_project_root(tmp_path)
+    plans = root / ".dgov" / "plans"
+    plan_dir = _make_plan_tree_under_plans(plans, "degraded-plan")
+    monkeypatch.chdir(root)
+    _patched_run_envelope(
+        monkeypatch,
+        envelope=RunEnvelope(
+            plan_name="degraded-plan",
+            last_run_ts="2026-04-10T12:00:00Z",
+            run_status="degraded",
+            sentrux_degradation=True,
+            sentrux_offender_summary="1 offender in src/module.py",
+        ),
+    )
+    _compile_plan(runner, plan_dir)
+    deploy_append(str(root), "degraded-plan", "core/work.alpha", "sha1", "2026-04-06T12:00:00Z")
+    deploy_append(str(root), "degraded-plan", "core/work.beta", "sha2", "2026-04-06T12:00:00Z")
+
+    result = runner.invoke(cli, ["--json", "plan", "list"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert len(payload) == 1
+    entry = payload[0]
+    assert entry["status"] == "degraded"
+    assert entry["run_status"] == "degraded"
+    assert entry["remediation_needed"] is True
