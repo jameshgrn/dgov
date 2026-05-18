@@ -694,6 +694,154 @@ def _cmd_plan_status(
     )
 
 
+@plan_cmd.command(name="list")
+@click.option("--all", "show_all", is_flag=True, help="Include archived plans alongside active")
+@click.option("--archived", is_flag=True, help="Show only archived plans")
+def plan_list_cmd(show_all: bool, archived: bool) -> None:
+    """List plans under .dgov/plans/ with deploy progress.
+
+    Default output lists active plans (the live `.dgov/plans/<name>/` tree).
+    Pass `--archived` to switch to plans under `.dgov/plans/archive/`, or
+    `--all` to include both.
+
+    \b
+    Example: dgov plan list
+    Example: dgov plan list --all
+    """
+    if show_all and archived:
+        click.echo("Error: --all and --archived are mutually exclusive", err=True)
+        raise click.exceptions.Exit(code=1) from None
+
+    project_root = resolve_project_root()
+    plans_dir = project_root / ".dgov" / "plans"
+    if not plans_dir.exists():
+        if want_json():
+            click.echo(json.dumps([]))
+        else:
+            click.echo("No plans directory; run 'dgov init-plan <name>' to start.")
+        return
+
+    entries = _collect_plan_list_entries(
+        project_root, plans_dir, show_all=show_all, archived_only=archived
+    )
+    if want_json():
+        click.echo(json.dumps(entries, indent=2))
+    else:
+        _render_plan_list_text(entries)
+
+
+def _iter_plan_dirs(
+    plans_dir: Path, *, include_active: bool, include_archived: bool
+) -> list[tuple[Path, bool]]:
+    """Yield (plan_path, archived) pairs from plans_dir respecting filters."""
+    out: list[tuple[Path, bool]] = []
+    if include_active:
+        for child in sorted(plans_dir.iterdir()):
+            if not child.is_dir() or child.name.startswith("_") or child.name == "archive":
+                continue
+            out.append((child, False))
+    if include_archived:
+        archive_dir = plans_dir / "archive"
+        if archive_dir.is_dir():
+            for child in sorted(archive_dir.iterdir()):
+                if not child.is_dir() or child.name.startswith("_"):
+                    continue
+                out.append((child, True))
+    return out
+
+
+def _plan_list_status(total: int, deployed: int) -> str:
+    if total == 0:
+        return "empty"
+    if deployed == total:
+        return "complete"
+    if deployed == 0:
+        return "compiled"
+    return "in progress"
+
+
+def _summarize_plan_entry(
+    project_root: Path, plan_path: Path, *, archived: bool
+) -> dict[str, Any]:
+    compiled_path = plan_path / "_compiled.toml"
+    base: dict[str, Any] = {
+        "name": plan_path.name,
+        "path": str(plan_path),
+        "archived": archived,
+        "compiled": False,
+        "total": 0,
+        "deployed": 0,
+        "status": "uncompiled",
+    }
+    if not compiled_path.exists():
+        return base
+    try:
+        raw = tomllib.loads(compiled_path.read_text())
+    except (tomllib.TOMLDecodeError, OSError):
+        return base
+    tasks = raw.get("tasks", {}) or {}
+    plan_name = raw.get("plan", {}).get("name", plan_path.name)
+    deployed_map = _load_deployed_units(project_root, plan_name)
+    deployed_count = sum(1 for uid in tasks if uid in deployed_map)
+    total = len(tasks)
+    return {
+        **base,
+        "compiled": True,
+        "total": total,
+        "deployed": deployed_count,
+        "status": _plan_list_status(total, deployed_count),
+    }
+
+
+def _collect_plan_list_entries(
+    project_root: Path,
+    plans_dir: Path,
+    *,
+    show_all: bool,
+    archived_only: bool,
+) -> list[dict[str, Any]]:
+    include_active = not archived_only
+    include_archived = archived_only or show_all
+    return [
+        _summarize_plan_entry(project_root, plan_path, archived=archived)
+        for plan_path, archived in _iter_plan_dirs(
+            plans_dir, include_active=include_active, include_archived=include_archived
+        )
+    ]
+
+
+def _plan_list_marker(status: str) -> str:
+    if status == "complete":
+        return click.style("✓", fg="green")
+    if status == "in progress":
+        return click.style("◐", fg="yellow")
+    if status == "compiled":
+        return click.style("○", fg="cyan")
+    return click.style("·", dim=True)
+
+
+def _render_plan_list_section(label: str, entries: list[dict[str, Any]]) -> None:
+    if not entries:
+        return
+    click.echo(f"  {label}:")
+    name_width = max(len(e["name"]) for e in entries)
+    for entry in entries:
+        marker = _plan_list_marker(entry["status"])
+        progress = f"  ({entry['deployed']}/{entry['total']})" if entry["compiled"] else ""
+        click.echo(f"    {marker} {entry['name'].ljust(name_width)}  {entry['status']}{progress}")
+
+
+def _render_plan_list_text(entries: list[dict[str, Any]]) -> None:
+    if not entries:
+        click.echo("No plans found.")
+        return
+    active = [e for e in entries if not e["archived"]]
+    archived = [e for e in entries if e["archived"]]
+    click.echo(f"Plans ({len(entries)}):")
+    _render_plan_list_section("active", active)
+    _render_plan_list_section("archive", archived)
+
+
 def _resolve_archived_plan_path(plan_input: Path) -> Path:
     """If plan_input does not exist, look for it under a sibling archive/ dir.
 
