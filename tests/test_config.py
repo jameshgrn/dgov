@@ -371,6 +371,14 @@ api_key_env = "FIREWORKS_API_KEY"
         with pytest.raises(ValueError, match=message):
             load_project_config(tmp_path)
 
+    def test_rejects_non_string_agent_alias(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text("[agents]\nfast = 123\n")
+
+        with pytest.raises(ValueError, match=r"\[agents\] values must be strings: fast"):
+            load_project_config(tmp_path)
+
     def test_tool_policy_loaded(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"
         dgov_dir.mkdir()

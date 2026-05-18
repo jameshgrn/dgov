@@ -237,6 +237,14 @@ def _scope_ignore_files(raw: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(dict.fromkeys((*ProjectConfig.scope_ignore_files, *configured_scope_ignores)))
 
 
+def _string_table(raw: Mapping[str, Any], key: str) -> dict[str, str]:
+    table = _table(raw, key)
+    bad = sorted(name for name, value in table.items() if not isinstance(value, str))
+    if bad:
+        raise ValueError(f".dgov/project.toml [{key}] values must be strings: {', '.join(bad)}")
+    return {str(name): value for name, value in table.items()}
+
+
 def _sentrux_mode(raw: Mapping[str, Any]) -> str:
     sentrux = _table(raw, "sentrux")
     mode = str(sentrux.get("mode", ProjectConfig.sentrux_mode)).strip().lower()
@@ -301,7 +309,7 @@ def _governor_config_fields(raw: Mapping[str, Any], proj: Mapping[str, Any]) -> 
         "bootstrap_timeout": proj.get("bootstrap_timeout", 300),
         "settlement_timeout": proj.get("settlement_timeout", 120),
         "review_hooks": _tuple_if_list(proj.get("review_hooks", ())),
-        "agents": _table(raw, "agents"),
+        "agents": _string_table(raw, "agents"),
         "providers": provider_configs_from_project_toml(raw),
         "conventions": _table(raw, "conventions"),
         "tool_policy": parse_tool_policy(_table(raw, "tool_policy")),

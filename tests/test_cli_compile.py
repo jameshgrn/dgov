@@ -122,6 +122,39 @@ def test_compile_reports_malformed_project_config(runner: CliRunner, tmp_path: P
     assert ".dgov/project.toml" in result.output
 
 
+def test_compile_uses_plan_path_project_root(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    project = tmp_path / "target"
+    dgov_dir = project / ".dgov"
+    plan_dir = dgov_dir / "plans" / "path-root"
+    section_dir = plan_dir / "tasks"
+    section_dir.mkdir(parents=True)
+    dgov_dir.mkdir(exist_ok=True)
+    (dgov_dir / "project.toml").write_text(_provider_project_toml(), encoding="utf-8")
+    (plan_dir / "_root.toml").write_text(
+        '[plan]\nname = "path-root"\nsummary = ""\nsections = ["tasks"]\n',
+        encoding="utf-8",
+    )
+    (section_dir / "main.toml").write_text(
+        "[tasks.main]\n"
+        'summary = "Update docs"\n'
+        'prompt = "Orient:\\nRead README.md.\\n\\nEdit:\\n'
+        '1. Update README.md.\\n\\nVerify:\\n- Review diff."\n'
+        'commit_message = "Update docs"\n'
+        'files.edit = ["README.md"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(outside)
+
+    result = runner.invoke(cli, ["compile", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert (plan_dir / "_compiled.toml").exists()
+
+
 def test_compile_round_trips_through_parser(runner: CliRunner, tmp_path: Path) -> None:
     """_compiled.toml should parse via the existing parse_plan_file."""
     from dgov.plan import parse_plan_file

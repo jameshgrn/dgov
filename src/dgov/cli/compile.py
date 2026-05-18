@@ -61,7 +61,7 @@ def compile_cmd(plan_root: Path, dry_run: bool, recompile_sops: bool, graph: boo
 def compile_plan_dir(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph: bool) -> None:
     """Compile pipeline: walk → merge → resolve → validate → bundle → write."""
     resolved = _load_resolved_plan(plan_root)
-    project_root = resolve_project_root()
+    project_root = _resolve_compile_project_root(plan_root)
     project_config = _load_project_config(project_root)
     bundle_result = _bundle_sops(
         resolved,
@@ -81,6 +81,23 @@ def compile_plan_dir(plan_root: Path, *, dry_run: bool, recompile_sops: bool, gr
 
     _print_summary(summary)
     _print_graph_if_requested(graph, resolved)
+
+
+def _resolve_compile_project_root(plan_root: Path) -> Path:
+    """Resolve config from a project-scoped plan, preserving standalone plan behavior."""
+    project_root = resolve_project_root(plan_root)
+    if _is_project_root(project_root):
+        return project_root
+    return resolve_project_root()
+
+
+def _is_project_root(path: Path) -> bool:
+    """True when ``path`` carries a project marker.
+
+    ``resolve_project_root`` returns the literal input when no marker is found
+    upstream, so this distinguishes a real hit from the no-marker fallback.
+    """
+    return (path / ".dgov").is_dir() or (path / ".git").exists()
 
 
 def _load_resolved_plan(plan_root: Path) -> FlatPlan:

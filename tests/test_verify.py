@@ -74,6 +74,16 @@ class TestLoadVerifyRecipes:
         assert load_verify_recipes({}) == {}
         assert load_verify_recipes({"project": {}}) == {}
 
+    def test_rejects_non_table_verify_section(self):
+        raw = {"verify": "bad"}
+        with pytest.raises(ValueError, match=r"\[verify\] must be a table"):
+            load_verify_recipes(raw)
+
+    def test_rejects_non_table_recipe_section(self):
+        raw = {"verify": {"lint": "bad"}}
+        with pytest.raises(ValueError, match=r"lint.*section must be a table"):
+            load_verify_recipes(raw)
+
     def test_rejects_missing_command(self):
         raw = {"verify": {"lint": {}}}
         with pytest.raises(ValueError, match=r"lint.*command"):
@@ -102,6 +112,16 @@ class TestLoadVerifyRecipes:
     def test_rejects_invalid_log_name_type(self):
         raw = {"verify": {"lint": {"command": "ruff check", "log_name": 123}}}
         with pytest.raises(ValueError, match=r"lint.*log_name"):
+            load_verify_recipes(raw)
+
+    def test_rejects_log_name_path(self):
+        raw = {"verify": {"lint": {"command": "ruff check", "log_name": "../lint.log"}}}
+        with pytest.raises(ValueError, match=r"lint.*log_name.*file name"):
+            load_verify_recipes(raw)
+
+    def test_rejects_unsafe_default_log_name(self):
+        raw = {"verify": {"../lint": {"command": "ruff check"}}}
+        with pytest.raises(ValueError, match=r"\.\./lint.*log file name"):
             load_verify_recipes(raw)
 
     def test_rejects_invalid_parser_type(self):
@@ -199,6 +219,19 @@ class TestRunVerifyRecipe:
         assert "1 warning" in r.summary
         assert "1 warnings" not in r.summary
 
+    def test_rejects_runtime_log_name_escape(self, tmp_path):
+        script = self._write_script(tmp_path, "print('hi')")
+        recipe = VerifyRecipe(
+            name="hello",
+            command=f"{sys.executable} {script}",
+            log_name="../outside.log",
+        )
+
+        with pytest.raises(ValueError, match=r"log_name.*file name"):
+            run_verify_recipe(tmp_path, recipe)
+
+        assert not (tmp_path / ".dgov" / "runtime" / "outside.log").exists()
+
 
 class TestRunVerifyRecipes:
     def _write_script(self, tmp_path: Path, code: str) -> Path:
@@ -231,6 +264,11 @@ class TestRunVerifyRecipes:
         assert result.status == "pass"
         assert len(result.results) == 1
         assert result.results[0].recipe_name == "ok"
+
+    def test_rejects_unknown_subset_name(self, tmp_path):
+        recipes = {"ok": VerifyRecipe(name="ok", command="echo ok")}
+        with pytest.raises(ValueError, match="unknown verify recipe 'missing'"):
+            run_verify_recipes(tmp_path, recipes, names=("missing",))
 
 
 class TestProjectConfigVerifyRecipes:
