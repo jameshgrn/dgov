@@ -1,0 +1,4 @@
+[plan]
+name = "plan-list-status-semantics"
+summary = "Make dgov plan list report stale and degraded plans without false completion."
+sections = ["tasks"]
