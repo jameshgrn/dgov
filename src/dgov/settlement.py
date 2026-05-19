@@ -39,7 +39,13 @@ _DGOV_SENTRUX_BASELINE = ".sentrux/dgov-baseline.json"
 _COVERAGE_BASELINE_DIR = ".coverage-baseline"
 _COVERAGE_BASELINE = f"{_COVERAGE_BASELINE_DIR}/coverage.json"
 _RESERVED_PATHS = (_SENTRUX_BASELINE, _DGOV_SENTRUX_BASELINE, _COVERAGE_BASELINE_DIR + "/")
-_WRITE_ACTIVITY_KINDS = frozenset({"write_file", "edit_file", "apply_patch", "revert_file"})
+_WRITE_ACTIVITY_KINDS = frozenset({
+    "write_file",
+    "edit_file",
+    "apply_patch",
+    "revert_file",
+    "run_bash",
+})
 _WRITE_ACTIVITY_MODES = frozenset({"create", "edit", "patch", "revert"})
 
 
@@ -334,13 +340,13 @@ def _check_size(actual_files: frozenset[str], max_diff_lines: int) -> ReviewResu
     return None
 
 
+def _is_reserved_path(path: str) -> bool:
+    return any(path == reserved or path.startswith(reserved) for reserved in _RESERVED_PATHS)
+
+
 def _check_reserved_paths(actual_files: frozenset[str]) -> ReviewResult | None:
     """Reject worker changes to governor-owned files."""
-    reserved = sorted(
-        path
-        for path in actual_files
-        if any(path == reserved or path.startswith(reserved) for reserved in _RESERVED_PATHS)
-    )
+    reserved = sorted(path for path in actual_files if _is_reserved_path(path))
     if reserved:
         return ReviewResult(
             passed=False,
@@ -608,8 +614,8 @@ def check_transient_scope(
     Checks the active pane when available. Older panes from abandoned attempts
     are historical evidence, not the candidate currently under review.
 
-    Only write-capable activities (write_file, edit_file, apply_patch, revert_file)
-    are checked. Read-only activity such as read_file is ignored.
+    Only write-capable activities are checked. Read-only activity such as
+    read_file is ignored.
     """
     if not session_root or not task_slug or claimed_files is None:
         return None
@@ -620,6 +626,15 @@ def check_transient_scope(
     )
 
     transient_paths = collect_transient_write_paths(session_root, task_slug, pane_slug)
+    reserved = sorted(path for path in transient_paths if _is_reserved_path(path))
+    if reserved:
+        return ReviewResult(
+            passed=False,
+            verdict="reserved_path",
+            actual_files=actual_files,
+            error=(f"Transiently touched governor-owned files via worker tools: {reserved}"),
+        )
+
     unclaimed = filter_unclaimed_non_ignored(
         transient_paths,
         claimed,

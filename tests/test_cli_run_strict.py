@@ -869,6 +869,35 @@ def test_refresh_sentrux_baseline_after_clean_run_allows_dgov_run_metadata(
     assert "M .dgov/sops/plan_hello/_compiled.toml" in status
 
 
+def test_refresh_sentrux_baseline_after_clean_run_allows_scope_ignored_uv_lock(
+    tmp_path: Path,
+) -> None:
+    from dgov.sentrux_baseline import refresh_sentrux_baseline_after_clean_run
+
+    sentrux_dir, accepted_head = _commit_sentrux_baseline(tmp_path)
+    (tmp_path / "uv.lock").write_text("version = 1\n")
+    captured: dict[str, object] = {}
+
+    committed = refresh_sentrux_baseline_after_clean_run(
+        str(tmp_path),
+        run_sentrux=_mock_clean_sentrux_save(sentrux_dir, captured),
+    )
+
+    assert committed is True
+    assert captured["scan_head"] == accepted_head
+    metadata = json.loads((sentrux_dir / "dgov-baseline.json").read_text())
+    assert metadata["accepted_head"] == accepted_head
+    assert _latest_commit_subject(tmp_path) == "Refresh sentrux baseline"
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "?? uv.lock" in status
+
+
 def test_refresh_sentrux_baseline_after_clean_run_rejects_dirty_source_tree(
     tmp_path: Path,
 ) -> None:
@@ -899,6 +928,46 @@ def test_refresh_sentrux_baseline_after_clean_run_rejects_dirty_source_tree(
 
     assert calls == 0
     assert not (sentrux_dir / "dgov-baseline.json").exists()
+
+
+def test_refresh_sentrux_baseline_rejects_renamed_source_path(
+    tmp_path: Path,
+) -> None:
+    from dgov.sentrux_baseline import (
+        SentruxBaselineRefreshError,
+        refresh_sentrux_baseline_after_clean_run,
+    )
+
+    sentrux_dir, _accepted_head = _commit_sentrux_baseline(tmp_path)
+    source = tmp_path / "src.py"
+    source.write_text("x = 1\n")
+    subprocess.run(["git", "add", "src.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add source"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "mv", "src.py", ".sentrux/dgov-baseline.json"],
+        cwd=tmp_path,
+        check=True,
+    )
+    calls = 0
+
+    def _unexpected_sentrux(
+        args: list[str],
+        cwd: str | None = None,
+        timeout: float = 30.0,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(["sentrux", *args], 0, stdout="", stderr="")
+
+    with pytest.raises(SentruxBaselineRefreshError, match=r"src\.py"):
+        refresh_sentrux_baseline_after_clean_run(
+            str(tmp_path),
+            run_sentrux=_unexpected_sentrux,
+        )
+
+    assert calls == 0
+    assert (sentrux_dir / "dgov-baseline.json").read_text() == "x = 1\n"
 
 
 def _clean_complete_artifacts() -> object:

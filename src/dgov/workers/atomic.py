@@ -321,6 +321,31 @@ class AtomicTools:
         self._activity_log.clear()
         return activity
 
+    def _git_dirty_paths(self) -> frozenset[str] | None:
+        try:
+            status = subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                cwd=self.worktree,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if status.returncode != 0:
+            return None
+        return frozenset(porcelain_status_paths(status.stdout, include_rename_sources=True))
+
+    def _record_run_bash_activity(
+        self,
+        before: frozenset[str] | None,
+        after: frozenset[str] | None,
+    ) -> None:
+        if before is None or after is None:
+            return
+        for path in sorted(after - before):
+            self._record_activity("run_bash", path, mode="shell")
+
     def _normalize_scope_path(self, path: str) -> str:
         return path.strip().lstrip("./").rstrip("/")
 
@@ -598,7 +623,10 @@ class AtomicTools:
 
     def run_bash(self, cmd: str) -> str:
         """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
-        return self._execute_shell(cmd, enforce_policy=True)
+        before = self._git_dirty_paths()
+        result = self._execute_shell(cmd, enforce_policy=True)
+        self._record_run_bash_activity(before, self._git_dirty_paths())
+        return result
 
     # -- Navigation tools --
 
@@ -1251,7 +1279,7 @@ class AtomicTools:
         if status.returncode != 0:
             return "Error: git status failed."
 
-        return frozenset(porcelain_status_paths(status.stdout))
+        return frozenset(porcelain_status_paths(status.stdout, include_rename_sources=True))
 
     def _format_scope_status(self, status: object) -> str:
         from dgov.scope_status import ScopeStatus, render_scope_status_lines

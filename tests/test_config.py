@@ -502,6 +502,25 @@ class TestScopeIgnoreFiles:
             assert ".sentrux/dgov-baseline.json" in str(exc)
         assert raised, "expected ValueError on reserved path in scope.ignore_files"
 
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            ".sentrux/",
+            ".sentrux/*",
+            ".coverage-baseline/*",
+            "*.json",
+        ],
+    )
+    def test_rejects_scope_ignore_entries_covering_reserved_paths(self, tmp_path, entry):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            f'[project]\n\n[scope]\nignore_files = ["{entry}"]\n'
+        )
+
+        with pytest.raises(ValueError, match="reserved paths"):
+            load_project_config(tmp_path)
+
     def test_missing_section_yields_empty(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"
         dgov_dir.mkdir()

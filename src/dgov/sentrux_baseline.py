@@ -10,9 +10,11 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from pathlib import Path
+from fnmatch import fnmatch
+from pathlib import Path, PurePosixPath
 from typing import Protocol
 
+from dgov.config import load_project_config
 from dgov.git_status import porcelain_status_paths
 
 SENTRUX_BASELINE_REL_PATH = ".sentrux/baseline.json"
@@ -52,7 +54,8 @@ def refresh_sentrux_baseline_after_clean_run(
 ) -> bool:
     """Refresh sentrux baseline files for an already accepted full-plan run."""
     root = canonical_project_root(project_root)
-    _raise_if_non_refreshable_worktree_changes(root)
+    scope_ignore_files = _scope_ignore_files(root)
+    _raise_if_non_refreshable_worktree_changes(root, scope_ignore_files)
     accepted_head = _accepted_head(root)
     with _detached_head_worktree(root) as clean_root:
         result = _run_sentrux_gate_save(clean_root, run_sentrux)
@@ -73,7 +76,7 @@ def record_sentrux_baseline_metadata(project_root: str, output: str) -> Path | N
         accepted_head = _accepted_head(root)
     except SentruxBaselineRefreshError:
         return None
-    if _has_non_refreshable_worktree_changes(root):
+    if _has_non_refreshable_worktree_changes(root, _scope_ignore_files(root)):
         return None
     _write_dgov_sentrux_baseline_metadata(
         root,
@@ -207,8 +210,11 @@ def _git_has_path_changes(root: Path, paths: list[str]) -> bool:
     return bool(status)
 
 
-def _raise_if_non_refreshable_worktree_changes(root: Path) -> None:
-    changes = _non_refreshable_worktree_changes(root)
+def _raise_if_non_refreshable_worktree_changes(
+    root: Path,
+    scope_ignore_files: tuple[str, ...] = (),
+) -> None:
+    changes = _non_refreshable_worktree_changes(root, scope_ignore_files)
     if not changes:
         return
     sample = ", ".join(changes[:5])
@@ -219,11 +225,17 @@ def _raise_if_non_refreshable_worktree_changes(root: Path) -> None:
     )
 
 
-def _has_non_refreshable_worktree_changes(root: Path) -> bool:
-    return bool(_non_refreshable_worktree_changes(root))
+def _has_non_refreshable_worktree_changes(
+    root: Path,
+    scope_ignore_files: tuple[str, ...] = (),
+) -> bool:
+    return bool(_non_refreshable_worktree_changes(root, scope_ignore_files))
 
 
-def _non_refreshable_worktree_changes(root: Path) -> list[str]:
+def _non_refreshable_worktree_changes(
+    root: Path,
+    scope_ignore_files: tuple[str, ...] = (),
+) -> list[str]:
     status = _git_stdout(root, ["status", "--porcelain", "--untracked-files=all"])
     if status is None:
         return ["<unable to read git status>"]
@@ -232,17 +244,38 @@ def _non_refreshable_worktree_changes(root: Path) -> list[str]:
         if not line:
             continue
         paths = porcelain_status_paths(line, include_rename_sources=True)
-        if any(not _is_refresh_compatible_path(path) for path in paths):
+        if any(not _is_refresh_compatible_path(path, scope_ignore_files) for path in paths):
             changes.extend(paths)
     return changes
 
 
-def _is_refresh_compatible_path(path: str) -> bool:
+def _is_refresh_compatible_path(path: str, scope_ignore_files: tuple[str, ...] = ()) -> bool:
     return (
         path in {SENTRUX_BASELINE_REL_PATH, DGOV_SENTRUX_BASELINE_META_REL_PATH}
         or path == ".dgov/plans/deployed.jsonl"
         or (path.startswith(".dgov/") and path.endswith("/_compiled.toml"))
+        or _is_scope_ignored(path, scope_ignore_files)
     )
+
+
+def _scope_ignore_files(root: Path) -> tuple[str, ...]:
+    return load_project_config(root).scope_ignore_files
+
+
+def _is_scope_ignored(path: str, scope_ignore_files: tuple[str, ...]) -> bool:
+    return any(_matches_scope_ignore(path, entry) for entry in scope_ignore_files)
+
+
+def _matches_scope_ignore(path: str, entry: str) -> bool:
+    if not entry:
+        return False
+    if any(ch in entry for ch in "*?["):
+        return fnmatch(path, entry) or fnmatch(PurePosixPath(path).name, entry)
+    stripped = entry.rstrip("/")
+    if entry.endswith("/") or "." not in stripped.rsplit("/", 1)[-1]:
+        parts = PurePosixPath(path).parts
+        return path.startswith(stripped + "/") if "/" in stripped else stripped in parts
+    return path == entry
 
 
 def _run_git_or_raise(

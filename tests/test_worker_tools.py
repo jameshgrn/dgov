@@ -542,6 +542,21 @@ class TestRunBashPolicy:
         assert result.startswith("Error:")
         assert "file mutation shell command" in result
 
+    def test_records_run_bash_paths_that_become_git_dirty(self, worktree, worker_module):
+        _init_repo(worktree)
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+
+        result = t.run_bash("printf 'x = 1\\n' > scratch.py")
+
+        assert "EXIT:0" in result
+        assert t._consume_activity() == [
+            {
+                "kind": "run_bash",
+                "path": "scratch.py",
+                "mode": "shell",
+            }
+        ]
+
     def test_worker_env_includes_user_identity(self, worktree, worker_module):
         t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
         result = t.run_bash("printenv USER")

@@ -6,7 +6,7 @@ import fnmatch
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from dgov.tool_policy import parse_tool_policy
@@ -29,6 +29,11 @@ _RESERVED_SCOPE_IGNORE_PATHS = (
     ".sentrux/baseline.json",
     ".sentrux/dgov-baseline.json",
     ".coverage-baseline/",
+)
+_RESERVED_SCOPE_IGNORE_SAMPLES = (
+    ".sentrux/baseline.json",
+    ".sentrux/dgov-baseline.json",
+    ".coverage-baseline/coverage.json",
 )
 
 
@@ -222,15 +227,32 @@ def _scope_patterns(raw: Mapping[str, Any], key: str) -> tuple[str, ...]:
 
 def _validate_scope_ignores(configured_scope_ignores: tuple[str, ...]) -> None:
     bad = sorted(
-        path
-        for path in configured_scope_ignores
-        if any(
-            path == reserved or path.startswith(reserved)
-            for reserved in _RESERVED_SCOPE_IGNORE_PATHS
-        )
+        path for path in configured_scope_ignores if _scope_ignore_entry_covers_reserved_path(path)
     )
     if bad:
         raise ValueError(f"project.toml [scope] ignore_files cannot include reserved paths: {bad}")
+
+
+def _scope_ignore_entry_covers_reserved_path(entry: str) -> bool:
+    return any(
+        entry == reserved or entry.startswith(reserved)
+        for reserved in _RESERVED_SCOPE_IGNORE_PATHS
+    ) or any(
+        _scope_ignore_entry_matches_path(entry, path) for path in _RESERVED_SCOPE_IGNORE_SAMPLES
+    )
+
+
+def _scope_ignore_entry_matches_path(entry: str, path: str) -> bool:
+    if any(ch in entry for ch in "*?["):
+        return fnmatch.fnmatch(path, entry) or fnmatch.fnmatch(PurePosixPath(path).name, entry)
+    if entry.endswith("/"):
+        return path.startswith(entry)
+    if "." not in entry.rsplit("/", 1)[-1]:
+        stripped = entry.rstrip("/")
+        if "/" in stripped:
+            return path.startswith(stripped + "/")
+        return stripped in PurePosixPath(path).parts
+    return path == entry
 
 
 def _scope_ignore_files(raw: Mapping[str, Any]) -> tuple[str, ...]:

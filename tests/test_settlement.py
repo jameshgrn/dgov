@@ -530,6 +530,58 @@ class TestReviewSandbox:
         assert result.verdict == "scope_violation"
         assert "scratch.py" in (result.error or "")
 
+    def test_transient_run_bash_write_fails_scope_after_cleanup(self, tmp_path: Path):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        _init_repo(worktree)
+        _add_tracked_file(worktree, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        _emit_worker_result_activity(
+            session_root, "pane-1", "task-1", "run_bash", "scratch.py", "shell"
+        )
+
+        result = review_sandbox(
+            worktree,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+        )
+
+        assert not result.passed
+        assert result.verdict == "scope_violation"
+        assert "scratch.py" in (result.error or "")
+
+    def test_scope_ignore_cannot_hide_transient_reserved_path(self, tmp_path: Path):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        _init_repo(worktree)
+        _add_tracked_file(worktree, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        _emit_worker_result_activity(
+            session_root,
+            "pane-1",
+            "task-1",
+            "run_bash",
+            ".sentrux/baseline.json",
+            "shell",
+        )
+
+        result = review_sandbox(
+            worktree,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+            scope_ignore_files=(".sentrux/",),
+        )
+
+        assert not result.passed
+        assert result.verdict == "reserved_path"
+        assert ".sentrux/baseline.json" in (result.error or "")
+
     def test_transient_claimed_tool_write_passes_scope(self, tmp_path: Path):
         worktree = tmp_path / "worktree"
         worktree.mkdir()
