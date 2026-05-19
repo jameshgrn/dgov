@@ -186,10 +186,11 @@ dgov --json plan list
 
 Each entry reports the plan name, whether it has been compiled, `deployed/total`
 unit count, and one of these statuses: `uncompiled`, `empty`, `compiled`,
-`in progress`, `complete`, `stale`, or `degraded`. `stale` means the compiled
-artifact is older than the source TOMLs; `degraded` means every unit deployed
-but a final-stage gate reported degradation. JSON mode emits the full per-plan
-payload, including `run_status` and `remediation_needed`.
+`in_progress`, `complete`, `stale`, or `degraded` (human-readable output renders
+`in_progress` as `in progress`). `stale` means the compiled artifact is older
+than the source TOMLs; `degraded` means every unit deployed but a final-stage
+gate reported degradation. JSON mode emits the full per-plan payload, including
+`run_status` and `remediation_needed`.
 
 ### `dgov plan status`
 
