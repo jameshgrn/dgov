@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dgov.git_status import decode_porcelain_path, porcelain_status_paths
+from dgov.git_status import decode_porcelain_path, git_path_output_paths, porcelain_status_paths
 
 
 @pytest.mark.unit
@@ -36,3 +36,26 @@ class TestPorcelainStatusPaths:
             "old -> name.py",
             "new name.py",
         )
+
+    def test_copy_source_is_not_returned_as_rename_source(self) -> None:
+        output = "C  old.py -> new.py\n"
+
+        assert porcelain_status_paths(output, include_rename_sources=True) == ("new.py",)
+
+    def test_non_rename_path_with_arrow_is_not_split(self) -> None:
+        output = " M notes/a -> b.txt\n"
+
+        assert porcelain_status_paths(output, include_rename_sources=True) == ("notes/a -> b.txt",)
+
+
+@pytest.mark.unit
+class TestGitPathOutputPaths:
+    def test_prefers_nul_delimited_paths(self) -> None:
+        output = "leading space.py\0caf\u00e9.py\0"
+
+        assert git_path_output_paths(output) == ("leading space.py", "caf\u00e9.py")
+
+    def test_decodes_quoted_line_output(self) -> None:
+        output = '"caf\\303\\251.py"\n'
+
+        assert git_path_output_paths(output) == ("caf\u00e9.py",)

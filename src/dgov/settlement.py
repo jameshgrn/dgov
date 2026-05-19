@@ -27,7 +27,7 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 from dgov.config import ProjectConfig, load_project_config
-from dgov.git_status import porcelain_status_paths
+from dgov.git_status import git_path_output_paths, porcelain_status_paths
 from dgov.persistence import read_events
 from dgov.sentrux_gate import assess_sentrux_gate, sentrux_is_warn_only
 from dgov.typecheck_diagnostics import parse_diagnostic_identities
@@ -289,7 +289,7 @@ def _get_all_changes(worktree_path: Path) -> frozenset[str] | ReviewResult:
     if status.returncode != 0:
         return ReviewResult(passed=False, verdict="git_error", error="git status failed")
 
-    files = set(porcelain_status_paths(status.stdout))
+    files = set(porcelain_status_paths(status.stdout, include_rename_sources=True))
 
     if not files:
         return ReviewResult(passed=False, verdict="empty_diff", error="No changes produced")
@@ -1076,13 +1076,13 @@ def _changed_source_files(
 ) -> list[str]:
     """Return source files changed between base_commit and HEAD."""
     diff_res = subprocess.run(
-        ["git", "diff", "--name-only", base_commit, "HEAD"],
+        ["git", "diff", "--name-only", "-z", base_commit, "HEAD"],
         cwd=worktree_path,
         capture_output=True,
         text=True,
         check=True,
     )
-    return _filter_source_files(diff_res.stdout.strip().split("\n"), extensions)
+    return _filter_source_files(git_path_output_paths(diff_res.stdout), extensions)
 
 
 def _filter_source_files(paths: Sequence[str], extensions: tuple[str, ...]) -> list[str]:

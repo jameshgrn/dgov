@@ -31,6 +31,7 @@ from dgov.event_types import (
     IntegrationRiskScored,
     SemanticGateRejected,
 )
+from dgov.git_status import git_path_output_paths
 
 logger = logging.getLogger(__name__)
 
@@ -594,7 +595,7 @@ def _load_file_at_commit(project_root: str, commit_sha: str, rel_path: str) -> s
 def _changed_files_between(project_root: str, base_ref: str, head_ref: str) -> tuple[str, ...]:
     """Return paths changed between two git refs, or an empty tuple on lookup failure."""
     result = subprocess.run(
-        ["git", "diff", "--name-only", base_ref, head_ref],
+        ["git", "diff", "--name-only", "-z", base_ref, head_ref],
         cwd=project_root,
         capture_output=True,
         text=True,
@@ -603,7 +604,7 @@ def _changed_files_between(project_root: str, base_ref: str, head_ref: str) -> t
     if result.returncode != 0:
         logger.debug("Could not diff %s..%s", base_ref, head_ref)
         return ()
-    return tuple(path for path in result.stdout.splitlines() if path)
+    return git_path_output_paths(result.stdout)
 
 
 def _parse_python_source(source: str, source_hint: str) -> ast.Module | None:

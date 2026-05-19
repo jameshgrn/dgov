@@ -21,11 +21,14 @@ def porcelain_status_paths(
     for line in output.splitlines():
         if not line:
             continue
+        status_code = _porcelain_status_code(line)
         path_part = _porcelain_path_part(line)
-        rename_paths = _split_rename_paths(path_part)
+        rename_paths = (
+            _split_rename_paths(path_part) if _is_path_pair_status(status_code) else None
+        )
         if rename_paths is not None:
             old_path, new_path = rename_paths
-            if include_rename_sources:
+            if include_rename_sources and _is_rename_status(status_code):
                 paths.append(decode_porcelain_path(old_path))
             paths.append(decode_porcelain_path(new_path))
             continue
@@ -33,10 +36,29 @@ def porcelain_status_paths(
     return tuple(paths)
 
 
+def git_path_output_paths(output: str) -> tuple[str, ...]:
+    """Return paths from git path-only output, preferring NUL-delimited data."""
+    if "\0" in output:
+        return tuple(path for path in output.split("\0") if path)
+    return tuple(decode_porcelain_path(path) for path in output.splitlines() if path)
+
+
 def _porcelain_path_part(line: str) -> str:
     if len(line) > 2 and line[2] == " ":
         return line[3:]
     return line[2:].lstrip()
+
+
+def _porcelain_status_code(line: str) -> str:
+    return line[:2]
+
+
+def _is_rename_status(status_code: str) -> bool:
+    return "R" in status_code
+
+
+def _is_path_pair_status(status_code: str) -> bool:
+    return "R" in status_code or "C" in status_code
 
 
 def _split_rename_paths(path_part: str) -> tuple[str, str] | None:

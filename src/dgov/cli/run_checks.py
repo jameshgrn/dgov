@@ -13,6 +13,7 @@ from pathlib import Path
 import click
 
 from dgov.config import ProjectConfig
+from dgov.git_status import git_path_output_paths
 from dgov.repo_snapshot import format_structural_offender_report, likely_structural_offenders
 from dgov.sentrux_baseline import (
     SentruxBaselineRefreshError,
@@ -557,12 +558,12 @@ def _branch_changed_source_files(
     *,
     git_stdout: GitStdout,
 ) -> list[str]:
-    output = git_stdout(project_root, ["diff", "--name-only", base_ref, "HEAD"])
+    output = git_stdout(project_root, ["diff", "--name-only", "-z", base_ref, "HEAD"])
     if not output:
         return []
     seen: set[str] = set()
     files: list[str] = []
-    for path in output.splitlines():
+    for path in git_path_output_paths(output):
         if path in seen or not any(path.endswith(ext) for ext in source_extensions):
             continue
         seen.add(path)

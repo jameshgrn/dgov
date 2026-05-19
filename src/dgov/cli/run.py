@@ -204,7 +204,7 @@ def _git_stdout(project_root: str, args: list[str]) -> str | None:
     )
     if result.returncode != 0:
         return None
-    return result.stdout.strip()
+    return result.stdout.rstrip("\n")
 
 
 def _working_tree_files(project_root: str) -> list[str]:

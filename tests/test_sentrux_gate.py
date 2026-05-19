@@ -16,6 +16,7 @@ from dgov.sentrux_gate import (
     _paths_from_object,
     _paths_from_sequence,
     _paths_from_string,
+    changed_files_since,
     sentrux_baseline_age,
 )
 from dgov.settlement import validate_sandbox
@@ -246,6 +247,19 @@ def test_strict_sentrux_mode_keeps_absolute_quality_rejection(
     assert result.passed is False
     assert result.error is not None
     assert "Sentrux architectural degradation" in result.error
+
+
+@pytest.mark.unit
+def test_changed_files_since_decodes_unicode_source_path(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    name = "caf\u00e9.py"
+    _commit_file(tmp_path, name, "x = 1\n", "add unicode path")
+    base = _git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+    (tmp_path / name).write_text("x = 2\n")
+    _git(tmp_path, "add", name)
+    _git(tmp_path, "commit", "-m", "change unicode path")
+
+    assert changed_files_since(tmp_path, base, (".py",)) == [name]
 
 
 @pytest.mark.unit

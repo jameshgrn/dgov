@@ -194,6 +194,28 @@ def test_run_allows_dirty_dgov_plan_metadata_before_compile(
     assert "blocked_by_dirty_worktree" not in result.output
 
 
+def test_branch_changed_source_files_decodes_unicode_path(tmp_path: Path) -> None:
+    from dgov.cli.run import _git_stdout
+    from dgov.cli.run_checks import _branch_changed_source_files
+
+    _init_committed_repo(tmp_path)
+    name = "caf\u00e9.py"
+    (tmp_path / name).write_text("x = 1\n")
+    subprocess.run(["git", "add", name], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add unicode"], cwd=tmp_path, check=True)
+    base = _git_head(tmp_path)
+    (tmp_path / name).write_text("x = 2\n")
+    subprocess.run(["git", "add", name], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "change unicode"], cwd=tmp_path, check=True)
+
+    assert _branch_changed_source_files(
+        str(tmp_path),
+        base,
+        (".py",),
+        git_stdout=_git_stdout,
+    ) == [name]
+
+
 def _fake_event_runner(
     results: dict[str, str],
     *,

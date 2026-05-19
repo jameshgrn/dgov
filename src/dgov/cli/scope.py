@@ -34,7 +34,7 @@ def _get_actual_files(project_root: str) -> frozenset[str] | None:
     if status.returncode != 0:
         return None
 
-    return frozenset(porcelain_status_paths(status.stdout))
+    return frozenset(porcelain_status_paths(status.stdout, include_rename_sources=True))
 
 
 def _load_task_claims(plan_path: Path, task_slug: str) -> tuple[list[str], list[str]]:

@@ -17,6 +17,7 @@ import tomllib
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from dgov.git_status import decode_porcelain_path, git_path_output_paths
 from dgov.types import Worktree
 
 logger = logging.getLogger(__name__)
@@ -532,7 +533,7 @@ class _ReplayFailure:
 
 def _unmerged_paths(worktree_path: Path) -> tuple[str, ...]:
     result = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=U"],
+        ["git", "diff", "--name-only", "-z", "--diff-filter=U"],
         cwd=worktree_path,
         env=_git_env(worktree_path),
         capture_output=True,
@@ -540,7 +541,7 @@ def _unmerged_paths(worktree_path: Path) -> tuple[str, ...]:
     )
     if result.returncode != 0:
         return ()
-    return tuple(path for path in result.stdout.splitlines() if path)
+    return git_path_output_paths(result.stdout)
 
 
 def _conflict_marker_counts(worktree_path: Path, paths: tuple[str, ...]) -> dict[str, int]:
@@ -1008,4 +1009,4 @@ def _deleted_claimed_files(
         capture_output=True,
         text=True,
     )
-    return [path for path in result.stdout.splitlines() if path]
+    return [decode_porcelain_path(path) for path in result.stdout.splitlines() if path]

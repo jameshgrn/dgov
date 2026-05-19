@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import cast
 
+from dgov.git_status import git_path_output_paths
 from dgov.repo_snapshot import likely_structural_offenders
 
 _FULL_OFFENDER_LIMIT = 10_000
@@ -118,13 +119,13 @@ def changed_files_since(
     base_ref: str,
     extensions: Sequence[str],
 ) -> list[str]:
-    output = _git_stdout(project_root, ["diff", "--name-only", base_ref, "HEAD"])
+    output = _git_stdout(project_root, ["diff", "--name-only", "-z", base_ref, "HEAD"])
     if not output:
         return []
 
     seen: set[str] = set()
     files: list[str] = []
-    for path in output.splitlines():
+    for path in git_path_output_paths(output):
         if path in seen or not any(path.endswith(ext) for ext in extensions):
             continue
         seen.add(path)
@@ -336,7 +337,7 @@ def _git_stdout(project_root: Path, args: list[str]) -> str | None:
     )
     if result.returncode != 0:
         return None
-    return result.stdout.strip()
+    return result.stdout.rstrip("\n")
 
 
 def _baseline_commit(project_root: Path, baseline_path: Path) -> str | None:
