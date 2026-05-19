@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from enum import StrEnum
 
 from dgov.actions import (
     CleanupTask,
@@ -28,7 +27,7 @@ from dgov.actions import (
     TaskReviewDone,
     TaskWaitDone,
 )
-from dgov.types import TaskState
+from dgov.types import DagState, TaskState
 
 __all__ = [
     "DagKernel",
@@ -45,14 +44,6 @@ _TERMINAL = frozenset({
     TaskState.ABANDONED,
     TaskState.TIMED_OUT,
 })
-
-
-class DagState(StrEnum):
-    IDLE = "idle"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    PARTIAL = "partial"
 
 
 @dataclass

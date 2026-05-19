@@ -866,8 +866,6 @@ def _print_init_preflight(project_root: Path, detection: ProjectDetection) -> No
     commands = ", ".join(sorted(cli.commands))
     click.echo(f"  dgov: {__version__}")
     click.echo(f"  commands: {commands}")
-    if "pane" not in cli.commands:
-        click.echo("  pane: unavailable")
     click.echo(f"  git repo: {'yes' if _is_git_repo(project_root) else 'no'}")
     click.echo(f"  ledger root: {project_root}")
     click.echo(f"  project: {detection.language} ({detection.confidence})")

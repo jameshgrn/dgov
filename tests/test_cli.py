@@ -1206,7 +1206,6 @@ def test_init_project_type_swift_writes_swift_config(
         assert '# setup_cmd = ""  # Runs in worktree before gates' in config
         assert "xcodegen" not in config
         assert "xcrun swift-format" not in config
-        assert "pane: unavailable" in result.output
         assert "worker env:" in result.output
 
 

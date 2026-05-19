@@ -38,6 +38,16 @@ class TaskState(StrEnum):
     SKIPPED = "skipped"
 
 
+class DagState(StrEnum):
+    """Aggregate DAG lifecycle states derived from constituent task states."""
+
+    IDLE = "idle"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PARTIAL = "partial"
+
+
 # -- Runner events --
 
 
@@ -67,6 +77,7 @@ class Worktree(NamedTuple):
 
 __all__ = [
     "ConstitutionalViolation",
+    "DagState",
     "DispatchRun",
     "DispatchRunState",
     "TaskState",
