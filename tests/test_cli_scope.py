@@ -68,6 +68,24 @@ def _write_compiled_plan(plan_dir: Path) -> None:
     )
 
 
+def _write_project_scope_policy(
+    root: Path,
+    *,
+    allow_files: list[str] | None = None,
+    deny_files: list[str] | None = None,
+) -> None:
+    dgov_dir = root / ".dgov"
+    dgov_dir.mkdir(exist_ok=True)
+    lines = ["[project]", 'language = "python"', "", "[scope]"]
+    if allow_files is not None:
+        lines.append(f"allow_files = {json.dumps(allow_files)}")
+    if deny_files is not None:
+        lines.append(f"deny_files = {json.dumps(deny_files)}")
+    (dgov_dir / "project.toml").write_text("\n".join(lines) + "\n")
+    subprocess.run(["git", "add", ".dgov/project.toml"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "config"], cwd=root, check=True)
+
+
 def test_clean_scope(runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _init_repo(tmp_path)
     src_dir = tmp_path / "src"
@@ -101,6 +119,55 @@ def test_unclaimed_modified_file(
     assert result.exit_code == 1, result.output
     assert "unclaimed_modified: src/a.py" in result.output
     assert "blocking:" in result.output
+
+
+def test_project_allowlist_rejects_claimed_file(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    _write_project_scope_policy(tmp_path, allow_files=["corpus/feed/**"])
+    tracking = tmp_path / "tracking"
+    tracking.mkdir()
+    (tracking / "watch.py").write_text("changed\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        cli,
+        ["scope", "status", "--task", "t", "--claim", "tracking/watch.py"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "outside_project_allowlist: tracking/watch.py" in result.output
+    assert "Touched files outside project allowlist" in result.output
+
+
+def test_project_deny_rejects_claimed_file(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    _write_project_scope_policy(tmp_path, deny_files=["registry/snapshots/**"])
+    snapshot = tmp_path / "registry" / "snapshots" / "snapshot_0001.toml"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text("changed\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        cli,
+        [
+            "scope",
+            "status",
+            "--task",
+            "t",
+            "--claim",
+            "registry/snapshots/snapshot_0001.toml",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "project_denied: registry/snapshots/snapshot_0001.toml" in result.output
+    assert "Touched project-denied files" in result.output
 
 
 def test_read_scope_violation(
@@ -168,4 +235,6 @@ def test_json_output(runner: CliRunner, tmp_path: Path, monkeypatch: pytest.Monk
     data = json.loads(result.output)
     assert data["claimed_writable"] == ["src/a.py"]
     assert data["modified_files"] == ["src/a.py"]
+    assert data["path_policy_denied_paths"] == []
+    assert data["path_policy_outside_allow_paths"] == []
     assert data["blocking_failure"] is None

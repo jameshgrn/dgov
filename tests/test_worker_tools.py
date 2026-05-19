@@ -672,6 +672,29 @@ class TestScopeStatus:
         assert "unclaimed_transient: scratch.py" in result
         assert "Transiently touched unclaimed files" in result
 
+    def test_reports_project_allowlist_violation(self, worktree, worker_module):
+        _init_repo(worktree)
+        (worktree / "README.md").write_text("# changed\n")
+        t = worker_module.AtomicTools(
+            worktree,
+            worker_module.AtomicConfig(),
+            task_scope={
+                "task_slug": "task-1",
+                "session_root": str(worktree),
+                "pane_slug": "pane-1",
+                "edit": ["README.md"],
+                "scope_ignore_files": [],
+                "scope_allow_files": ["src/**"],
+                "scope_deny_files": [],
+            },
+        )
+
+        result = t.scope_status()
+
+        assert "scope_status: fail" in result
+        assert "outside_project_allowlist: README.md" in result
+        assert "Touched files outside project allowlist" in result
+
 
 # -- Project config loading --
 

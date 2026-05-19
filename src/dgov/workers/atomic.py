@@ -1263,6 +1263,8 @@ class AtomicTools:
             claimed_files=self._claimed_writable_paths(),
             read_files=self._scope_paths("read"),
             scope_ignore_files=self._scope_paths("scope_ignore_files"),
+            scope_allow_files=self._scope_paths("scope_allow_files"),
+            scope_deny_files=self._scope_paths("scope_deny_files"),
             session_root=str(self.task_scope.get("session_root", "")).strip() or None,
             task_slug=str(self.task_scope.get("task_slug", "")).strip() or None,
             pane_slug=str(self.task_scope.get("pane_slug", "")).strip() or None,

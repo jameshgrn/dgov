@@ -74,6 +74,8 @@ def _render_scope_json(status: ScopeStatus) -> None:
         "ignored_transient_paths": sorted(status.ignored_transient_paths),
         "unclaimed_actual_paths": sorted(status.unclaimed_actual_paths),
         "unclaimed_transient_paths": sorted(status.unclaimed_transient_paths),
+        "path_policy_denied_paths": sorted(status.path_policy_denied_paths),
+        "path_policy_outside_allow_paths": sorted(status.path_policy_outside_allow_paths),
         "blocking_failure": (
             {
                 "passed": status.blocking_failure.passed,
@@ -120,6 +122,8 @@ def _analyze_scope_status_for_cli(
     pane: str | None,
     claims: _ScopeClaims,
     scope_ignore_files: Sequence[str],
+    scope_allow_files: Sequence[str],
+    scope_deny_files: Sequence[str],
 ) -> ScopeStatus:
     actual_files = _get_actual_files(project_root)
     if actual_files is None:
@@ -131,6 +135,8 @@ def _analyze_scope_status_for_cli(
         claimed_files=claims.writable,
         read_files=claims.read_only,
         scope_ignore_files=scope_ignore_files,
+        scope_allow_files=scope_allow_files,
+        scope_deny_files=scope_deny_files,
         session_root=project_root,
         task_slug=task,
         pane_slug=pane,
@@ -189,6 +195,8 @@ def scope_status_cmd(
         pane=pane,
         claims=claims,
         scope_ignore_files=config.scope_ignore_files,
+        scope_allow_files=config.scope_allow_files,
+        scope_deny_files=config.scope_deny_files,
     )
 
     if want_json():

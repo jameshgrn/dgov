@@ -1223,6 +1223,8 @@ class TestVerificationScope:
             "touch": ["tests/test_touch.py"],
             "read": ["tests/test_read.py", "README.md"],
             "scope_ignore_files": [".venv", "uv.lock", "__pycache__", "*.pyc"],
+            "scope_allow_files": [],
+            "scope_deny_files": [],
             "verify_test_targets": [
                 "tests/test_created.py",
                 "tests/test_touch.py",
@@ -1255,6 +1257,8 @@ class TestVerificationScope:
             "touch": ["tests/test_touch.py"],
             "read": ["tests/test_read.py"],
             "scope_ignore_files": [".venv", "uv.lock", "__pycache__", "*.pyc"],
+            "scope_allow_files": [],
+            "scope_deny_files": [],
             "verify_test_targets": ["tests/test_touch.py", "tests/test_read.py"],
         }
 
@@ -1291,6 +1295,8 @@ class TestVerificationScope:
             "touch": [],
             "read": ["tests/test_a.py"],
             "scope_ignore_files": [".venv", "uv.lock", "__pycache__", "*.pyc"],
+            "scope_allow_files": [],
+            "scope_deny_files": [],
             "verify_test_targets": ["tests/test_a.py"],
             "require_successful_test_verification": True,
             "required_verification_command": "uv run pytest tests/test_a.py -q",

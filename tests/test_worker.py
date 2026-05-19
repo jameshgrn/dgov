@@ -591,6 +591,8 @@ def test_build_system_prompt_injects_task_scope(tmp_path: Path) -> None:
             "create": ["src/new.py"],
             "edit": ["src/existing.py"],
             "read": ["tests/test_existing.py"],
+            "scope_allow_files": ["src/**", "tests/**"],
+            "scope_deny_files": ["src/private/**"],
             "verify_test_targets": ["tests/test_existing.py"],
             "require_successful_test_verification": True,
             "required_verification_command": "uv run pytest tests/test_existing.py -q",
@@ -601,6 +603,8 @@ def test_build_system_prompt_injects_task_scope(tmp_path: Path) -> None:
     assert "src/new.py" in prompt
     assert "src/existing.py" in prompt
     assert "tests/test_existing.py" in prompt
+    assert "Project path allowlist" in prompt
+    assert "Project path denylist" in prompt
     assert "Verification test targets" in prompt
     assert "Retry completion gate" in prompt
     assert "uv run pytest tests/test_existing.py -q" in prompt

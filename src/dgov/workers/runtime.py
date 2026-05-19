@@ -326,6 +326,12 @@ def task_scope_section(task_scope: Mapping[str, object] | None) -> str:
     )
     if read_only:
         lines.append(f"- Read-only context: {', '.join(read_only)}")
+    scope_allow = _paths("scope_allow_files")
+    scope_deny = _paths("scope_deny_files")
+    if scope_allow:
+        lines.append(f"- Project path allowlist: {', '.join(scope_allow)}")
+    if scope_deny:
+        lines.append(f"- Project path denylist: {', '.join(scope_deny)}")
     verify_test_targets = _paths("verify_test_targets")
     if verify_test_targets:
         lines.append(f"- Verification test targets: {', '.join(verify_test_targets)}")

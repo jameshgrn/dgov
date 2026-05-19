@@ -80,6 +80,14 @@ class ReviewResult:
 
 
 @dataclass(frozen=True)
+class ScopePathPolicyViolations:
+    """Changed paths that violate project-level allow/deny policy."""
+
+    denied: frozenset[str]
+    outside_allowlist: frozenset[str]
+
+
+@dataclass(frozen=True)
 class _AcceptanceGateContext:
     worktree_path: Path
     changed_files: Sequence[str]
@@ -361,13 +369,33 @@ def _matches_path_policy(path: str, patterns: Sequence[str]) -> bool:
     return any(fnmatch(path, pattern) for pattern in patterns)
 
 
+def classify_scope_path_policy(
+    actual_files: frozenset[str],
+    scope_allow_files: Sequence[str] = (),
+    scope_deny_files: Sequence[str] = (),
+) -> ScopePathPolicyViolations:
+    """Return changed files that violate project-level path policy."""
+    denied = frozenset(
+        path for path in actual_files if _matches_path_policy(path, scope_deny_files)
+    )
+    outside_allowlist = (
+        frozenset(
+            path for path in actual_files if not _matches_path_policy(path, scope_allow_files)
+        )
+        if scope_allow_files
+        else frozenset()
+    )
+    return ScopePathPolicyViolations(denied=denied, outside_allowlist=outside_allowlist)
+
+
 def check_scope_path_policy(
     actual_files: frozenset[str],
     scope_allow_files: Sequence[str] = (),
     scope_deny_files: Sequence[str] = (),
 ) -> ReviewResult | None:
     """Reject changed files that violate project-level allow/deny patterns."""
-    denied = sorted(path for path in actual_files if _matches_path_policy(path, scope_deny_files))
+    violations = classify_scope_path_policy(actual_files, scope_allow_files, scope_deny_files)
+    denied = sorted(violations.denied)
     if denied:
         return ReviewResult(
             passed=False,
@@ -379,9 +407,7 @@ def check_scope_path_policy(
     if not scope_allow_files:
         return None
 
-    outside = sorted(
-        path for path in actual_files if not _matches_path_policy(path, scope_allow_files)
-    )
+    outside = sorted(violations.outside_allowlist)
     if outside:
         return ReviewResult(
             passed=False,
