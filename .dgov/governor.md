@@ -59,6 +59,16 @@ run ends in a known failure shape. Run `dgov diagnose` to evaluate the
 mechanical entries against live repo state; entries marked as having no
 mechanical signal must be checked by hand.
 
+**agent_skill_drift**
+- Evidence: A dgov skill under `~/.agents/skills/dgov-*` references removed
+  CLI commands, contradicts `.dgov/governor.md`, or differs from the shipped
+  source bundle.
+- Class: Governance repair.
+- Next action: Update `agent-guidance/skills/`, verify package force-include
+  and drift checks, then run `uv run dgov agents sync` on the machine that
+  needs the refreshed skills.
+- Do not: Edit local `~/.agents/skills/dgov-*` as the only fix.
+
 **archive_policy_drift**
 - Evidence: `git check-ignore .dgov/plans/archive/<plan>/_root.toml` matches
   a `.gitignore` rule.
@@ -68,13 +78,31 @@ mechanical signal must be checked by hand.
 - Do not: Rerun the landed worker task to recover bookkeeping. Worker-task
   completion and governor finalization are separate states.
 
-**verify_recipe_missing**
-- Evidence: The same toolchain command appears in multiple task prompts, or a
-  worker fails because setup/lint/test invocation is ambiguous or repo-local.
-- Class: Project policy.
-- Next action: Add a `[verify.<name>]` recipe in `.dgov/project.toml` or a
-  repo script; reference it by name from prompts.
-- Do not: Add a language- or platform-specific wrapper to core dgov.
+**cli_internal_helper_import**
+- Evidence: A CLI module imports a sibling underscore-prefixed helper from another `dgov.cli.*` module; the compose path bypasses the public API surface.
+- Class: Implementation.
+- Next action: Compose through `dgov.cli.compile.compile_plan_dir`, `dgov.cli.run.run_compiled_plan`, `dgov.cli.run.run_sentrux`/`sentrux_available`; add a boundary test rejecting underscore cross-module imports.
+- Do not: Add underscore-prefixed imports to fix a circular — restructure the public surface instead.
+
+**cross_file_duplicate_false_charge**
+- Evidence: Settlement charges a task for duplicate symbols that already existed in target `HEAD` pre-merge.
+- Class: Implementation.
+- Next action: Compare candidate duplicate groups against both task base and target `HEAD` before charging; pre-existing duplicates do not belong to the task.
+- Do not: Resolve duplicates by renaming task-introduced symbols — fix the comparison.
+
+**guidance_drift**
+- Evidence: A failure points at advice that is missing, contradictory, or
+  out of date in `.dgov/governor.md` or `.dgov/sops/`.
+- Class: Governance repair.
+- Next action: Update the SOP or charter section first; then dispatch the
+  implementation work.
+- Do not: Repeat the guidance inside a single task prompt.
+
+**headless_interpreter_mismatch**
+- Evidence: Headless worker fails outside the source tree because it ran via the target-repo `uv run` instead of the installed dgov interpreter.
+- Class: Implementation.
+- Next action: Launch headless workers with the installed dgov interpreter; bootstrap missing governor/SOPs from package assets.
+- Do not: Require every target repo to vendor dgov dependencies.
 
 **plan_claims_violation**
 - Evidence: Settlement rejects for scope; the worker edited a file outside
@@ -82,6 +110,56 @@ mechanical signal must be checked by hand.
 - Class: Governance repair.
 - Next action: Fix the plan's file claims or decompose the task; re-run.
 - Do not: Brute-force retry the same plan. Scope violations are terminal.
+
+**post_run_sentrux_refresh_metadata_conflict**
+- Evidence: A full-plan run or `dgov.dispatch` lands worker commits, then exits
+  nonzero during accepted sentrux baseline refresh with only dgov-generated
+  metadata dirty, such as `.dgov/plans/deployed.jsonl` or plan `_compiled.toml`.
+- Class: Governance repair.
+- Next action: Treat the worker deployment and post-run baseline refresh as
+  separate states. The canonical fix is in core dgov: refresh accepted sentrux
+  baseline from a clean detached `HEAD`, copy back only `.sentrux` baseline
+  outputs, and tolerate known dgov run metadata while still rejecting source
+  dirt. In target repos pinned to older dgov, commit the dgov metadata before
+  retrying the refresh path.
+- Do not: Mark the landed worker task as failed, ignore all nonzero dispatch
+  exit codes, allow arbitrary `.dgov/` dirt, or disable sentrux.
+
+**prompt_budget_overflow**
+- Evidence: Worker or researcher prompt blows budget on unbounded tree snapshots or tool output.
+- Class: Implementation.
+- Next action: Enforce runtime prompt-budget caps on snapshots and tool output independent of config view limits.
+- Do not: Raise the budget without a cap — the unbounded surface is the bug.
+
+**reviewer_scope_unbounded**
+- Evidence: A reviewer task improvises broad `run_tests()` or shell verification, widening scope past the landed diffs it is supposed to evaluate.
+- Class: Governance repair.
+- Next action: Reviewer prompts must declare a bounded verification surface; forbid generic verifies; rely on commit-derived changed files as the source of truth.
+- Do not: Treat the reviewer as a second-pass worker — review is read-only against landed diffs.
+
+**run_bash_verify_misuse**
+- Evidence: A worker invokes `ruff`, `pytest`, or `ty` via raw `run_bash`, bypassing settlement-equivalent gates; or `uv run` resolves against ambient `PATH` and fails inside the sandbox.
+- Class: Implementation.
+- Next action: Classify wrapped verify commands in the `run_bash` parser; route them to `lint_check`/`run_tests`/`type_check`/`format_file`; ensure sandbox `PATH` resolves `uv` directly.
+- Do not: Add a one-off allowlist for the failing command — fix the parser.
+
+**runtime_fix_plan_lifecycle**
+- Evidence: `dgov clean` leaves or deletes runtime fix-plans inconsistently, or manual post-hoc documentation lands in the plan/archive lane instead of the ledger.
+- Class: Project policy.
+- Next action: `dgov clean` preserves unresolved entries under `.dgov/runtime/fix-plans/` and archives only resolved entries; route post-hoc documentation to `dgov ledger`.
+- Do not: Use the plan/archive lane as a durable documentation surface.
+
+**scope_ignore_reserved_path**
+- Evidence: A `[scope] ignore_files` entry covers a reserved governance path (for example `.sentrux/baseline.json` or `.dgov/plans/deployed.jsonl`) and project config loads without rejection, but settlement still surfaces a scope error against that path.
+- Class: Governance repair.
+- Next action: Validate `[scope] ignore_files` entries against settlement's effective matching semantics with reserved-path samples at config load; fail fast on any entry that masks a reserved path.
+- Do not: Add ad-hoc exceptions in settlement to "ignore the ignore" — fix the validator.
+
+**self_hosting_settlement_snapshot**
+- Evidence: Settlement gates pass or fail against the live runner process while editing governor-owned code; the result is judged against stale imports.
+- Class: Governance repair.
+- Next action: Execute settlement gates from the candidate snapshot in a subprocess; never import governor-owned modules from the running runner for gating decisions.
+- Do not: Reload modules in-process to "refresh" — subprocess isolation is the invariant.
 
 **sentrux_baseline_drift**
 - Evidence: Sentrux gate emits a stale-baseline warning (baseline is many
@@ -98,37 +176,31 @@ mechanical signal must be checked by hand.
   the metric. Refactor real coupling when it exists, not when the baseline
   has drifted.
 
-**post_run_sentrux_refresh_metadata_conflict**
-- Evidence: A full-plan run or `dgov.dispatch` lands worker commits, then exits
-  nonzero during accepted sentrux baseline refresh with only dgov-generated
-  metadata dirty, such as `.dgov/plans/deployed.jsonl` or plan `_compiled.toml`.
-- Class: Governance repair.
-- Next action: Treat the worker deployment and post-run baseline refresh as
-  separate states. The canonical fix is in core dgov: refresh accepted sentrux
-  baseline from a clean detached `HEAD`, copy back only `.sentrux` baseline
-  outputs, and tolerate known dgov run metadata while still rejecting source
-  dirt. In target repos pinned to older dgov, commit the dgov metadata before
-  retrying the refresh path.
-- Do not: Mark the landed worker task as failed, ignore all nonzero dispatch
-  exit codes, allow arbitrary `.dgov/` dirt, or disable sentrux.
+**stale_run_window**
+- Evidence: `dgov plan review`, `dgov watch`, or scope checks return stale data because events persist across runs and reads are not scoped to the latest `run_start` for that plan.
+- Class: Implementation.
+- Next action: Lower-bound plan-scoped event reads on `max(id WHERE event='run_start' AND plan_name=X)`; pane-scope transient activity; rewrite events (not just `tasks`) on manual repair.
+- Do not: Truncate events as a workaround — the run-window lower bound is the invariant.
 
-**guidance_drift**
-- Evidence: A failure points at advice that is missing, contradictory, or
-  out of date in `.dgov/governor.md` or `.dgov/sops/`.
-- Class: Governance repair.
-- Next action: Update the SOP or charter section first; then dispatch the
-  implementation work.
-- Do not: Repeat the guidance inside a single task prompt.
+**verify_recipe_missing**
+- Evidence: The same toolchain command appears in multiple task prompts, or a
+  worker fails because setup/lint/test invocation is ambiguous or repo-local.
+- Class: Project policy.
+- Next action: Add a `[verify.<name>]` recipe in `.dgov/project.toml` or a
+  repo script; reference it by name from prompts.
+- Do not: Add a language- or platform-specific wrapper to core dgov.
 
-**agent_skill_drift**
-- Evidence: A dgov skill under `~/.agents/skills/dgov-*` references removed
-  CLI commands, contradicts `.dgov/governor.md`, or differs from the shipped
-  source bundle.
+**worker_payload_drift**
+- Evidence: A worker behaves inconsistently across headless launch, TOML fallback, and runtime extraction paths; fields like `type_check_cmd`, `line_length`, or LLM settings silently differ.
+- Class: Implementation.
+- Next action: Route all three payload paths through `dgov.workers.config`; add a contract test asserting a single payload shape across launch modes.
+- Do not: Patch one path in isolation — the bug recurs when the next field is added.
+
+**worktree_prep_drift**
+- Evidence: A worker fails on import because shared `.venv`, `uv.lock`, or `__pycache__` residue leaked between worktrees; or a downstream task does not see its predecessor's outputs because the worktree was based off ambient `HEAD`.
 - Class: Governance repair.
-- Next action: Update `agent-guidance/skills/`, verify package force-include
-  and drift checks, then run `uv run dgov agents sync` on the machine that
-  needs the refreshed skills.
-- Do not: Edit local `~/.agents/skills/dgov-*` as the only fix.
+- Next action: Prepare pyproject worktrees per task; base dependent worktrees on the latest merged deploy sha; ensure default `scope_ignore_files` cover `.venv`, `uv.lock`, `__pycache__`, `*.pyc`.
+- Do not: Reuse a stale worktree across tasks, or trust ambient `HEAD` for dependent tasks.
 
 ### Updating this catalog
 
@@ -159,6 +231,23 @@ something this section does not, the index has drifted.
 - After structural/Sentrux cleanup, rerun `uv run dgov sentrux offenders`,
   resolve stale offender debt, and add the current offender snapshot if debt
   remains.
+
+## Preflight Discipline
+
+- Two definitions of "green" must not diverge. File-scoped local checks
+  (`uv run ruff check <file>`, `uv run ty check <file>`) are not equivalent
+  to the full settlement gate. Before committing a checkpoint that will feed
+  `dgov run`, run the full gate set: `uv run ruff check .`,
+  `uv run ruff format --check .`, `uv run ty check`,
+  `uv run pytest tests/test_boundaries.py`, and the unit marker sweep
+  (ledger #34).
+- `tests/test_boundaries.py` enforces architectural import boundaries
+  (worker → orchestration, settlement → persistence, kernel → I/O). It runs
+  in under 100 ms; there is no cost reason to skip it on commits touching
+  `src/` (ledger #36).
+- `dgov preflight` wraps the settlement gate equivalent against the working
+  tree without dispatching a worker. Prefer it over running each tool
+  individually.
 
 ## Plan Authoring Workflow
 
@@ -235,7 +324,7 @@ Use explicit intent over ambiguous shorthand.
 | `files.edit` | Existing files this task modifies | Write access |
 | `files.read` | Files the task reads for context but must NOT modify | No write access; suppresses prompt cross-check warnings |
 | `files.delete` | Files this task removes | Write access |
-| `files.touch` | Shorthand "might create or edit" (flat `files = [...]` syntax) | Write access |
+| `files.touch` | Shorthand "might create or edit" (flat `files = [...]` syntax) | Write access; governed like `create`/`edit`/`delete` for department ownership checks (ledger #67) |
 
 **Prefer explicit `create`/`edit`/`read` over `touch`.** The flat shorthand
 (`files = ["a.py", "b.py"]`) is valid but ambiguous — you cannot tell at a
