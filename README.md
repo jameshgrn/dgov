@@ -212,6 +212,7 @@ dgov run <dir>             # Compile and run a plan directory
 dgov run --continue <dir>  # Retry failed/abandoned tasks from the prior run
 dgov run --only <task>     # Run a single task and its deps
 dgov fix <prompt>          # Create and run a one-off single-task fix plan
+dgov plan list             # List plans under .dgov/plans/ with deploy progress
 dgov plan status <dir>     # Show pending vs deployed units
 dgov plan review <dir>     # Post-hoc debrief of the last run
 dgov plan remediate <dir>  # Scaffold a follow-up plan for a degraded deploy

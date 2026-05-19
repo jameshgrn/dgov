@@ -5,8 +5,8 @@ description: |
   Use plan trees for multi-step work; plans compile to DAGs and execute
   through dispatch, review, merge, and evaluation.
 author: Jake Gearon
-version: 7.0.0
-date: 2026-05-17
+version: 7.1.0
+date: 2026-05-19
 ---
 
 # dgov-plan — Primary Dispatch Surface
@@ -125,6 +125,7 @@ say that explicitly in the prompt.
 | `uv run dgov run <dir>` | Compile and execute a plan directory |
 | `uv run dgov run --continue <dir>` | Continue from prior state and retry failed tasks |
 | `uv run dgov run --restart <dir>` | Clear prior state and rerun from scratch |
+| `uv run dgov plan list` | List plans with deploy progress (`--all`, `--archived`) |
 | `uv run dgov plan status <dir>` | Show pending vs deployed units |
 | `uv run dgov plan review <dir>` | Post-hoc debrief of the last run |
 | `uv run dgov watch` | Live event stream |

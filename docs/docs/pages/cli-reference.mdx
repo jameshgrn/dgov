@@ -14,6 +14,7 @@ Every `dgov` command and flag, grouped by purpose.
 | [`dgov validate`](#dgov-validate) | Plans | Parse and validate a compiled plan without running |
 | [`dgov run`](#dgov-run) | Run | Compile and execute a plan directory |
 | [`dgov fix`](#dgov-fix) | Run | Create and run a one-off single-task plan |
+| [`dgov plan list`](#dgov-plan-list) | Plans | List plans with deploy progress |
 | [`dgov plan status`](#dgov-plan-status) | Plans | Pending vs deployed unit summary |
 | [`dgov plan review`](#dgov-plan-review) | Plans | Post-hoc debrief of the last run |
 | [`dgov plan remediate`](#dgov-plan-remediate) | Plans | Scaffold a follow-up plan for a degraded deploy |
@@ -163,6 +164,32 @@ dependency closure, file-claim conflicts, and agent resolvability.
 ```bash
 dgov validate .dgov/plans/my-plan/_compiled.toml
 ```
+
+### `dgov plan list`
+
+List plans under `.dgov/plans/` with one-line deploy progress per plan. By
+default only active plans (the live `.dgov/plans/<name>/` tree) are shown.
+Pass `--archived` to switch to plans under `.dgov/plans/archive/`, or `--all`
+to include both.
+
+```bash
+dgov plan list
+dgov plan list --archived
+dgov plan list --all
+dgov --json plan list
+```
+
+| Flag | Description |
+|------|-------------|
+| `--all` | Include archived plans alongside active |
+| `--archived` | Show only archived plans |
+
+Each entry reports the plan name, whether it has been compiled, `deployed/total`
+unit count, and one of these statuses: `uncompiled`, `empty`, `compiled`,
+`in progress`, `complete`, `stale`, or `degraded`. `stale` means the compiled
+artifact is older than the source TOMLs; `degraded` means every unit deployed
+but a final-stage gate reported degradation. JSON mode emits the full per-plan
+payload, including `run_status` and `remediation_needed`.
 
 ### `dgov plan status`
 
