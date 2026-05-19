@@ -337,6 +337,8 @@ def _dirty_worker_files(project_root: str) -> list[str]:
 
 def _dirty_worktree_block_data(dirty: Sequence[str]) -> dict[str, object]:
     dirty_paths = list(dirty[:_DIRTY_PATH_LIMIT])
+    # Emit both keys: `status` for generic JSON consumers, `dispatch_status`
+    # for tooling that scans for the dispatch-phase outcome specifically.
     return {
         "status": _DIRTY_WORKTREE_STATUS,
         "dispatch_status": _DIRTY_WORKTREE_STATUS,
