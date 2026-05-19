@@ -6,6 +6,7 @@ import json
 import re
 import tomllib
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,22 @@ from dgov.plan_tree import parse_compiled_source_mtime
 from dgov.project_root import resolve_project_root
 
 _MTIME_EPSILON_S = 1e-6
+
+
+class PlanListStatus(StrEnum):
+    """Status surface for `dgov plan list` entries.
+
+    Members are derived from compile/deploy/staleness signals in
+    `_summarize_plan_entry`. JSON output preserves the string value.
+    """
+
+    UNCOMPILED = "uncompiled"
+    EMPTY = "empty"
+    COMPILED = "compiled"
+    IN_PROGRESS = "in_progress"
+    COMPLETE = "complete"
+    STALE = "stale"
+    DEGRADED = "degraded"
 
 
 def _format_unit_files(unit: PlanUnit) -> str:
@@ -754,14 +771,14 @@ def _iter_plan_dirs(
     return out
 
 
-def _plan_list_status(total: int, deployed: int) -> str:
+def _plan_list_status(total: int, deployed: int) -> PlanListStatus:
     if total == 0:
-        return "empty"
+        return PlanListStatus.EMPTY
     if deployed == total:
-        return "complete"
+        return PlanListStatus.COMPLETE
     if deployed == 0:
-        return "compiled"
-    return "in progress"
+        return PlanListStatus.COMPILED
+    return PlanListStatus.IN_PROGRESS
 
 
 def _summarize_plan_entry(
@@ -777,7 +794,7 @@ def _summarize_plan_entry(
         "compiled": False,
         "total": 0,
         "deployed": 0,
-        "status": "uncompiled",
+        "status": PlanListStatus.UNCOMPILED,
         "stale": False,
         "run_status": None,
         "remediation_needed": False,
@@ -812,9 +829,9 @@ def _summarize_plan_entry(
     # `_needs_remediation` already guards on `unit_count > 0`.
     if total > 0:
         if stale:
-            status = "stale"
+            status = PlanListStatus.STALE
         elif remediation_needed:
-            status = "degraded"
+            status = PlanListStatus.DEGRADED
 
     return {
         **base,
@@ -845,18 +862,25 @@ def _collect_plan_list_entries(
     ]
 
 
-def _plan_list_marker(status: str) -> str:
-    if status == "complete":
+def _plan_list_marker(status: PlanListStatus) -> str:
+    if status == PlanListStatus.COMPLETE:
         return click.style("✓", fg="green")
-    if status == "in progress":
+    if status == PlanListStatus.IN_PROGRESS:
         return click.style("◐", fg="yellow")
-    if status == "compiled":
+    if status == PlanListStatus.COMPILED:
         return click.style("○", fg="cyan")
-    if status == "stale":
+    if status == PlanListStatus.STALE:
         return click.style("⚠", fg="yellow")
-    if status == "degraded":
+    if status == PlanListStatus.DEGRADED:
         return click.style("⚠", fg="yellow")
     return click.style("·", dim=True)
+
+
+def _format_status_label(status: PlanListStatus) -> str:
+    """Human-readable status label. `IN_PROGRESS` renders with a space."""
+    if status == PlanListStatus.IN_PROGRESS:
+        return "in progress"
+    return status.value
 
 
 def _render_plan_list_section(label: str, entries: list[dict[str, Any]]) -> None:
@@ -867,7 +891,8 @@ def _render_plan_list_section(label: str, entries: list[dict[str, Any]]) -> None
     for entry in entries:
         marker = _plan_list_marker(entry["status"])
         progress = f"  ({entry['deployed']}/{entry['total']})" if entry["compiled"] else ""
-        click.echo(f"    {marker} {entry['name'].ljust(name_width)}  {entry['status']}{progress}")
+        label_text = _format_status_label(entry["status"])
+        click.echo(f"    {marker} {entry['name'].ljust(name_width)}  {label_text}{progress}")
 
 
 def _render_plan_list_text(entries: list[dict[str, Any]]) -> None:
