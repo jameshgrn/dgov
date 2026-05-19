@@ -1,0 +1,4 @@
+[plan]
+name = "dirty-worktree-run-guard"
+summary = "Align dgov run dirty-worktree blocks with shared structured status vocabulary."
+sections = ["tasks"]

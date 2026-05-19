@@ -54,6 +54,7 @@ dgov compile .dgov/plans/my-plan/
 # If the repo has no commits yet, dgov will create a bootstrap snapshot.
 # If the repo has no .sentrux/baseline.json yet, dgov run bootstraps it once.
 # Clean complete full-plan runs refresh the accepted baseline after comparison.
+# Dirty non-.dgov files block dispatch with status blocked_by_dirty_worktree.
 dgov run .dgov/plans/my-plan/
 
 # 6. Monitor progress in another terminal

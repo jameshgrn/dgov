@@ -1,0 +1,29 @@
+[tasks.run-guard]
+summary = "Emit structured blocked_by_dirty_worktree output from dgov run."
+prompt = """
+Orient:
+- Read `src/dgov/cli/run.py`, `src/dgov/git_status.py`, `tests/test_cli_run_strict.py`, and `README.md`.
+- Keep the existing dgov core behavior that blocks dirty non-.dgov worker-tree paths before worker dispatch.
+- Do not broaden the guard to all `.dgov/` plan or runtime paths in this task.
+
+Edit:
+1. In `src/dgov/cli/run.py`, add a small structured summary for dirty-worktree blocks using the status value `blocked_by_dirty_worktree`.
+2. Include `dirty_count`, bounded `dirty_paths`, and `dirty_omitted` in the block output.
+3. Preserve the fail-fast behavior: no plan compilation, sentrux baseline check, or worker runner launch should happen from the public `dgov run` command when dirty worker-tree paths are present.
+4. In `tests/test_cli_run_strict.py`, add focused coverage for human and JSON dirty-worktree block output.
+5. In `README.md`, document the dirty-worktree block rule using the shared status value.
+
+Verify:
+- `uv run dgov compile .dgov/plans/dirty-worktree-run-guard --dry-run`
+- `uv run dgov compile .dgov/plans/dirty-worktree-run-guard`
+- `uv run dgov validate .dgov/plans/dirty-worktree-run-guard`
+- `uv run pytest -q -m unit tests/test_cli_run_strict.py`
+- `uv run ruff check src/dgov/cli/run.py tests/test_cli_run_strict.py`
+- `uv run ruff format --check src/dgov/cli/run.py tests/test_cli_run_strict.py`
+- `uv run ty check`
+"""
+commit_message = "Add structured dirty worktree run block"
+role = "worker"
+files.edit = ["src/dgov/cli/run.py", "tests/test_cli_run_strict.py", "README.md"]
+files.read = ["src/dgov/git_status.py"]
+test_cmd = "uv run pytest -q -m unit tests/test_cli_run_strict.py"
