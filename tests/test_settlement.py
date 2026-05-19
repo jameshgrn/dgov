@@ -365,6 +365,43 @@ class TestReviewSandbox:
         result = review_sandbox(tmp_path, claimed_files=["new.py"])
         assert result.passed
 
+    def test_empty_claims_fail_closed(self, tmp_path: Path):
+        """An explicit empty claim set is different from disabling scope checks."""
+        _init_repo(tmp_path)
+        _add_tracked_file(tmp_path, "anything.py", "x = 1\n")
+        _modify_tracked(tmp_path, "anything.py", "x = 2\n")
+
+        result = review_sandbox(tmp_path, claimed_files=())
+
+        assert not result.passed
+        assert result.verdict == "scope_violation"
+        assert "anything.py" in (result.error or "")
+
+    def test_scope_decodes_quoted_status_paths(self, tmp_path: Path):
+        _init_repo(tmp_path)
+        (tmp_path / "file with space.py").write_text("x = 1\n")
+
+        result = review_sandbox(tmp_path, claimed_files=["file with space.py"])
+
+        assert result.passed
+        assert "file with space.py" in result.actual_files
+
+    def test_rename_source_must_be_claimed(self, tmp_path: Path):
+        _init_repo(tmp_path)
+        _add_tracked_file(tmp_path, "old.py", "x = 1\n")
+        (tmp_path / "claimed").mkdir()
+        subprocess.run(
+            ["git", "mv", "old.py", "claimed/new.py"],
+            cwd=tmp_path,
+            check=True,
+        )
+
+        result = review_sandbox(tmp_path, claimed_files=["claimed/new.py"])
+
+        assert not result.passed
+        assert result.verdict == "scope_violation"
+        assert "old.py" in (result.error or "")
+
     def test_scope_deny_rejects_claimed_file(self, tmp_path: Path):
         """Project hard-deny patterns reject paths even when the task claimed them."""
         _init_repo(tmp_path)
@@ -492,6 +529,58 @@ class TestReviewSandbox:
         assert not result.passed
         assert result.verdict == "scope_violation"
         assert "scratch.py" in (result.error or "")
+
+    def test_transient_run_bash_write_fails_scope_after_cleanup(self, tmp_path: Path):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        _init_repo(worktree)
+        _add_tracked_file(worktree, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        _emit_worker_result_activity(
+            session_root, "pane-1", "task-1", "run_bash", "scratch.py", "shell"
+        )
+
+        result = review_sandbox(
+            worktree,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+        )
+
+        assert not result.passed
+        assert result.verdict == "scope_violation"
+        assert "scratch.py" in (result.error or "")
+
+    def test_scope_ignore_cannot_hide_transient_reserved_path(self, tmp_path: Path):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        _init_repo(worktree)
+        _add_tracked_file(worktree, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        _emit_worker_result_activity(
+            session_root,
+            "pane-1",
+            "task-1",
+            "run_bash",
+            ".sentrux/baseline.json",
+            "shell",
+        )
+
+        result = review_sandbox(
+            worktree,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+            scope_ignore_files=(".sentrux/",),
+        )
+
+        assert not result.passed
+        assert result.verdict == "reserved_path"
+        assert ".sentrux/baseline.json" in (result.error or "")
 
     def test_transient_claimed_tool_write_passes_scope(self, tmp_path: Path):
         worktree = tmp_path / "worktree"
@@ -911,6 +1000,34 @@ class TestValidateSandbox:
         _git(tmp_path, "commit", "-m", "add notes")
         result = validate_sandbox(tmp_path, base, str(tmp_path))
         assert result.passed
+
+    def test_validate_checks_unicode_source_path(self, tmp_path: Path):
+        _init_repo(tmp_path)
+        name = "caf\u00e9.py"
+        _add_tracked_file(tmp_path, name, "x = 1\n")
+        base = _git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+        (tmp_path / name).write_text("x = 2\n")
+        _git(tmp_path, "add", name)
+        _git(tmp_path, "commit", "-m", "change unicode path")
+
+        result = validate_sandbox(
+            tmp_path,
+            base,
+            str(tmp_path),
+            config=ProjectConfig(
+                source_extensions=(".py",),
+                lint_cmd=(
+                    'python -c "import sys; '
+                    "print('unicode path lint ran', file=sys.stderr); raise SystemExit(1)\""
+                ),
+                format_check_cmd="true {file}",
+                test_cmd="",
+            ),
+        )
+
+        assert result.passed is False
+        assert result.error is not None
+        assert "unicode path lint ran" in result.error
 
     def test_fail_lint_error(self, tmp_path: Path):
         base = _init_repo(tmp_path)

@@ -1883,6 +1883,8 @@ class EventDagRunner:
             "touch": list(task.files.touch),
             "read": list(task.files.read),
             "scope_ignore_files": list(self.project_config.scope_ignore_files),
+            "scope_allow_files": list(self.project_config.scope_allow_files),
+            "scope_deny_files": list(self.project_config.scope_deny_files),
             "verify_test_targets": list(_verify_test_targets(task, self.project_config.test_dir)),
         }
 

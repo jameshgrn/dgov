@@ -542,6 +542,21 @@ class TestRunBashPolicy:
         assert result.startswith("Error:")
         assert "file mutation shell command" in result
 
+    def test_records_run_bash_paths_that_become_git_dirty(self, worktree, worker_module):
+        _init_repo(worktree)
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+
+        result = t.run_bash("printf 'x = 1\\n' > scratch.py")
+
+        assert "EXIT:0" in result
+        assert t._consume_activity() == [
+            {
+                "kind": "run_bash",
+                "path": "scratch.py",
+                "mode": "shell",
+            }
+        ]
+
     def test_worker_env_includes_user_identity(self, worktree, worker_module):
         t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
         result = t.run_bash("printenv USER")
@@ -656,6 +671,29 @@ class TestScopeStatus:
         assert "transient_writes: scratch.py" in result
         assert "unclaimed_transient: scratch.py" in result
         assert "Transiently touched unclaimed files" in result
+
+    def test_reports_project_allowlist_violation(self, worktree, worker_module):
+        _init_repo(worktree)
+        (worktree / "README.md").write_text("# changed\n")
+        t = worker_module.AtomicTools(
+            worktree,
+            worker_module.AtomicConfig(),
+            task_scope={
+                "task_slug": "task-1",
+                "session_root": str(worktree),
+                "pane_slug": "pane-1",
+                "edit": ["README.md"],
+                "scope_ignore_files": [],
+                "scope_allow_files": ["src/**"],
+                "scope_deny_files": [],
+            },
+        )
+
+        result = t.scope_status()
+
+        assert "scope_status: fail" in result
+        assert "outside_project_allowlist: README.md" in result
+        assert "Touched files outside project allowlist" in result
 
 
 # -- Project config loading --

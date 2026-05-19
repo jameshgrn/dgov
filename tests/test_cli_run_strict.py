@@ -94,6 +94,128 @@ def _init_committed_repo(repo: Path) -> str:
     return _git_head(repo)
 
 
+def test_dirty_worker_files_counts_rename_source_into_dgov(tmp_path: Path) -> None:
+    from dgov.cli.run import _dirty_worker_files
+
+    _init_committed_repo(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / ".dgov").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("x = 1\n")
+    (tmp_path / ".dgov" / "keep").write_text("state\n")
+    subprocess.run(["git", "add", "src/foo.py", ".dgov/keep"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add files"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "mv", "src/foo.py", ".dgov/foo.py"], cwd=tmp_path, check=True)
+
+    assert _dirty_worker_files(str(tmp_path)) == ["src/foo.py"]
+
+
+def test_run_blocks_dirty_worktree_with_shared_status(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_dir = _write_plan_tree(tmp_path, "dirty-block")
+    _write_compiled(plan_dir, "dirty-block")
+    _init_committed_repo(tmp_path)
+    (tmp_path / "README.md").write_text("dirty\n")
+
+    def _unexpected_baseline(_project_root: str) -> int:
+        pytest.fail("dirty worktree block should happen before sentrux baseline checks")
+
+    def _unexpected_compile(_path: Path) -> None:
+        pytest.fail("dirty worktree block should happen before plan compilation")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", _unexpected_compile)
+    monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", _unexpected_baseline)
+
+    result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
+
+    assert result.exit_code == 1
+    assert "dispatch_status: blocked_by_dirty_worktree" in result.output
+    assert "dirty_count: 1" in result.output
+    assert "README.md" in result.output
+    assert "dirty_omitted: 0" in result.output
+
+
+def test_run_json_bounds_dirty_worktree_paths(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_dir = _write_plan_tree(tmp_path, "dirty-json")
+    _write_compiled(plan_dir, "dirty-json")
+    _init_committed_repo(tmp_path)
+    for index in range(12):
+        (tmp_path / f"dirty-{index:02d}.txt").write_text("dirty\n")
+
+    def _unexpected_baseline(_project_root: str) -> int:
+        pytest.fail("dirty worktree block should happen before sentrux baseline checks")
+
+    def _unexpected_compile(_path: Path) -> None:
+        pytest.fail("dirty worktree block should happen before plan compilation")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", _unexpected_compile)
+    monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", _unexpected_baseline)
+
+    result = runner.invoke(
+        cli,
+        ["run", str(plan_dir)],
+        env={"DGOV_JSON": "1"},
+        catch_exceptions=False,
+    )
+
+    data = json.loads(result.output)
+    assert result.exit_code == 1
+    assert data["status"] == "blocked_by_dirty_worktree"
+    assert data["dispatch_status"] == "blocked_by_dirty_worktree"
+    assert data["dirty_count"] == 12
+    assert len(data["dirty_paths"]) == 10
+    assert data["dirty_omitted"] == 2
+
+
+def test_run_allows_dirty_dgov_plan_metadata_before_compile(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_dir = _write_plan_tree(tmp_path, "dirty-dgov")
+    _write_compiled(plan_dir, "dirty-dgov")
+    _init_committed_repo(tmp_path)
+    (plan_dir / "runtime.jsonl").write_text('{"status": "dirty"}\n')
+    captured: dict[str, Path] = {}
+
+    def _reached_compile(path: Path) -> None:
+        captured["path"] = path
+        raise click.exceptions.Exit(code=7)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", _reached_compile)
+
+    result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
+
+    assert result.exit_code == 7
+    assert captured["path"] == plan_dir
+    assert "blocked_by_dirty_worktree" not in result.output
+
+
+def test_branch_changed_source_files_decodes_unicode_path(tmp_path: Path) -> None:
+    from dgov.cli.run import _git_stdout
+    from dgov.cli.run_checks import _branch_changed_source_files
+
+    _init_committed_repo(tmp_path)
+    name = "caf\u00e9.py"
+    (tmp_path / name).write_text("x = 1\n")
+    subprocess.run(["git", "add", name], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add unicode"], cwd=tmp_path, check=True)
+    base = _git_head(tmp_path)
+    (tmp_path / name).write_text("x = 2\n")
+    subprocess.run(["git", "add", name], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "change unicode"], cwd=tmp_path, check=True)
+
+    assert _branch_changed_source_files(
+        str(tmp_path),
+        base,
+        (".py",),
+        git_stdout=_git_stdout,
+    ) == [name]
+
+
 def _fake_event_runner(
     results: dict[str, str],
     *,
@@ -747,6 +869,35 @@ def test_refresh_sentrux_baseline_after_clean_run_allows_dgov_run_metadata(
     assert "M .dgov/sops/plan_hello/_compiled.toml" in status
 
 
+def test_refresh_sentrux_baseline_after_clean_run_allows_scope_ignored_uv_lock(
+    tmp_path: Path,
+) -> None:
+    from dgov.sentrux_baseline import refresh_sentrux_baseline_after_clean_run
+
+    sentrux_dir, accepted_head = _commit_sentrux_baseline(tmp_path)
+    (tmp_path / "uv.lock").write_text("version = 1\n")
+    captured: dict[str, object] = {}
+
+    committed = refresh_sentrux_baseline_after_clean_run(
+        str(tmp_path),
+        run_sentrux=_mock_clean_sentrux_save(sentrux_dir, captured),
+    )
+
+    assert committed is True
+    assert captured["scan_head"] == accepted_head
+    metadata = json.loads((sentrux_dir / "dgov-baseline.json").read_text())
+    assert metadata["accepted_head"] == accepted_head
+    assert _latest_commit_subject(tmp_path) == "Refresh sentrux baseline"
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "?? uv.lock" in status
+
+
 def test_refresh_sentrux_baseline_after_clean_run_rejects_dirty_source_tree(
     tmp_path: Path,
 ) -> None:
@@ -777,6 +928,46 @@ def test_refresh_sentrux_baseline_after_clean_run_rejects_dirty_source_tree(
 
     assert calls == 0
     assert not (sentrux_dir / "dgov-baseline.json").exists()
+
+
+def test_refresh_sentrux_baseline_rejects_renamed_source_path(
+    tmp_path: Path,
+) -> None:
+    from dgov.sentrux_baseline import (
+        SentruxBaselineRefreshError,
+        refresh_sentrux_baseline_after_clean_run,
+    )
+
+    sentrux_dir, _accepted_head = _commit_sentrux_baseline(tmp_path)
+    source = tmp_path / "src.py"
+    source.write_text("x = 1\n")
+    subprocess.run(["git", "add", "src.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add source"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "mv", "src.py", ".sentrux/dgov-baseline.json"],
+        cwd=tmp_path,
+        check=True,
+    )
+    calls = 0
+
+    def _unexpected_sentrux(
+        args: list[str],
+        cwd: str | None = None,
+        timeout: float = 30.0,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(["sentrux", *args], 0, stdout="", stderr="")
+
+    with pytest.raises(SentruxBaselineRefreshError, match=r"src\.py"):
+        refresh_sentrux_baseline_after_clean_run(
+            str(tmp_path),
+            run_sentrux=_unexpected_sentrux,
+        )
+
+    assert calls == 0
+    assert (sentrux_dir / "dgov-baseline.json").read_text() == "x = 1\n"
 
 
 def _clean_complete_artifacts() -> object:

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import dgov.workers.config as worker_config
+from dgov.git_status import porcelain_status_paths
 
 
 def shell_quote(s: str) -> str:
@@ -320,6 +321,31 @@ class AtomicTools:
         self._activity_log.clear()
         return activity
 
+    def _git_dirty_paths(self) -> frozenset[str] | None:
+        try:
+            status = subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                cwd=self.worktree,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if status.returncode != 0:
+            return None
+        return frozenset(porcelain_status_paths(status.stdout, include_rename_sources=True))
+
+    def _record_run_bash_activity(
+        self,
+        before: frozenset[str] | None,
+        after: frozenset[str] | None,
+    ) -> None:
+        if before is None or after is None:
+            return
+        for path in sorted(after - before):
+            self._record_activity("run_bash", path, mode="shell")
+
     def _normalize_scope_path(self, path: str) -> str:
         return path.strip().lstrip("./").rstrip("/")
 
@@ -597,7 +623,10 @@ class AtomicTools:
 
     def run_bash(self, cmd: str) -> str:
         """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
-        return self._execute_shell(cmd, enforce_policy=True)
+        before = self._git_dirty_paths()
+        result = self._execute_shell(cmd, enforce_policy=True)
+        self._record_run_bash_activity(before, self._git_dirty_paths())
+        return result
 
     # -- Navigation tools --
 
@@ -1234,6 +1263,8 @@ class AtomicTools:
             claimed_files=self._claimed_writable_paths(),
             read_files=self._scope_paths("read"),
             scope_ignore_files=self._scope_paths("scope_ignore_files"),
+            scope_allow_files=self._scope_paths("scope_allow_files"),
+            scope_deny_files=self._scope_paths("scope_deny_files"),
             session_root=str(self.task_scope.get("session_root", "")).strip() or None,
             task_slug=str(self.task_scope.get("task_slug", "")).strip() or None,
             pane_slug=str(self.task_scope.get("pane_slug", "")).strip() or None,
@@ -1250,15 +1281,7 @@ class AtomicTools:
         if status.returncode != 0:
             return "Error: git status failed."
 
-        files: set[str] = set()
-        for line in status.stdout.rstrip("\n").split("\n"):
-            if not line:
-                continue
-            path_part = line[3:]
-            if " -> " in path_part:
-                path_part = path_part.split(" -> ", 1)[1]
-            files.add(path_part)
-        return frozenset(files)
+        return frozenset(porcelain_status_paths(status.stdout, include_rename_sources=True))
 
     def _format_scope_status(self, status: object) -> str:
         from dgov.scope_status import ScopeStatus, render_scope_status_lines

@@ -260,6 +260,40 @@ class TestCommitInWorktree:
         assert len(sha) == 40
         assert sha != wt.commit
 
+    def test_commit_stages_claimed_deletion(self, git_repo):
+        _commit_repo_file(git_repo, "gone.py", "x = 1\n", "add gone.py")
+        wt = create_worktree(git_repo, "delete-task")
+        (wt.path / "gone.py").unlink()
+
+        sha = commit_in_worktree(wt, "delete gone.py", file_claims=("gone.py",))
+
+        assert len(sha) == 40
+        assert sha != wt.commit
+        assert _git(wt.path, "show", "--name-status", "--format=", sha).stdout.strip() == (
+            "D\tgone.py"
+        )
+
+    def test_commit_stages_claimed_unicode_deletion(self, git_repo):
+        name = "caf\u00e9.py"
+        _commit_repo_file(git_repo, name, "x = 1\n", "add unicode")
+        wt = create_worktree(git_repo, "delete-unicode")
+        (wt.path / name).unlink()
+
+        sha = commit_in_worktree(wt, "delete unicode", file_claims=(name,))
+
+        assert (
+            _git(
+                wt.path,
+                "-c",
+                "core.quotePath=false",
+                "show",
+                "--name-status",
+                "--format=",
+                sha,
+            ).stdout.strip()
+            == f"D\t{name}"
+        )
+
 
 @pytest.mark.unit
 class TestMergeWorktree:
@@ -544,6 +578,32 @@ class TestIntegrationCandidate:
         assert _git_status(git_repo) == ""
 
         # Clean up
+        remove_worktree(git_repo, task_wt2)
+
+    def test_create_integration_candidate_reports_unicode_conflict_file(self, git_repo):
+        from dgov.worktree import create_integration_candidate, create_worktree, remove_worktree
+
+        name = "caf\u00e9.py"
+        task_wt = create_worktree(git_repo, "task-unicode-conflict")
+        (task_wt.path / name).write_text("x = 1\n")
+        commit_in_worktree(task_wt, "add unicode", file_claims=(name,))
+        merge_worktree(git_repo, task_wt)
+
+        task_wt2 = create_worktree(git_repo, "task-unicode-conflict-2")
+        (task_wt2.path / name).write_text("x = 2\n")
+        commit_in_worktree(task_wt2, "change task unicode", file_claims=(name,))
+        _commit_repo_file(git_repo, name, "x = 3\n", "change main unicode")
+
+        result = create_integration_candidate(
+            git_repo,
+            task_wt2,
+            "task-unicode-conflict-candidate",
+        )
+
+        assert result.passed is False
+        assert result.conflict_files == (name,)
+        assert result.conflict_marker_counts[name] >= 1
+
         remove_worktree(git_repo, task_wt2)
 
     def test_create_integration_candidate_at_current_head(self, git_repo):

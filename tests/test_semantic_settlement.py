@@ -1270,6 +1270,28 @@ def process(value, default):
         assert overlaps
         assert {evidence.symbol_name for evidence in overlaps} == {"process"}
 
+    def test_compute_semantic_risk_decodes_unicode_changed_path(self, tmp_path: Path):
+        from dgov.actions import MergeTask
+        from dgov.types import Worktree
+
+        name = "caf\u00e9.py"
+        base_sha, task_sha, _target_sha = self._setup_symbol_overlap_repo(
+            tmp_path,
+            module_name=name,
+        )
+        flow = self._make_settlement_flow(tmp_path)
+
+        record = flow.compute_semantic_risk(
+            action=MergeTask("task", "pane", (name,)),
+            wt=Worktree(path=tmp_path, branch="task-branch", commit=base_sha),
+            file_claims=(name,),
+        )
+
+        assert record.task_commit_sha == task_sha
+        assert record.changed_files == (name,)
+        assert record.risk_level == RiskLevel.HIGH
+        assert record.python_overlap_detected is True
+
     def test_risk_level_scoring_uses_evidence_severity(self, tmp_path: Path):
         flow = self._make_settlement_flow(tmp_path)
 
@@ -1357,6 +1379,34 @@ def process(value, default):
 
 class TestPythonSemanticGateIntegration:
     """Integration tests for Python semantic gate with real git repos."""
+
+    def test_semantic_gate_checks_unicode_python_diff(self, tmp_path: Path):
+        from dgov.semantic_settlement import FailureClass, run_python_semantic_gate
+
+        name = "caf\u00e9.py"
+        _init_git_repo(tmp_path)
+        (tmp_path / name).write_text("x = 1\n")
+        base_sha = _commit_all(tmp_path, "base")
+
+        _git(tmp_path, "checkout", "-b", "task-branch")
+        (tmp_path / name).write_text("def broken(\n")
+        task_sha = _commit_all(tmp_path, "break unicode path")
+
+        verdict = run_python_semantic_gate(
+            candidate_path=tmp_path,
+            project_root=str(tmp_path),
+            task_base_sha=base_sha,
+            task_commit_sha=task_sha,
+            target_head_sha=base_sha,
+            touched_files=(),
+            task_slug="task",
+        )
+
+        assert verdict.passed is False
+        assert verdict.failure_class == FailureClass.SYNTAX_CONFLICT
+        assert verdict.evidence
+        assert isinstance(verdict.evidence[0], SyntaxConflict)
+        assert verdict.evidence[0].file_path == name
 
     def test_semantic_gate_detects_class_method_collision(self, tmp_path: Path):
         """Gate detects when both sides modify the same class method."""

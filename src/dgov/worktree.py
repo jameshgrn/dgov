@@ -17,6 +17,7 @@ import tomllib
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from dgov.git_status import decode_porcelain_path, git_path_output_paths
 from dgov.types import Worktree
 
 logger = logging.getLogger(__name__)
@@ -532,7 +533,7 @@ class _ReplayFailure:
 
 def _unmerged_paths(worktree_path: Path) -> tuple[str, ...]:
     result = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=U"],
+        ["git", "diff", "--name-only", "-z", "--diff-filter=U"],
         cwd=worktree_path,
         env=_git_env(worktree_path),
         capture_output=True,
@@ -540,7 +541,7 @@ def _unmerged_paths(worktree_path: Path) -> tuple[str, ...]:
     )
     if result.returncode != 0:
         return ()
-    return tuple(path for path in result.stdout.splitlines() if path)
+    return git_path_output_paths(result.stdout)
 
 
 def _conflict_marker_counts(worktree_path: Path, paths: tuple[str, ...]) -> dict[str, int]:
@@ -966,7 +967,15 @@ def commit_in_worktree(wt: Worktree, message: str, file_claims: tuple[str, ...] 
         # Stage only claimed files (avoids pre-existing lint failures)
         existing = [f for f in file_claims if (wt.path / f).exists()]
         if existing:
-            subprocess.run(["git", "add", *existing], cwd=wt.path, env=env, check=True)
+            subprocess.run(["git", "add", "--", *existing], cwd=wt.path, env=env, check=True)
+        deleted = _deleted_claimed_files(wt.path, file_claims, env)
+        if deleted:
+            subprocess.run(
+                ["git", "add", "--update", "--", *deleted],
+                cwd=wt.path,
+                env=env,
+                check=True,
+            )
     else:
         subprocess.run(["git", "add", "."], cwd=wt.path, env=env, check=True)
     subprocess.run(
@@ -985,3 +994,19 @@ def commit_in_worktree(wt: Worktree, message: str, file_claims: tuple[str, ...] 
         text=True,
     )
     return sha_res.stdout.strip()
+
+
+def _deleted_claimed_files(
+    worktree_path: Path,
+    file_claims: tuple[str, ...],
+    env: dict[str, str],
+) -> list[str]:
+    result = subprocess.run(
+        ["git", "ls-files", "--deleted", "--", *file_claims],
+        cwd=worktree_path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return [decode_porcelain_path(path) for path in result.stdout.splitlines() if path]

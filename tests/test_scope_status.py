@@ -111,6 +111,32 @@ class TestAnalyzeScopeStatus:
         assert status.unclaimed_actual_paths == frozenset()
         assert status.blocking_failure is None
 
+    def test_project_deny_rejects_claimed_file(self) -> None:
+        actual = frozenset({"registry/snapshots/snapshot_0001.toml"})
+        status = analyze_scope_status(
+            actual_files=actual,
+            claimed_files=["registry/snapshots/snapshot_0001.toml"],
+            scope_deny_files=("registry/snapshots/**",),
+        )
+
+        assert status.path_policy_denied_paths == actual
+        assert status.blocking_failure is not None
+        assert status.blocking_failure.verdict == "path_policy_violation"
+        assert "registry/snapshots/snapshot_0001.toml" in (status.blocking_failure.error or "")
+
+    def test_project_allow_rejects_claimed_file_outside_allowlist(self) -> None:
+        actual = frozenset({"tracking/watch.py"})
+        status = analyze_scope_status(
+            actual_files=actual,
+            claimed_files=["tracking/watch.py"],
+            scope_allow_files=("corpus/feed/**", "tests/**"),
+        )
+
+        assert status.path_policy_outside_allow_paths == actual
+        assert status.blocking_failure is not None
+        assert status.blocking_failure.verdict == "path_policy_violation"
+        assert "tracking/watch.py" in (status.blocking_failure.error or "")
+
     def test_no_scope_check_without_claims(self) -> None:
         actual = frozenset({"anything.py"})
         status = analyze_scope_status(
@@ -138,6 +164,24 @@ class TestAnalyzeScopeStatus:
         assert status.blocking_failure is not None
         assert status.blocking_failure.verdict == "scope_violation"
         assert "scratch.py" in (status.blocking_failure.error or "")
+
+    def test_empty_claims_check_transient_writes(self, tmp_path: Path) -> None:
+        session_root = tmp_path / "session"
+        _emit_worker_result_activity(
+            session_root, "pane-1", "task-1", "write_file", "scratch.py", "create"
+        )
+
+        status = analyze_scope_status(
+            actual_files=frozenset(),
+            claimed_files=(),
+            session_root=str(session_root),
+            task_slug="task-1",
+        )
+
+        assert status.transient_write_paths == frozenset({"scratch.py"})
+        assert status.unclaimed_transient_paths == frozenset({"scratch.py"})
+        assert status.blocking_failure is not None
+        assert status.blocking_failure.verdict == "scope_violation"
 
     def test_transient_claimed_tool_write(self, tmp_path: Path) -> None:
         session_root = tmp_path / "session"
@@ -300,6 +344,8 @@ class TestRenderScopeStatusLines:
             ignored_transient_paths=frozenset({"it.py"}),
             unclaimed_actual_paths=frozenset({"u.py"}),
             unclaimed_transient_paths=frozenset({"ut.py"}),
+            path_policy_denied_paths=frozenset({"deny.py"}),
+            path_policy_outside_allow_paths=frozenset({"outside.py"}),
             blocking_failure=failure,
         )
         lines = render_scope_status_lines(status)
@@ -309,4 +355,6 @@ class TestRenderScopeStatusLines:
         assert "ignored_transient: it.py" in lines
         assert "unclaimed_modified: u.py" in lines
         assert "unclaimed_transient: ut.py" in lines
+        assert "project_denied: deny.py" in lines
+        assert "outside_project_allowlist: outside.py" in lines
         assert "blocking: bad.py" in lines

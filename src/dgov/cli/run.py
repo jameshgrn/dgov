@@ -21,6 +21,7 @@ from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition
 from dgov.deploy_log import is_plan_complete
 from dgov.event_types import RunCompleted
+from dgov.git_status import porcelain_status_paths
 from dgov.persistence.events import emit_event
 from dgov.plan import PlanSpec, compile_plan, parse_plan_file
 from dgov.project_root import ProjectPathError, resolve_project_path, resolve_project_root
@@ -29,6 +30,9 @@ from dgov.runner import EventDagRunner
 
 _clean_head_worktree = run_checks._clean_head_worktree
 _normalize_sentrux_assessment = run_checks._normalize_sentrux_assessment
+
+_DIRTY_WORKTREE_STATUS = "blocked_by_dirty_worktree"
+_DIRTY_PATH_LIMIT = 10
 
 
 @cli.command(name="run")
@@ -74,6 +78,7 @@ def run_cmd(
     """
     project_root_path, plan_dir = _resolve_run_plan_dir(plan)
     project_root = str(project_root_path)
+    _block_dirty_committed_worktree(project_root)
     compile_plan_for_run(plan_dir)
     plan_file = plan_dir / "_compiled.toml"
     run_compiled_plan(
@@ -199,7 +204,7 @@ def _git_stdout(project_root: str, args: list[str]) -> str | None:
     )
     if result.returncode != 0:
         return None
-    return result.stdout.strip()
+    return result.stdout.rstrip("\n")
 
 
 def _working_tree_files(project_root: str) -> list[str]:
@@ -212,15 +217,7 @@ def _working_tree_files(project_root: str) -> list[str]:
         env=_git_env(project_root),
         check=False,
     )
-    files: list[str] = []
-    for line in result.stdout.splitlines():
-        if not line:
-            continue
-        path_part = line[3:]
-        if " -> " in path_part:
-            path_part = path_part.split(" -> ", 1)[1]
-        files.append(path_part)
-    return files
+    return list(porcelain_status_paths(result.stdout, include_rename_sources=True))
 
 
 def _create_bootstrap_commit(project_root: str, files: list[str]) -> None:
@@ -259,16 +256,20 @@ def _create_bootstrap_commit(project_root: str, files: list[str]) -> None:
 
 
 def _require_git_repo(project_root: str) -> None:
+    if not _is_git_repo(project_root):
+        click.echo("Error: dgov run requires a git repository.", err=True)
+        click.echo("Fix: run `git init` in this project first.", err=True)
+        raise click.exceptions.Exit(code=1)
+
+
+def _is_git_repo(project_root: str) -> bool:
     repo_check = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
         cwd=project_root,
         capture_output=True,
         text=True,
     )
-    if repo_check.returncode != 0:
-        click.echo("Error: dgov run requires a git repository.", err=True)
-        click.echo("Fix: run `git init` in this project first.", err=True)
-        raise click.exceptions.Exit(code=1)
+    return repo_check.returncode == 0
 
 
 def _has_git_head(project_root: str) -> bool:
@@ -334,16 +335,36 @@ def _dirty_worker_files(project_root: str) -> list[str]:
     return [f for f in dirty if not f.startswith(".dgov/")]
 
 
+def _dirty_worktree_block_data(dirty: Sequence[str]) -> dict[str, object]:
+    dirty_paths = list(dirty[:_DIRTY_PATH_LIMIT])
+    # Emit both keys: `status` for generic JSON consumers, `dispatch_status`
+    # for tooling that scans for the dispatch-phase outcome specifically.
+    return {
+        "status": _DIRTY_WORKTREE_STATUS,
+        "dispatch_status": _DIRTY_WORKTREE_STATUS,
+        "dirty_count": len(dirty),
+        "dirty_paths": dirty_paths,
+        "dirty_omitted": max(0, len(dirty) - len(dirty_paths)),
+    }
+
+
 def _raise_dirty_worktree(dirty: Sequence[str]) -> None:
+    block = _dirty_worktree_block_data(dirty)
+    if want_json():
+        _output(block)
+        raise click.exceptions.Exit(code=1)
+
     click.echo("Error: working tree has uncommitted changes.", err=True)
+    click.echo(f"dispatch_status: {block['dispatch_status']}", err=True)
+    click.echo(f"dirty_count: {block['dirty_count']}", err=True)
     click.echo(
         "Worktrees branch from HEAD — uncommitted files cause merge conflicts.",
         err=True,
     )
-    for f in dirty[:10]:
+    click.echo("dirty_paths:", err=True)
+    for f in cast(list[str], block["dirty_paths"]):
         click.echo(f"  {f}", err=True)
-    if len(dirty) > 10:
-        click.echo(f"  ... and {len(dirty) - 10} more", err=True)
+    click.echo(f"dirty_omitted: {block['dirty_omitted']}", err=True)
     click.echo("Fix: commit or stash your changes, then retry.", err=True)
     raise click.exceptions.Exit(code=1)
 
@@ -355,6 +376,14 @@ def _ensure_git_ready(project_root: str, yes: bool = False) -> None:
         _ensure_bootstrap_commit(project_root, yes)
         return
 
+    dirty = _dirty_worker_files(project_root)
+    if dirty:
+        _raise_dirty_worktree(dirty)
+
+
+def _block_dirty_committed_worktree(project_root: str) -> None:
+    if not _is_git_repo(project_root) or not _has_git_head(project_root):
+        return
     dirty = _dirty_worker_files(project_root)
     if dirty:
         _raise_dirty_worktree(dirty)

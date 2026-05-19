@@ -191,6 +191,14 @@ class TestErrors:
         with pytest.raises(ValueError, match="only strings"):
             walk_tree(tmp_path)
 
+    def test_rejects_section_path_traversal(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path / "_root.toml",
+            '[plan]\nname = "x"\nsections = ["../outside"]\n',
+        )
+        with pytest.raises(ValueError, match="invalid section names"):
+            walk_tree(tmp_path)
+
     def test_declared_section_missing_dir(self, tmp_path: Path) -> None:
         _minimal_root(tmp_path, '["alpha", "missing"]')
         (tmp_path / "alpha").mkdir()

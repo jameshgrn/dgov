@@ -444,6 +444,22 @@ class TestScopeIgnoreFiles:
         with pytest.raises(ValueError, match=rf"\[scope\]\.{key} must be a list of strings"):
             load_project_config(tmp_path)
 
+    def test_rejects_non_list_scope_ignore_files(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text('[project]\n\n[scope]\nignore_files = "uv.lock"\n')
+
+        with pytest.raises(ValueError, match=r"\[scope\]\.ignore_files must be a list"):
+            load_project_config(tmp_path)
+
+    def test_rejects_non_string_scope_ignore_file_entries(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text("[project]\n\n[scope]\nignore_files = [123]\n")
+
+        with pytest.raises(ValueError, match=r"\[scope\]\.ignore_files must be a list"):
+            load_project_config(tmp_path)
+
     def test_scope_ignore_files_is_governor_only(self):
         """scope_ignore_files is consumed by settlement, not the worker, so it
         must not appear in the worker payload. Keeps AtomicConfig minimal."""
@@ -485,6 +501,42 @@ class TestScopeIgnoreFiles:
             raised = True
             assert ".sentrux/dgov-baseline.json" in str(exc)
         assert raised, "expected ValueError on reserved path in scope.ignore_files"
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            ".sentrux/",
+            ".sentrux/*",
+            ".coverage-baseline/*",
+            "*.json",
+        ],
+    )
+    def test_rejects_scope_ignore_entries_covering_reserved_paths(self, tmp_path, entry):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            f'[project]\n\n[scope]\nignore_files = ["{entry}"]\n'
+        )
+
+        with pytest.raises(ValueError, match="reserved paths"):
+            load_project_config(tmp_path)
+
+    def test_reports_scope_ignore_reserved_path_shadow(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            '[project]\n\n[scope]\nignore_files = ["*.json", ".sentrux/"]\n'
+        )
+
+        with pytest.raises(ValueError) as exc:
+            load_project_config(tmp_path)
+
+        message = str(exc.value)
+        assert (
+            "project.toml [scope] ignore_files cannot include patterns that shadow reserved paths:"
+        ) in message
+        assert "  '*.json' would match '.coverage-baseline/coverage.json'" in message
+        assert "  '.sentrux/' would match '.sentrux/baseline.json'" in message
 
     def test_missing_section_yields_empty(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"

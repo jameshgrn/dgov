@@ -27,6 +27,7 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 from dgov.config import ProjectConfig, load_project_config
+from dgov.git_status import git_path_output_paths, porcelain_status_paths
 from dgov.persistence import read_events
 from dgov.sentrux_gate import assess_sentrux_gate, sentrux_is_warn_only
 from dgov.typecheck_diagnostics import parse_diagnostic_identities
@@ -38,7 +39,13 @@ _DGOV_SENTRUX_BASELINE = ".sentrux/dgov-baseline.json"
 _COVERAGE_BASELINE_DIR = ".coverage-baseline"
 _COVERAGE_BASELINE = f"{_COVERAGE_BASELINE_DIR}/coverage.json"
 _RESERVED_PATHS = (_SENTRUX_BASELINE, _DGOV_SENTRUX_BASELINE, _COVERAGE_BASELINE_DIR + "/")
-_WRITE_ACTIVITY_KINDS = frozenset({"write_file", "edit_file", "apply_patch", "revert_file"})
+_WRITE_ACTIVITY_KINDS = frozenset({
+    "write_file",
+    "edit_file",
+    "apply_patch",
+    "revert_file",
+    "run_bash",
+})
 _WRITE_ACTIVITY_MODES = frozenset({"create", "edit", "patch", "revert"})
 
 
@@ -70,6 +77,14 @@ class ReviewResult:
             raise ValueError("ReviewResult: passed=True but error is set")
         if not self.passed and not self.error:
             raise ValueError("ReviewResult: passed=False but no error message")
+
+
+@dataclass(frozen=True)
+class ScopePathPolicyViolations:
+    """Changed paths that violate project-level allow/deny policy."""
+
+    denied: frozenset[str]
+    outside_allowlist: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -288,14 +303,7 @@ def _get_all_changes(worktree_path: Path) -> frozenset[str] | ReviewResult:
     if status.returncode != 0:
         return ReviewResult(passed=False, verdict="git_error", error="git status failed")
 
-    files = set()
-    for line in status.stdout.rstrip("\n").split("\n"):
-        if not line:
-            continue
-        path_part = line[3:]
-        if " -> " in path_part:
-            path_part = path_part.split(" -> ", 1)[1]
-        files.add(path_part)
+    files = set(porcelain_status_paths(status.stdout, include_rename_sources=True))
 
     if not files:
         return ReviewResult(passed=False, verdict="empty_diff", error="No changes produced")
@@ -340,13 +348,13 @@ def _check_size(actual_files: frozenset[str], max_diff_lines: int) -> ReviewResu
     return None
 
 
+def _is_reserved_path(path: str) -> bool:
+    return any(path == reserved or path.startswith(reserved) for reserved in _RESERVED_PATHS)
+
+
 def _check_reserved_paths(actual_files: frozenset[str]) -> ReviewResult | None:
     """Reject worker changes to governor-owned files."""
-    reserved = sorted(
-        path
-        for path in actual_files
-        if any(path == reserved or path.startswith(reserved) for reserved in _RESERVED_PATHS)
-    )
+    reserved = sorted(path for path in actual_files if _is_reserved_path(path))
     if reserved:
         return ReviewResult(
             passed=False,
@@ -361,13 +369,33 @@ def _matches_path_policy(path: str, patterns: Sequence[str]) -> bool:
     return any(fnmatch(path, pattern) for pattern in patterns)
 
 
+def classify_scope_path_policy(
+    actual_files: frozenset[str],
+    scope_allow_files: Sequence[str] = (),
+    scope_deny_files: Sequence[str] = (),
+) -> ScopePathPolicyViolations:
+    """Return changed files that violate project-level path policy."""
+    denied = frozenset(
+        path for path in actual_files if _matches_path_policy(path, scope_deny_files)
+    )
+    outside_allowlist = (
+        frozenset(
+            path for path in actual_files if not _matches_path_policy(path, scope_allow_files)
+        )
+        if scope_allow_files
+        else frozenset()
+    )
+    return ScopePathPolicyViolations(denied=denied, outside_allowlist=outside_allowlist)
+
+
 def check_scope_path_policy(
     actual_files: frozenset[str],
     scope_allow_files: Sequence[str] = (),
     scope_deny_files: Sequence[str] = (),
 ) -> ReviewResult | None:
     """Reject changed files that violate project-level allow/deny patterns."""
-    denied = sorted(path for path in actual_files if _matches_path_policy(path, scope_deny_files))
+    violations = classify_scope_path_policy(actual_files, scope_allow_files, scope_deny_files)
+    denied = sorted(violations.denied)
     if denied:
         return ReviewResult(
             passed=False,
@@ -379,9 +407,7 @@ def check_scope_path_policy(
     if not scope_allow_files:
         return None
 
-    outside = sorted(
-        path for path in actual_files if not _matches_path_policy(path, scope_allow_files)
-    )
+    outside = sorted(violations.outside_allowlist)
     if outside:
         return ReviewResult(
             passed=False,
@@ -519,7 +545,7 @@ def check_scope(
     ``read_scope_violation`` verdict — the runner can retry the worker
     instead of cascading failure.
     """
-    if not claimed_files:
+    if claimed_files is None:
         return None
 
     claimed = frozenset(claimed_files)
@@ -614,10 +640,10 @@ def check_transient_scope(
     Checks the active pane when available. Older panes from abandoned attempts
     are historical evidence, not the candidate currently under review.
 
-    Only write-capable activities (write_file, edit_file, apply_patch, revert_file)
-    are checked. Read-only activity such as read_file is ignored.
+    Only write-capable activities are checked. Read-only activity such as
+    read_file is ignored.
     """
-    if not session_root or not task_slug or not claimed_files:
+    if not session_root or not task_slug or claimed_files is None:
         return None
 
     claimed = frozenset(claimed_files)
@@ -626,6 +652,15 @@ def check_transient_scope(
     )
 
     transient_paths = collect_transient_write_paths(session_root, task_slug, pane_slug)
+    reserved = sorted(path for path in transient_paths if _is_reserved_path(path))
+    if reserved:
+        return ReviewResult(
+            passed=False,
+            verdict="reserved_path",
+            actual_files=actual_files,
+            error=(f"Transiently touched governor-owned files via worker tools: {reserved}"),
+        )
+
     unclaimed = filter_unclaimed_non_ignored(
         transient_paths,
         claimed,
@@ -1082,13 +1117,13 @@ def _changed_source_files(
 ) -> list[str]:
     """Return source files changed between base_commit and HEAD."""
     diff_res = subprocess.run(
-        ["git", "diff", "--name-only", base_commit, "HEAD"],
+        ["git", "diff", "--name-only", "-z", base_commit, "HEAD"],
         cwd=worktree_path,
         capture_output=True,
         text=True,
         check=True,
     )
-    return _filter_source_files(diff_res.stdout.strip().split("\n"), extensions)
+    return _filter_source_files(git_path_output_paths(diff_res.stdout), extensions)
 
 
 def _filter_source_files(paths: Sequence[str], extensions: tuple[str, ...]) -> list[str]:

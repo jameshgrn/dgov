@@ -6,7 +6,7 @@ import fnmatch
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from dgov.tool_policy import parse_tool_policy
@@ -29,6 +29,11 @@ _RESERVED_SCOPE_IGNORE_PATHS = (
     ".sentrux/baseline.json",
     ".sentrux/dgov-baseline.json",
     ".coverage-baseline/",
+)
+_RESERVED_SCOPE_IGNORE_SAMPLES = (
+    ".sentrux/baseline.json",
+    ".sentrux/dgov-baseline.json",
+    ".coverage-baseline/coverage.json",
 )
 
 
@@ -198,10 +203,14 @@ def _tuple_if_list(value: Any) -> Any:
 
 def _configured_scope_ignores(raw: Mapping[str, Any]) -> tuple[str, ...]:
     scope_section = _table(raw, "scope")
-    ignore_raw = scope_section.get("ignore_files", ())
-    if not isinstance(ignore_raw, list):
+    if "ignore_files" not in scope_section:
         return ()
-    return tuple(str(p).strip() for p in ignore_raw if str(p).strip())
+    ignore_raw = scope_section["ignore_files"]
+    if not isinstance(ignore_raw, list):
+        raise ValueError(".dgov/project.toml [scope].ignore_files must be a list of strings")
+    if not all(isinstance(pattern, str) for pattern in ignore_raw):
+        raise ValueError(".dgov/project.toml [scope].ignore_files must be a list of strings")
+    return tuple(pattern.strip() for pattern in ignore_raw if pattern.strip())
 
 
 def _scope_patterns(raw: Mapping[str, Any], key: str) -> tuple[str, ...]:
@@ -218,15 +227,39 @@ def _scope_patterns(raw: Mapping[str, Any], key: str) -> tuple[str, ...]:
 
 def _validate_scope_ignores(configured_scope_ignores: tuple[str, ...]) -> None:
     bad = sorted(
-        path
-        for path in configured_scope_ignores
-        if any(
-            path == reserved or path.startswith(reserved)
-            for reserved in _RESERVED_SCOPE_IGNORE_PATHS
-        )
+        (entry, reserved_path)
+        for entry in configured_scope_ignores
+        if (reserved_path := _scope_ignore_entry_covers_reserved_path(entry)) is not None
     )
     if bad:
-        raise ValueError(f"project.toml [scope] ignore_files cannot include reserved paths: {bad}")
+        lines = [
+            "project.toml [scope] ignore_files cannot include patterns that shadow reserved paths:"
+        ]
+        lines.extend(f"  {entry!r} would match {reserved_path!r}" for entry, reserved_path in bad)
+        raise ValueError("\n".join(lines))
+
+
+def _scope_ignore_entry_covers_reserved_path(entry: str) -> str | None:
+    for path in sorted(_RESERVED_SCOPE_IGNORE_SAMPLES):
+        if _scope_ignore_entry_matches_path(entry, path):
+            return path
+    for reserved in sorted(_RESERVED_SCOPE_IGNORE_PATHS):
+        if entry == reserved or entry.startswith(reserved):
+            return reserved
+    return None
+
+
+def _scope_ignore_entry_matches_path(entry: str, path: str) -> bool:
+    if any(ch in entry for ch in "*?["):
+        return fnmatch.fnmatch(path, entry) or fnmatch.fnmatch(PurePosixPath(path).name, entry)
+    if entry.endswith("/"):
+        return path.startswith(entry)
+    if "." not in entry.rsplit("/", 1)[-1]:
+        stripped = entry.rstrip("/")
+        if "/" in stripped:
+            return path.startswith(stripped + "/")
+        return stripped in PurePosixPath(path).parts
+    return path == entry
 
 
 def _scope_ignore_files(raw: Mapping[str, Any]) -> tuple[str, ...]:

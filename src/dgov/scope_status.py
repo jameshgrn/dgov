@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from dgov.settlement import (
     ReviewResult,
     check_scope,
+    check_scope_path_policy,
     check_transient_scope,
+    classify_scope_path_policy,
     collect_transient_write_paths,
     compute_unclaimed_files,
     filter_unclaimed_non_ignored,
@@ -28,6 +30,8 @@ class ScopeStatus:
     ignored_transient_paths: frozenset[str]
     unclaimed_actual_paths: frozenset[str]
     unclaimed_transient_paths: frozenset[str]
+    path_policy_denied_paths: frozenset[str] = field(default_factory=frozenset)
+    path_policy_outside_allow_paths: frozenset[str] = field(default_factory=frozenset)
     blocking_failure: ReviewResult | None = None
 
 
@@ -62,6 +66,13 @@ def render_scope_status_lines(status: ScopeStatus) -> list[str]:
         lines.append(
             f"unclaimed_transient: {format_scope_paths(status.unclaimed_transient_paths)}"
         )
+    if status.path_policy_denied_paths:
+        lines.append(f"project_denied: {format_scope_paths(status.path_policy_denied_paths)}")
+    if status.path_policy_outside_allow_paths:
+        lines.append(
+            "outside_project_allowlist: "
+            f"{format_scope_paths(status.path_policy_outside_allow_paths)}"
+        )
     if status.blocking_failure:
         lines.append(f"blocking: {status.blocking_failure.error}")
     else:
@@ -74,6 +85,8 @@ def analyze_scope_status(
     claimed_files: Sequence[str] | None = None,
     read_files: Sequence[str] = (),
     scope_ignore_files: Sequence[str] = (),
+    scope_allow_files: Sequence[str] = (),
+    scope_deny_files: Sequence[str] = (),
     session_root: str | None = None,
     task_slug: str | None = None,
     pane_slug: str | None = None,
@@ -94,11 +107,18 @@ def analyze_scope_status(
         task_slug=task_slug,
         pane_slug=pane_slug,
     )
+    path_policy = classify_scope_path_policy(
+        actual_files,
+        scope_allow_files=scope_allow_files,
+        scope_deny_files=scope_deny_files,
+    )
     blocking_failure = _blocking_scope_failure(
         actual_files=actual_files,
         claimed_files=claimed_files,
         read_files=read_files,
         scope_ignore_files=scope_ignore_files,
+        scope_allow_files=scope_allow_files,
+        scope_deny_files=scope_deny_files,
         session_root=session_root,
         task_slug=task_slug,
         pane_slug=pane_slug,
@@ -111,6 +131,8 @@ def analyze_scope_status(
         ignored_actual_paths=ignored_actual,
         unclaimed_actual_paths=unclaimed_actual,
         transient=transient,
+        path_policy_denied_paths=path_policy.denied,
+        path_policy_outside_allow_paths=path_policy.outside_allowlist,
         blocking_failure=blocking_failure,
     )
 
@@ -123,6 +145,8 @@ def _build_scope_status(
     ignored_actual_paths: frozenset[str],
     unclaimed_actual_paths: frozenset[str],
     transient: _TransientScope,
+    path_policy_denied_paths: frozenset[str],
+    path_policy_outside_allow_paths: frozenset[str],
     blocking_failure: ReviewResult | None,
 ) -> ScopeStatus:
     return ScopeStatus(
@@ -134,6 +158,8 @@ def _build_scope_status(
         ignored_transient_paths=transient.ignored,
         unclaimed_actual_paths=unclaimed_actual_paths,
         unclaimed_transient_paths=transient.unclaimed,
+        path_policy_denied_paths=path_policy_denied_paths,
+        path_policy_outside_allow_paths=path_policy_outside_allow_paths,
         blocking_failure=blocking_failure,
     )
 
@@ -157,7 +183,7 @@ def _analyze_transient_scope(
     task_slug: str | None,
     pane_slug: str | None,
 ) -> _TransientScope:
-    if not session_root or not task_slug or not claimed_files:
+    if not session_root or not task_slug or claimed_files is None:
         return _TransientScope(frozenset(), frozenset(), frozenset())
 
     transient_paths = collect_transient_write_paths(session_root, task_slug, pane_slug)
@@ -184,10 +210,15 @@ def _blocking_scope_failure(
     claimed_files: Sequence[str] | None,
     read_files: Sequence[str],
     scope_ignore_files: Sequence[str],
+    scope_allow_files: Sequence[str],
+    scope_deny_files: Sequence[str],
     session_root: str | None,
     task_slug: str | None,
     pane_slug: str | None,
 ) -> ReviewResult | None:
+    failure = check_scope_path_policy(actual_files, scope_allow_files, scope_deny_files)
+    if failure is not None:
+        return failure
     failure = check_scope(actual_files, claimed_files, scope_ignore_files, read_files)
     if failure is not None:
         return failure

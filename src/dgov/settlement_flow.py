@@ -23,6 +23,7 @@ from dgov.actions import MergeTask
 from dgov.config import ProjectConfig
 from dgov.dag_parser import DagTaskSpec
 from dgov.event_types import DgovEvent, ReviewerVerdict
+from dgov.git_status import git_path_output_paths
 from dgov.semantic_settlement import (
     DuplicateDefinition,
     FailureClass,
@@ -249,7 +250,7 @@ class SettlementFlow:
 
     def _changed_files_between(self, base_ref: str, head_ref: str) -> tuple[str, ...]:
         result = subprocess.run(
-            ["git", "diff", "--name-only", base_ref, head_ref],
+            ["git", "diff", "--name-only", "-z", base_ref, head_ref],
             cwd=self.session_root,
             capture_output=True,
             text=True,
@@ -257,7 +258,7 @@ class SettlementFlow:
         )
         if result.returncode != 0:
             return ()
-        return tuple(path for path in result.stdout.strip().split("\n") if path)
+        return git_path_output_paths(result.stdout)
 
     def _risk_level_from_evidence(
         self, overlap_evidence: tuple[OverlapEvidence, ...]
