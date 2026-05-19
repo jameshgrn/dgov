@@ -46,6 +46,8 @@ def git_path_output_paths(output: str) -> tuple[str, ...]:
 def _porcelain_path_part(line: str) -> str:
     if len(line) > 2 and line[2] == " ":
         return line[3:]
+    # Git porcelain emits `XY <path>`; this fallback only handles callers that
+    # already stripped a leading-space status down to single-char input.
     return line[2:].lstrip()
 
 
@@ -106,6 +108,8 @@ def _append_escaped_byte(path: str, index: int, decoded: bytearray) -> int:
         if byte_value <= 0xFF:
             decoded.append(byte_value)
         else:
+            # Defensive: git porcelain escapes individual bytes (max
+            # 0o377=255), so this branch only fires on malformed input.
             decoded.extend(path[index - 1 : end].encode("utf-8", errors="surrogateescape"))
         return end
 
