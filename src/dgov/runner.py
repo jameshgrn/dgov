@@ -67,7 +67,6 @@ from dgov.event_types import (
     deserialize_event,
 )
 from dgov.kernel import DagKernel
-from dgov.live_state import latest_run_start_ids
 from dgov.persistence import (
     emit_event,
     record_runtime_artifact,
@@ -80,8 +79,16 @@ from dgov.persistence.dispatch_runs import (
 )
 from dgov.persistence.schema import TaskState, WorkerTask
 from dgov.prompt_builder import PromptBuilder, build_baseline_diag_note, load_review_sop_blocks
-from dgov.run_source import current_run_source
-from dgov.semantic_settlement import summarize_evidence
+from dgov.runner_support import (
+    current_runner_source,
+    deploy_records_by_unit,
+    deployed_units,
+    effective_sop_set_hash,
+    latest_runner_run_start_ids,
+    load_runner_project_config,
+    reset_runner_plan_state,
+    summarize_runner_evidence,
+)
 from dgov.settlement import ReviewResult, review_sandbox
 from dgov.settlement_flow import (
     IntegrationRiskRecord,
@@ -138,7 +145,7 @@ def _test_failure_command(error: str) -> str | None:
 
 
 def _summarize_evidence(risk_record: IntegrationRiskRecord) -> str:
-    return summarize_evidence(risk_record.overlap_evidence)
+    return summarize_runner_evidence(risk_record.overlap_evidence)
 
 
 @dataclass
@@ -182,15 +189,12 @@ class EventDagRunner:
         continue_failed: bool = False,
         dispatched_by: str = "watermaster:unknown",
     ) -> None:
-        from dgov.config import load_project_config
-        from dgov.persistence import reset_plan_state
-
         self.dag = dag
         self.session_root = session_root
         self.on_event = on_event
         self._dispatched_by = dispatched_by
-        self.run_source = current_run_source()
-        self.project_config = load_project_config(session_root)
+        self.run_source = current_runner_source()
+        self.project_config = load_runner_project_config(session_root)
         self.deps = {slug: tuple(t.depends_on) for slug, t in dag.tasks.items()}
         self._tasks: dict[str, TaskContext] = {}
 
@@ -200,7 +204,7 @@ class EventDagRunner:
         self._init_async_and_settlement_state(session_root, dag)
 
         if restart:
-            reset_plan_state(session_root, dag.name)
+            reset_runner_plan_state(session_root, dag.name)
         else:
             self._run_recovery_pipeline(continue_failed=continue_failed)
 
@@ -225,7 +229,7 @@ class EventDagRunner:
             max_retries=dag.default_max_retries,
         )
 
-    def _build_prompts(self, session_root: str, dag: DagDefinition) -> PromptBuilder:
+    def _build_prompts(self, session_root: str, dag: DagDefinition) -> Any:
         """Build the PromptBuilder with baseline diag and review SOP blocks."""
         return PromptBuilder(
             session_root=session_root,
@@ -303,12 +307,7 @@ class EventDagRunner:
 
     def _phase_seed_deployed(self) -> None:
         """Phase 1: Mark already-deployed units as MERGED before replaying latest-run events."""
-        from dgov import deploy_log
-
-        deployed_units = {
-            record.unit for record in deploy_log.read(self.session_root, self.dag.name)
-        }
-        for slug in deployed_units:
+        for slug in deployed_units(self.session_root, self.dag.name):
             if slug in self.kernel.task_states:
                 self.kernel.task_states[slug] = TaskState.MERGED
 
@@ -385,7 +384,7 @@ class EventDagRunner:
         from dgov.persistence import read_events
 
         events = read_events(self.session_root, plan_name=self.dag.name)
-        run_start_id = latest_run_start_ids(events).get(self.dag.name, 0)
+        run_start_id = latest_runner_run_start_ids(events).get(self.dag.name, 0)
         for ev in events:
             if int(ev.get("id", 0)) <= run_start_id:
                 continue
@@ -616,12 +615,26 @@ class EventDagRunner:
             await self._cleanup()
 
     async def _check_model_env(self) -> None:
-        """Check configured OpenAI-compatible API key is set before dispatch."""
+        """Check configured OpenAI-compatible API keys are set before dispatch."""
         import os
 
-        key_env = self.project_config.llm_api_key_env
-        if not os.environ.get(key_env):
-            raise RuntimeError(f"{key_env} not set")
+        missing: list[str] = []
+        for provider_name in self._dag_provider_names():
+            if not provider_name:
+                continue
+            provider = self.project_config.provider_config(provider_name)
+            if not os.environ.get(provider.api_key_env):
+                missing.append(f"{provider.api_key_env} for provider {provider.name!r}")
+        if missing:
+            raise RuntimeError(", ".join(f"{item} not set" for item in missing))
+
+    def _dag_provider_names(self) -> tuple[str, ...]:
+        """Return provider names selected by tasks in this DAG."""
+        names = [
+            task.provider or self.dag.default_provider or self.project_config.llm_provider
+            for task in self.dag.tasks.values()
+        ]
+        return tuple(dict.fromkeys(names))
 
     def _task_state_snapshot(self) -> dict[str, str]:
         return {slug: state.value for slug, state in self.kernel.task_states.items()}
@@ -1145,6 +1158,7 @@ class EventDagRunner:
             prompt=prompt,
             role="reviewer",
             agent=task.agent,
+            provider=task.provider,
             timeout_s=120,
         )
 
@@ -1394,6 +1408,8 @@ class EventDagRunner:
             task_slug=action.task_slug,
             pane_slug=action.pane_slug,
             scope_ignore_files=self.project_config.scope_ignore_files,
+            scope_allow_files=self.project_config.scope_allow_files,
+            scope_deny_files=self.project_config.scope_deny_files,
         )
 
     def _fail_structural_review(
@@ -1646,11 +1662,7 @@ class EventDagRunner:
         if not task.depends_on:
             return "HEAD"
 
-        from dgov import deploy_log
-
-        records = {
-            record.unit: record for record in deploy_log.read(self.session_root, self.dag.name)
-        }
+        records = deploy_records_by_unit(self.session_root, self.dag.name)
         upstream = self._upstream_units(task_slug)
         missing = sorted(dep for dep in upstream if dep not in records)
         if missing:
@@ -1664,15 +1676,7 @@ class EventDagRunner:
 
     def _effective_sop_set_hash(self) -> str:
         """Hash the worker SOP bundle loaded for this dispatch."""
-        from dgov.sop_bundler import compute_sop_set_hash, load_sops
-
-        sops_dir = Path(self.session_root) / ".dgov" / "sops"
-        try:
-            effective_sops = load_sops(sops_dir)
-            return compute_sop_set_hash(effective_sops) if effective_sops else ""
-        except (FileNotFoundError, ValueError) as exc:
-            logger.warning("Effective SOP bundle could not be loaded at dispatch: %s", exc)
-            return ""
+        return effective_sop_set_hash(self.session_root)
 
     def _mint_dispatch_run(
         self,
@@ -2255,6 +2259,7 @@ class EventDagRunner:
             depends_on=task.depends_on,
             files=task.files,
             agent=task.agent,
+            provider=task.provider,
             timeout_s=task.timeout_s,
             test_cmd=task.test_cmd,
         )

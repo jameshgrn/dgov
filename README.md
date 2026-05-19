@@ -26,42 +26,41 @@ For a local checkout:
 git clone https://github.com/jameshgrn/dgov
 cd dgov
 uv tool install --from . dgov
+dgov agents sync
 ```
 
 ## Quick start
 
 ```bash
-# 1. Set your API key
-export FIREWORKS_API_KEY=your-key-here
-
-# 2. Bootstrap your project
+# 1. Bootstrap your project
 cd /path/to/your/repo
 # Run inside a git repo. For a new project, initialize git first:
 git rev-parse --is-inside-work-tree >/dev/null || git init
 dgov init                # Creates .dgov/project.toml, .dgov/governor.md, and .dgov/sops/
 
-# 3. Review bootstrap files
-# .dgov/project.toml: repo toolchain + LLM endpoint config
+# 2. Review bootstrap files and configure the provider placeholders
+# .dgov/project.toml: repo toolchain + LLM provider config
 # .dgov/governor.md: planning, retry, and done criteria for the governor
 # .dgov/sops/*.md: worker execution guidance and review/testing discipline
+export PROVIDER_API_KEY=your-key-here
 
-# 4. Create a plan tree
+# 3. Create a plan tree
 dgov init-plan my-plan      # Scaffolds .dgov/plans/my-plan/_root.toml + tasks/
 
-# 5. Edit .dgov/plans/my-plan/tasks/main.toml, then compile it
+# 4. Edit .dgov/plans/my-plan/tasks/main.toml, then compile it
 dgov compile .dgov/plans/my-plan/
 
-# 6. Run the compiled plan
+# 5. Run the compiled plan
 # If the repo has no commits yet, dgov will create a bootstrap snapshot.
 # If the repo has no .sentrux/baseline.json yet, dgov run bootstraps it once.
 # Clean complete full-plan runs refresh the accepted baseline after comparison.
 dgov run .dgov/plans/my-plan/
 
-# 7. Monitor progress in another terminal
+# 6. Monitor progress in another terminal
 dgov watch
 ```
 
-For the auto-plan path, replace steps 4–6 with `dgov plan create "<goal>"`. The
+For the auto-plan path, replace steps 3–5 with `dgov plan create "<goal>"`. The
 planner agent explores the repo and writes a plan tree; add `--run` to compile
 and execute it immediately.
 
@@ -75,34 +74,68 @@ and execute it immediately.
 - worker edits to `.sentrux/baseline.json` and `.sentrux/dgov-baseline.json` are rejected during review
 - post-run sentrux degradation marks the run `degraded` and prints a warning
 
+## Knowledge base
+
+This repo includes a source-backed knowledge vault in `docs/knowledge/`.
+Articles explain dgov concepts and architecture while citing canonical source
+files through frontmatter.
+
+```bash
+dgov kb list
+dgov kb show sentrux
+dgov kb validate
+dgov kb graph              # dump article + source graph
+dgov kb related <id>       # follow related edges
+dgov kb path <from> <to>   # shortest path between articles
+dgov kb open <id>          # open an article in Obsidian
+```
+
+The KB is explanatory material, not durable memory. Bugs, rules, decisions,
+patterns, and debt still belong in `dgov ledger`.
+
+## Agent skills
+
+dgov ships machine-agent skills for ledger, plan, and retired pane guidance.
+Install or refresh the local copies with:
+
+```bash
+dgov agents sync
+```
+
+The canonical source is `agent-guidance/skills/`. Local
+`~/.agents/skills/dgov-*` files are derived machine state and should be
+refreshed from the command above instead of hand-edited.
+
 ## Project configuration
 
 `.dgov/project.toml` carries everything repo-scoped: language, toolchain
-commands, LLM endpoint, tool policy, verification recipes, and coverage knobs.
-`dgov init` auto-detects most of it. Task-level `agent = "..."`
-overrides the model/router name only.
+commands, LLM providers, tool policy, verification recipes, and coverage knobs.
+`dgov init` auto-detects most of it. Task-level `provider = "..."` selects
+the endpoint, while `agent = "..."` overrides the model/router name.
 
-### LLM endpoint
+### LLM providers
 
-`dgov` talks to an OpenAI-compatible HTTP endpoint. Default:
+`dgov` talks to OpenAI-compatible HTTP endpoints. Example provider:
 
 ```toml
 [project]
-default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
-llm_base_url = "https://api.fireworks.ai/inference/v1"
-llm_api_key_env = "FIREWORKS_API_KEY"
+provider = "llm"
+
+[providers.llm]
+default_agent = "provider/model-name"
+base_url = "https://provider.example.com/v1"
+api_key_env = "PROVIDER_API_KEY"
 ```
 
-For Anthropic-compatible clients outside `dgov`, use the same Fireworks router
-with the Anthropic-compatible endpoint:
+For clients outside `dgov`, use the endpoint shape required by that provider:
 
 ```text
-base_url = "https://api.fireworks.ai/inference"
-model = "accounts/fireworks/routers/kimi-k2p6-turbo"
-api_key_env = "FIREWORKS_API_KEY"
+base_url = "https://provider.example.com/v1"
+model = "provider/model-name"
+api_key_env = "PROVIDER_API_KEY"
 ```
 
-Export the matching env var before `dgov compile` or `dgov run`.
+Export the matching env var before `dgov run`.
 
 ### Tool policy
 
@@ -167,6 +200,7 @@ dgov                       # Show status
 dgov status                # Show status (explicit)
 dgov --json status         # Show status as JSON
 dgov init                  # Bootstrap .dgov/project.toml, governor.md, sops/
+dgov agents sync           # Install/update shipped dgov agent skills
 
 # Plans
 dgov init-plan <name>      # Scaffold an empty plan tree
@@ -275,6 +309,7 @@ depends_on = ["add-feature"]
 | `sop_bundler.py` | Load SOPs, pick per unit, prepend to prompts |
 | `prompt_builder.py` | Assemble final worker prompts from SOPs + plan context |
 | `bootstrap_policy.py`, `bootstrap_policy_data/` | Default SOPs and governor templates for `dgov init` |
+| `agent_skills.py`, `agent_skill_data/` | Shipped machine-agent skills for `dgov agents sync` |
 | `deploy_log.py` | Append-only JSONL deploy history |
 | `archive.py` | Plan archival on success |
 | `config.py` | ProjectConfig + `load_project_config()` |

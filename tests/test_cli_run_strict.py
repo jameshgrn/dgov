@@ -14,7 +14,6 @@ import pytest
 from click.testing import CliRunner
 
 from dgov.cli import cli
-from dgov.event_types import RunCompleted
 
 pytestmark = pytest.mark.unit
 
@@ -25,6 +24,11 @@ def runner():
 
 
 def _write_plan_tree(tmp_path: Path, name: str = "compiled") -> Path:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir(parents=True, exist_ok=True)
+    project_toml = dgov_dir / "project.toml"
+    if not project_toml.exists():
+        project_toml.write_text(_provider_project_toml(), encoding="utf-8")
     plan_dir = tmp_path / ".dgov" / "plans" / name
     task_dir = plan_dir / "tasks"
     task_dir.mkdir(parents=True)
@@ -52,8 +56,22 @@ def _write_compiled(plan_dir: Path, name: str = "compiled") -> Path:
         'summary = "do a"\n'
         'prompt = "do a"\n'
         'commit_message = "a"\n'
+        'agent = "test-agent"\n'
     )
     return compiled
+
+
+def _provider_project_toml(extra: str = "") -> str:
+    return f"""
+[project]
+provider = "test-provider"
+{extra}
+
+[providers.test-provider]
+default_agent = "provider/model-name"
+base_url = "https://provider.example.com/v1"
+api_key_env = "TEST_PROVIDER_API_KEY"
+"""
 
 
 def _git_head(repo: Path) -> str:
@@ -204,7 +222,7 @@ def _assert_degraded_run_completed_event(
     ]
     assert len(run_completed_events) == 1
 
-    run_completed = cast(RunCompleted, run_completed_events[0])
+    run_completed = cast(Any, run_completed_events[0])
     assert run_completed.pane == expected_plan_name
     assert run_completed.plan_name == expected_plan_name
     assert run_completed.run_status == "degraded"
@@ -225,9 +243,12 @@ def _assert_degraded_run_completed_event(
     }
 
 
-def test_run_rejects_compiled_file_input(runner: CliRunner, tmp_path: Path) -> None:
+def test_run_rejects_compiled_file_input(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     plan_dir = _write_plan_tree(tmp_path, "compiled")
     compiled = _write_compiled(plan_dir, "compiled")
+    monkeypatch.chdir(tmp_path)
 
     result = runner.invoke(cli, ["run", str(compiled)])
 
@@ -272,6 +293,109 @@ def test_run_plan_dir_compiles_before_execution(
     }
 
 
+def test_run_resolves_relative_plan_path_from_current_directory(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_dir = _write_plan_tree(tmp_path, "compiled")
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    captured: dict[str, object] = {}
+
+    def _capture_compile(path: Path) -> None:
+        captured["compiled"] = path
+        _write_compiled(path, "compiled")
+
+    def _capture_run(plan_file: str, project_root: str, **kwargs: object) -> None:
+        captured["plan_file"] = plan_file
+        captured["project_root"] = project_root
+        captured["kwargs"] = kwargs
+
+    monkeypatch.chdir(subdir)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", _capture_compile)
+    monkeypatch.setattr("dgov.cli.run.run_compiled_plan", _capture_run)
+
+    result = runner.invoke(cli, ["run", "../.dgov/plans/compiled"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["compiled"] == plan_dir
+    assert captured["plan_file"] == str(plan_dir / "_compiled.toml")
+    assert captured["project_root"] == str(tmp_path)
+    assert captured["kwargs"] == {
+        "restart": False,
+        "continue_failed": False,
+        "only": None,
+        "plan_dir": plan_dir,
+        "yes": False,
+        "stream": False,
+        "verbose": False,
+    }
+
+
+def test_run_rejects_plan_path_outside_project_root_before_compile(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside_dir = tmp_path.parent
+    calls: list[Path] = []
+
+    def _capture_compile(path: Path) -> None:
+        calls.append(path)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", _capture_compile)
+
+    for bad_path in ("..", str(outside_dir)):
+        result = runner.invoke(cli, ["run", bad_path])
+
+        assert result.exit_code == 1
+        assert "plan path must stay under project root" in result.output
+
+    assert calls == []
+
+
+def test_run_reports_missing_plan_path_after_containment_check(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[Path] = []
+
+    def _capture_compile(path: Path) -> None:
+        calls.append(path)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", _capture_compile)
+
+    result = runner.invoke(cli, ["run", ".dgov/plans/missing"])
+
+    assert result.exit_code == 1
+    assert "plan path not found" in result.output
+    assert "pass a plan directory under this project root" in result.output
+    assert calls == []
+
+
+def test_run_compiled_plan_rejects_plan_file_outside_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dgov.cli.run import run_compiled_plan
+
+    project_root = tmp_path / "project"
+    outside_plan_dir = tmp_path / "outside"
+    project_root.mkdir()
+    outside_plan_dir.mkdir()
+    compiled_path = outside_plan_dir / "_compiled.toml"
+
+    def _fail_compile(*args: object, **kwargs: object) -> None:
+        pytest.fail("outside compiled plan reached DAG compilation")
+
+    monkeypatch.setattr("dgov.cli.run._compile_dag_for_run", _fail_compile)
+
+    with pytest.raises(click.ClickException, match="plan file must stay under project root"):
+        run_compiled_plan(
+            str(compiled_path),
+            str(project_root),
+            plan_dir=outside_plan_dir,
+        )
+
+
 def test_run_compiled_plan_rejects_department_violation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -282,7 +406,7 @@ def test_run_compiled_plan_rejects_department_violation(
     plan_dir = dgov_dir / "plans" / "constitution"
     plan_dir.mkdir(parents=True)
     (dgov_dir / "project.toml").write_text(
-        '[departments]\nCore = ["src/dgov/kernel.py"]\n',
+        _provider_project_toml() + '\n[departments]\nCore = ["src/dgov/kernel.py"]\n',
         encoding="utf-8",
     )
     compiled = plan_dir / "_compiled.toml"
@@ -299,6 +423,38 @@ def test_run_compiled_plan_rejects_department_violation(
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(click.ClickException, match="Constitutional violation"):
+        run_compiled_plan(
+            str(compiled),
+            str(tmp_path),
+            plan_dir=plan_dir,
+        )
+
+
+def test_run_compiled_plan_rejects_missing_provider_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dgov.cli.run import run_compiled_plan
+
+    dgov_dir = tmp_path / ".dgov"
+    plan_dir = dgov_dir / "plans" / "missing-provider"
+    plan_dir.mkdir(parents=True)
+    (dgov_dir / "project.toml").write_text("[project]\n", encoding="utf-8")
+    compiled = plan_dir / "_compiled.toml"
+    compiled.write_text(
+        '[plan]\nname = "missing-provider"\nsource_mtime_max = "2026-04-08T00:00:00Z"\n\n'
+        "[tasks.a]\n"
+        'summary = "Do a"\n'
+        'prompt = "Orient:\\nContext.\\n\\nEdit:\\n1. Change.\\n\\nVerify:\\n- Check."\n'
+        'commit_message = "a"\n'
+        'agent = "some/model"\n'
+        'files = ["README.md"]\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(click.ClickException, match="No provider for task"):
         run_compiled_plan(
             str(compiled),
             str(tmp_path),
@@ -479,13 +635,18 @@ def _commit_sentrux_baseline(tmp_path: Path) -> tuple[Path, str]:
 
 
 def _mock_clean_sentrux_save(
-    sentrux_dir: Path,
+    _sentrux_dir: Path,
     captured: dict[str, object],
 ) -> Callable[..., subprocess.CompletedProcess[str]]:
     def _mock_run_sentrux(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured["args"] = args
         captured["timeout"] = kwargs.get("timeout")
-        (sentrux_dir / "baseline.json").write_text('{"quality": 100}\n')
+        scan_root = Path(args[-1])
+        captured["scan_root"] = str(scan_root)
+        captured["scan_head"] = _git_head(scan_root)
+        scan_sentrux_dir = scan_root / ".sentrux"
+        scan_sentrux_dir.mkdir(parents=True, exist_ok=True)
+        (scan_sentrux_dir / "baseline.json").write_text('{"quality": 100}\n')
         return subprocess.CompletedProcess(
             ["sentrux", *args],
             0,
@@ -521,13 +682,69 @@ def test_refresh_sentrux_baseline_after_clean_run_commits_metadata(
 
     _refresh_sentrux_baseline_after_clean_run(".")
 
-    assert captured["args"] == ["gate", "--save", str(tmp_path.resolve())]
+    assert cast(list[str], captured["args"])[:2] == ["gate", "--save"]
     assert captured["timeout"] == 30.0
+    assert captured["scan_root"] != str(tmp_path.resolve())
+    assert captured["scan_head"] == accepted_head
 
     metadata = json.loads((sentrux_dir / "dgov-baseline.json").read_text())
     assert metadata["accepted_head"] == accepted_head
     assert metadata["quality"] == 100
     assert _latest_commit_subject(tmp_path) == "Refresh sentrux baseline"
+
+
+def test_refresh_sentrux_baseline_after_clean_run_allows_dgov_run_metadata(
+    tmp_path: Path,
+) -> None:
+    from dgov.sentrux_baseline import refresh_sentrux_baseline_after_clean_run
+
+    _init_committed_repo(tmp_path)
+    sentrux_dir = tmp_path / ".sentrux"
+    plan_dir = tmp_path / ".dgov" / "sops" / "plan_hello"
+    deployed_log = tmp_path / ".dgov" / "plans" / "deployed.jsonl"
+    compiled_plan = plan_dir / "_compiled.toml"
+    deployed_log.parent.mkdir(parents=True)
+    plan_dir.mkdir(parents=True)
+    sentrux_dir.mkdir()
+    (sentrux_dir / "baseline.json").write_text('{"quality": 90}\n')
+    deployed_log.write_text('{"plan":"hello","unit":"old","sha":"abc","ts":"old"}\n')
+    compiled_plan.write_text('[plan]\nname = "hello"\n')
+    subprocess.run(
+        [
+            "git",
+            "add",
+            ".sentrux/baseline.json",
+            ".dgov/plans/deployed.jsonl",
+            ".dgov/sops/plan_hello/_compiled.toml",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(["git", "commit", "-q", "-m", "save dgov state"], cwd=tmp_path, check=True)
+    accepted_head = _git_head(tmp_path)
+    deployed_log.write_text(deployed_log.read_text() + '{"plan":"hello","unit":"new"}\n')
+    compiled_plan.write_text('[plan]\nname = "hello"\nsource_mtime_max = "now"\n')
+    captured: dict[str, object] = {}
+
+    committed = refresh_sentrux_baseline_after_clean_run(
+        str(tmp_path),
+        run_sentrux=_mock_clean_sentrux_save(sentrux_dir, captured),
+    )
+
+    assert committed is True
+    assert captured["scan_head"] == accepted_head
+    metadata = json.loads((sentrux_dir / "dgov-baseline.json").read_text())
+    assert metadata["accepted_head"] == accepted_head
+    assert _latest_commit_subject(tmp_path) == "Refresh sentrux baseline"
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "M .dgov/plans/deployed.jsonl" in status
+    assert "M .dgov/sops/plan_hello/_compiled.toml" in status
 
 
 def test_refresh_sentrux_baseline_after_clean_run_rejects_dirty_source_tree(
@@ -659,7 +876,7 @@ def test_record_run_completion_uses_runner_run_source_snapshot(
 
     artifacts = cast(Any, _clean_complete_artifacts())
     artifacts.runner.run_source = "workshop"
-    captured_events: list[RunCompleted] = []
+    captured_events: list[object] = []
 
     monkeypatch.setenv("DGOV_RUN_SOURCE", "invalid source")
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
@@ -686,7 +903,7 @@ def test_record_run_completion_uses_runner_run_source_snapshot(
         plan_dir=None,
     )
 
-    assert captured_events[0].run_source == "workshop"
+    assert cast(Any, captured_events[0]).run_source == "workshop"
 
 
 def test_run_reports_degraded_when_final_sentrux_compare_degrades(

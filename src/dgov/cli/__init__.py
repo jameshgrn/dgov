@@ -54,6 +54,16 @@ def resolve_plan_input(path: Path) -> tuple[Path, Path | None]:
     return path, None
 
 
+def load_project_config_or_exit(root: str | Path):
+    """Load project config for CLI commands, converting parse failures to Click errors."""
+    from dgov.config import load_project_config
+
+    try:
+        return load_project_config(root)
+    except ValueError as exc:
+        raise click.ClickException(f"Project configuration error: {exc}") from None
+
+
 def print_dag_graph(units: dict) -> None:
     """Print an ASCII representation of a plan DAG.
 
@@ -116,8 +126,10 @@ def cli(
       dgov run <dir>             Compile and run a plan directory
       dgov compile <dir>         Compile plan tree to _compiled.toml
       dgov init                  Bootstrap .dgov/project.toml and governor.md
+      dgov agents sync           Install/update shipped dgov agent skills
       dgov init-plan <name>      Initialize a new plan directory
       dgov fix <prompt>          Create and run a one-off fix plan
+      dgov kb validate           Validate the repo knowledge base
       dgov watch                 Stream events live
       dgov tools audit           Summarize worker tool-call telemetry
       dgov archive-plan <name>   Manually archive a plan
@@ -273,12 +285,14 @@ def _echo_status_task(task: dict) -> None:
 
 # Register subcommand modules — must be at bottom after cli is defined
 from dgov.cli import (  # noqa: E402
+    agents as agents,
     clean as clean,
     compile as compile,
     coverage as coverage,
     diagnose as diagnose,
     fix as fix,
     init as init,
+    kb as kb,
     ledger as ledger,
     plan as plan,
     preflight as preflight,

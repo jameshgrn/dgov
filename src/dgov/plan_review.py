@@ -12,6 +12,7 @@ was introduced), the whole event log for that plan is considered.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import json
 import logging
@@ -58,6 +59,9 @@ from dgov.semantic_settlement import describe_evidence_payload
 
 _log = logging.getLogger(__name__)
 _ITERATION_EXHAUSTED_RE = re.compile(r"Exceeded max iterations \((?P<budget>\d+)\)", re.IGNORECASE)
+_ERROR_PATH_COLLECTION_RE = re.compile(r":\s*(?P<paths>\[[^\]]*\]|\([^)]*\)|\{[^}]*\})")
+_ERROR_PATH_FALLBACK_RE = re.compile(r"\b(?P<path>(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+)\b")
+_TIMEOUT_ERROR_RE = re.compile(r"\b(?:timed out|timeout)\b", re.IGNORECASE)
 _RUNS_LOG_HEADER_RE = re.compile(r"^\[([^\]]+)\]\s+(\S+)")
 _RUNS_LOG_STATUS_RE = re.compile(r"^\[[^\]]+\]\s+\S+\s+\([^)]+\)\s+—\s+(\w+)")
 _RUNS_LOG_SENTRUX_RE = re.compile(r"sentrux:\s*(\d+)\s*->\s*(\d+|None)")
@@ -260,6 +264,7 @@ def synthesize_hint(
     error: str | None,
     iterations: int | None,
     iteration_budget: int | None,
+    settlement_retries: int = 0,
 ) -> str | None:
     """Build a short actionable hint from a failure's shape.
 
@@ -270,7 +275,10 @@ def synthesize_hint(
     exhausted_hint = _iteration_exhaustion_hint(error, iteration_budget)
     if exhausted_hint is not None:
         return exhausted_hint
-    return _verdict_hint(verdict, error)
+    hint = _verdict_hint(verdict, error)
+    if hint is None:
+        hint = _error_shape_hint(verdict, error)
+    return _with_retry_context(hint, settlement_retries)
 
 
 def _iteration_exhaustion_hint(error: str | None, iteration_budget: int | None) -> str | None:
@@ -296,13 +304,98 @@ def _verdict_hint(verdict: str | None, error: str | None) -> str | None:
     v = verdict.lower()
     if v == "scope_violation":
         return _scope_violation_hint(error)
+    if v == "read_scope_violation":
+        return _read_scope_violation_hint(error)
     return _VERDICT_HINTS.get(v)
 
 
 def _scope_violation_hint(error: str | None) -> str:
-    if error and ":" in error:
+    paths = _extract_error_paths(error)
+    if paths:
+        return (
+            "worker touched unclaimed files — add "
+            f"{_format_paths_for_hint(paths)} to files.edit OR split into a new task"
+        )
+    if error:
         return "worker touched unclaimed files — add them to files.edit OR split into a new task"
     return "worker touched unclaimed files — add them to files.edit"
+
+
+def _read_scope_violation_hint(error: str | None) -> str:
+    paths = _extract_error_paths(error)
+    if paths:
+        return (
+            "worker edited read-only files — move "
+            f"{_format_paths_for_hint(paths)} from files.read to files.edit OR revert those edits"
+        )
+    return "worker edited read-only files — move them to files.edit OR revert those edits"
+
+
+def _error_shape_hint(verdict: str | None, error: str | None) -> str | None:
+    v = verdict.lower() if isinstance(verdict, str) else ""
+    if v in {"task_timed_out", "timed_out"} or (error and _TIMEOUT_ERROR_RE.search(error)):
+        return (
+            "worker timed out before settlement — split the task or raise timeout_s "
+            "if the work is legitimately long"
+        )
+    if v in {"worker_error", "task_failed"} or (error and verdict is None):
+        return (
+            "worker failed before settlement — inspect the worker error, then fix "
+            "setup/provider state or narrow the task"
+        )
+    return None
+
+
+def _with_retry_context(hint: str | None, settlement_retries: int) -> str | None:
+    if hint is None or settlement_retries <= 0:
+        return hint
+    noun = "retry" if settlement_retries == 1 else "retries"
+    return f"after {settlement_retries} settlement {noun}: {hint}"
+
+
+def _extract_error_paths(error: str | None) -> tuple[str, ...]:
+    if not error:
+        return ()
+    paths: list[str] = []
+    for match in _ERROR_PATH_COLLECTION_RE.finditer(error):
+        paths.extend(_paths_from_literal_collection(match.group("paths")))
+    if not paths:
+        paths.extend(match.group("path") for match in _ERROR_PATH_FALLBACK_RE.finditer(error))
+    return _unique_paths(paths)
+
+
+def _paths_from_literal_collection(raw: str) -> list[str]:
+    try:
+        parsed = ast.literal_eval(raw)
+    except (SyntaxError, ValueError):
+        return []
+    if isinstance(parsed, str):
+        return [parsed]
+    if isinstance(parsed, dict):
+        items = parsed.keys()
+    elif isinstance(parsed, list | tuple | set):
+        items = parsed
+    else:
+        return []
+    return [item for item in items if isinstance(item, str)]
+
+
+def _unique_paths(paths: list[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for path in paths:
+        normalized = path.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+    return tuple(unique)
+
+
+def _format_paths_for_hint(paths: tuple[str, ...]) -> str:
+    if len(paths) == 1:
+        return paths[0]
+    return ", ".join(paths)
 
 
 # ---------------------------------------------------------------------------
@@ -598,10 +691,12 @@ def _apply_terminal_event(ev: _EventWithId, state: dict) -> None:
     state["terminal_ts"] = ev.ts
     if isinstance(ev.event, MergeCompleted):
         state["merged_in_run"] = True
-    elif isinstance(ev.event, (TaskMergeFailed, ReviewFail, TaskAbandoned)):
+    elif isinstance(ev.event, (TaskFailed, TaskMergeFailed, ReviewFail, TaskAbandoned)):
         state["failed_in_run"] = True
         if isinstance(ev.event, ReviewFail):
             _extract_review_fail_fields(ev, state)
+        elif isinstance(ev.event, TaskFailed) and ev.event.error:
+            state["error"] = ev.event.error
 
 
 def _apply_task_token_event(ev: _EventWithId, state: dict) -> None:
@@ -670,7 +765,9 @@ def _apply_lifecycle_event(ev: _EventWithId, state: dict) -> None:
         state["dispatched_ts"] = ev.ts
         return
     _apply_task_token_event(ev, state)
-    if isinstance(ev.event, (MergeCompleted, TaskMergeFailed, ReviewFail, TaskAbandoned)):
+    if isinstance(
+        ev.event, (MergeCompleted, TaskFailed, TaskMergeFailed, ReviewFail, TaskAbandoned)
+    ):
         _apply_terminal_event(ev, state)
         state["phase"] = None
         return
@@ -1037,6 +1134,7 @@ def _failed_unit_hint(
         rollup["error"],
         rollup["iterations"],
         unit_iteration_budget,
+        settlement_retries=rollup["settlement_retries"],
     )
 
 

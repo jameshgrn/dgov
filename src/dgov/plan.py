@@ -9,6 +9,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import re
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -92,12 +93,15 @@ class PlanUnit:
     files: PlanUnitFiles
     depends_on: tuple[str, ...] = ()
     agent: str | None = None
+    provider: str | None = None
     role: Literal["worker", "researcher", "reviewer"] = "worker"
     timeout_s: int | None = None
     iteration_budget: int | None = None
     test_cmd: str | None = None
     prompt_file: str | None = None
     sop_mapping: tuple[str, ...] = ()
+    self_review: bool = False
+    max_fork_depth: int = 1
 
 
 @dataclass(frozen=True)
@@ -110,6 +114,7 @@ class PlanSpec:
     project_root: str = "."
     session_root: str = "."
     default_agent: str | None = None
+    default_provider: str | None = None
     default_timeout_s: int = 600
     max_retries: int = 3
     sop_set_hash: str | None = None
@@ -156,6 +161,7 @@ def _dag_task_to_plan_unit(
         prompt=prompt,
         commit_message=task.commit_message or "",
         agent=task.agent,
+        provider=task.provider,
         role=task.role,
         depends_on=task.depends_on,
         timeout_s=task.timeout_s,
@@ -163,6 +169,8 @@ def _dag_task_to_plan_unit(
         test_cmd=task.test_cmd,
         prompt_file=task.prompt_file,
         sop_mapping=task.sop_mapping,
+        self_review=task.self_review,
+        max_fork_depth=task.max_fork_depth,
         files=PlanUnitFiles(
             create=task.files.create,
             edit=task.files.edit,
@@ -191,6 +199,7 @@ def parse_plan_file(path: str) -> PlanSpec:
         session_root=dag_def.session_root,
         units=units,
         default_agent=dag_def.default_agent,
+        default_provider=dag_def.default_provider,
         max_retries=dag_def.default_max_retries,
         sop_set_hash=dag_def.sop_set_hash,
         source_mtime_max=dag_def.source_mtime_max,
@@ -209,27 +218,83 @@ class PlanValidationError(ValueError):
 def compile_plan(
     plan: PlanSpec,
     project_agent: str = "",
+    project_provider: str = "",
+    provider_agents: Mapping[str, str] | None = None,
+    provider_names: Collection[str] | None = None,
+    require_provider: bool = False,
     departments: dict[str, list[str]] | None = None,
 ) -> DagDefinition:
     """Compile a PlanSpec into a DagDefinition.
 
-    Agent resolution: task.agent → plan.default_agent → project_agent.
+    Agent resolution: task.agent → plan.default_agent → selected provider
+    default_agent → project_agent.
     Raises PlanValidationError if the plan has structural errors.
     Raises ConstitutionalViolation if file claims violate department ownership.
     """
-    issues = validate_plan(plan, departments=departments)
-    _raise_blocking_validation_issues(issues)
+    agents = provider_agents or {}
+    _raise_blocking_validation_issues(
+        _compile_plan_issues(
+            plan,
+            departments=departments,
+            project_agent=project_agent,
+            project_provider=project_provider,
+            provider_agents=agents,
+            provider_names=provider_names,
+            require_provider=require_provider,
+        )
+    )
 
     return DagDefinition(
         name=plan.name,
         dag_file="compiled-plan",
         project_root=plan.project_root,
         session_root=plan.session_root,
-        tasks={
-            slug: _compile_plan_task(slug, unit, plan, project_agent)
-            for slug, unit in plan.units.items()
-        },
+        default_provider=plan.default_provider or project_provider,
+        tasks=_compile_plan_tasks(plan, project_agent, project_provider, agents),
     )
+
+
+def _compile_plan_issues(
+    plan: PlanSpec,
+    *,
+    departments: dict[str, list[str]] | None,
+    project_agent: str,
+    project_provider: str,
+    provider_agents: Mapping[str, str],
+    provider_names: Collection[str] | None,
+    require_provider: bool,
+) -> list[PlanIssue]:
+    issues = validate_plan(plan, departments=departments)
+    issues.extend(
+        validate_execution_resolution(
+            plan,
+            project_agent=project_agent,
+            project_provider=project_provider,
+            provider_agents=provider_agents,
+            provider_names=provider_names,
+            require_provider=require_provider,
+        )
+    )
+    return issues
+
+
+def _compile_plan_tasks(
+    plan: PlanSpec,
+    project_agent: str,
+    project_provider: str,
+    provider_agents: Mapping[str, str],
+) -> dict[str, DagTaskSpec]:
+    return {
+        slug: _compile_plan_task(
+            slug,
+            unit,
+            plan,
+            project_agent,
+            project_provider,
+            provider_agents,
+        )
+        for slug, unit in plan.units.items()
+    }
 
 
 def _raise_blocking_validation_issues(issues: list[PlanIssue]) -> None:
@@ -259,13 +324,25 @@ def _compile_plan_task(
     unit: PlanUnit,
     plan: PlanSpec,
     project_agent: str,
+    project_provider: str,
+    provider_agents: Mapping[str, str],
 ) -> DagTaskSpec:
+    provider = _resolve_task_provider(unit, plan, project_provider)
     return DagTaskSpec(
         slug=slug,
         summary=unit.summary,
         prompt=unit.prompt,
         commit_message=unit.commit_message,
-        agent=_resolve_task_agent(slug, unit, plan, project_agent),
+        agent=_resolve_task_agent(
+            slug,
+            unit,
+            plan,
+            project_agent,
+            project_provider,
+            provider,
+            provider_agents,
+        ),
+        provider=provider,
         role=unit.role,
         depends_on=unit.depends_on,
         files=_compile_plan_files(unit.files),
@@ -273,6 +350,8 @@ def _compile_plan_task(
         iteration_budget=unit.iteration_budget,
         test_cmd=unit.test_cmd,
         sop_mapping=unit.sop_mapping,
+        self_review=unit.self_review,
+        max_fork_depth=unit.max_fork_depth,
     )
 
 
@@ -281,8 +360,18 @@ def _resolve_task_agent(
     unit: PlanUnit,
     plan: PlanSpec,
     project_agent: str,
+    project_provider: str,
+    provider: str | None,
+    provider_agents: Mapping[str, str],
 ) -> str:
-    agent = unit.agent or plan.default_agent or project_agent
+    agent = _resolve_execution_agent(
+        unit,
+        plan,
+        project_agent=project_agent,
+        project_provider=project_provider,
+        provider=provider,
+        provider_agents=provider_agents,
+    )
     if agent:
         return agent
     raise PlanValidationError([
@@ -293,6 +382,137 @@ def _resolve_task_agent(
             unit=slug,
         )
     ])
+
+
+def _resolve_execution_agent(
+    unit: PlanUnit,
+    plan: PlanSpec,
+    *,
+    project_agent: str,
+    project_provider: str,
+    provider: str | None,
+    provider_agents: Mapping[str, str],
+) -> str:
+    provider_agent = provider_agents.get(provider or "")
+    return (
+        unit.agent
+        or plan.default_agent
+        or provider_agent
+        or _project_agent_for_provider(provider, project_provider, project_agent)
+    )
+
+
+def _resolve_task_provider(
+    unit: PlanUnit,
+    plan: PlanSpec,
+    project_provider: str,
+) -> str | None:
+    provider = unit.provider or plan.default_provider or project_provider
+    return provider or None
+
+
+def _project_agent_for_provider(
+    provider: str | None,
+    project_provider: str,
+    project_agent: str,
+) -> str:
+    if not project_agent:
+        return ""
+    if not provider or not project_provider or provider == project_provider:
+        return project_agent
+    return ""
+
+
+def validate_execution_resolution(
+    plan: PlanSpec,
+    *,
+    project_agent: str = "",
+    project_provider: str = "",
+    provider_agents: Mapping[str, str] | None = None,
+    provider_names: Collection[str] | None = None,
+    require_provider: bool = False,
+) -> list[PlanIssue]:
+    """Validate provider and model resolution for executable plans."""
+    agents = provider_agents or {}
+    known_providers = _known_provider_set(provider_names)
+    return [
+        issue
+        for slug, unit in plan.units.items()
+        for issue in _execution_resolution_issues_for_unit(
+            slug,
+            unit,
+            plan,
+            project_agent=project_agent,
+            project_provider=project_provider,
+            provider_agents=agents,
+            known_providers=known_providers,
+            require_provider=require_provider,
+        )
+    ]
+
+
+def _known_provider_set(provider_names: Collection[str] | None) -> set[str] | None:
+    return set(provider_names) if provider_names is not None else None
+
+
+def _execution_resolution_issues_for_unit(
+    slug: str,
+    unit: PlanUnit,
+    plan: PlanSpec,
+    *,
+    project_agent: str,
+    project_provider: str,
+    provider_agents: Mapping[str, str],
+    known_providers: set[str] | None,
+    require_provider: bool,
+) -> list[PlanIssue]:
+    provider = _resolve_task_provider(unit, plan, project_provider)
+    if not provider:
+        return [_missing_provider_issue(slug)] if require_provider else []
+    if known_providers is not None and provider not in known_providers:
+        return [_unknown_provider_issue(slug, provider)]
+    agent = _resolve_execution_agent(
+        unit,
+        plan,
+        project_agent=project_agent,
+        project_provider=project_provider,
+        provider=provider,
+        provider_agents=provider_agents,
+    )
+    return [] if agent else [_missing_agent_issue(slug, provider)]
+
+
+def _missing_provider_issue(slug: str) -> PlanIssue:
+    return PlanIssue(
+        severity="error",
+        message=(
+            f"No provider for task '{slug}' — set provider in task, "
+            "[plan] default_provider, or [project].provider"
+        ),
+        unit=slug,
+    )
+
+
+def _unknown_provider_issue(slug: str, provider: str) -> PlanIssue:
+    return PlanIssue(
+        severity="error",
+        message=(
+            f"Unknown provider '{provider}' for task '{slug}' — define "
+            f"[providers.{provider}] in .dgov/project.toml"
+        ),
+        unit=slug,
+    )
+
+
+def _missing_agent_issue(slug: str, provider: str) -> PlanIssue:
+    return PlanIssue(
+        severity="error",
+        message=(
+            f"No agent for task '{slug}' — set in task, [plan] default_agent, "
+            f"or [providers.{provider}].default_agent"
+        ),
+        unit=slug,
+    )
 
 
 def _compile_plan_files(files: PlanUnitFiles) -> DagFileSpec:
@@ -373,6 +593,8 @@ def _to_dag_definition_for_import_analysis(plan: PlanSpec) -> DagDefinition:
             ),
             timeout_s=unit.timeout_s or plan.default_timeout_s,
             iteration_budget=unit.iteration_budget,
+            self_review=unit.self_review,
+            max_fork_depth=unit.max_fork_depth,
             test_cmd=unit.test_cmd,
         )
     return DagDefinition(

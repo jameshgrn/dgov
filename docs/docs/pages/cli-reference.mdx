@@ -7,6 +7,7 @@ Every `dgov` command and flag, grouped by purpose.
 | Command | Group | Description |
 |---------|-------|-------------|
 | [`dgov init`](#dgov-init) | Bootstrap | Scaffold `.dgov/project.toml`, `governor.md`, and `sops/` |
+| [`dgov agents sync`](#dgov-agents-sync) | Bootstrap | Install/update shipped dgov machine-agent skills |
 | [`dgov init-plan`](#dgov-init-plan) | Plans | Create an empty plan tree |
 | [`dgov plan create`](#dgov-plan-create) | Plans | Auto-generate a plan tree from a goal |
 | [`dgov compile`](#dgov-compile) | Plans | Compile a plan tree to `_compiled.toml` |
@@ -22,6 +23,7 @@ Every `dgov` command and flag, grouped by purpose.
 | [`dgov tools audit`](#dgov-tools-audit) | Observability | Worker tool-call telemetry |
 | [`dgov diagnose`](#dgov-diagnose) | Observability | Match known failure shapes to next actions |
 | [`dgov ledger`](#dgov-ledger) | Observability | Record bugs, rules, decisions, debt |
+| [`dgov kb`](#dgov-kb) | Observability | Browse and validate the repo knowledge base |
 | [`dgov preflight`](#dgov-preflight) | Gates | Run settlement gates on local changes |
 | [`dgov verify`](#dgov-verify) | Gates | Run project-local verification recipes |
 | [`dgov scope status`](#dgov-scope-status) | Gates | Preview settlement scope status |
@@ -67,12 +69,30 @@ Detected fields written to `[project]`:
 
 - `language`, `src_dir`, `test_dir`, `source_extensions`
 - `test_cmd`, `lint_cmd`, `format_cmd`, `lint_fix_cmd`, `format_check_cmd`
-- `default_agent`, `llm_base_url`, `llm_api_key_env`
+- `[project].provider` and `[providers.<name>]` entries
 - `coverage_cmd`, `coverage_threshold`
 - `[tool_policy]` defaults
 - `[scope] ignore_files` seeded from detected lockfiles
 
-See [LLM Providers](/llm-providers) for endpoint variations.
+See [LLM Providers](/llm-providers) for provider variations.
+
+### `dgov agents sync`
+
+Install or refresh the dgov-maintained skills in a local machine-agent skill
+directory. The command updates only shipped dgov skill names and leaves other
+skills alone.
+
+```bash
+dgov agents sync
+dgov agents sync --skills-dir ~/.agents/skills
+```
+
+| Flag | Description |
+|------|-------------|
+| `--skills-dir` | Local agent skill directory to update (default: `~/.agents/skills`) |
+
+The canonical source is `agent-guidance/skills/`; packaged installs load the
+same bundle through `dgov.agent_skill_data`.
 
 ---
 
@@ -399,6 +419,70 @@ dgov ledger list -c rule -s resolved        # resolved rules
 dgov ledger resolve 3                       # mark entry #3 resolved
 ```
 
+### `dgov kb`
+
+Browse and validate the repo knowledge base under `docs/knowledge/`. Articles
+are Markdown files with strict frontmatter: stable ID, kind, status, canonical
+source paths, and related article IDs.
+
+```bash
+dgov kb list
+dgov kb show sentrux
+dgov kb validate
+dgov --json kb list
+```
+
+`dgov kb validate` checks that article IDs are unique, sources exist and point
+outside the KB, related IDs resolve, and each article's first H1 matches its
+frontmatter title.
+
+#### `dgov kb graph`
+
+Dump the full knowledge graph: article nodes, source nodes, and edges.
+
+```bash
+dgov kb graph
+```
+
+In JSON mode, the payload contains `articles`, `sources`, and `edges` with
+`relation` values of `source` or `related`.
+
+#### `dgov kb related`
+
+Show article IDs reachable through `related` edges from a starting article,
+within a given depth.
+
+```bash
+dgov kb related sentrux
+dgov kb related sentrux --depth 2
+```
+
+| Flag | Description |
+|------|-------------|
+| `--depth INTEGER` | Traversal depth (default: 1) |
+| `-r, --root TEXT` | Project root |
+
+#### `dgov kb path`
+
+Show the shortest `related`-edge path between two articles.
+
+```bash
+dgov kb path sentrux settlement-flow
+```
+
+| Flag | Description |
+|------|-------------|
+| `-r, --root TEXT` | Project root |
+
+#### `dgov kb open`
+
+Open a knowledge base article in Obsidian. If the `obsidian` CLI is available,
+it calls `obsidian open <path>`; otherwise it prints an `obsidian://` URI.
+
+```bash
+dgov kb open sentrux
+```
+
 ---
 
 ## Gates
@@ -408,8 +492,8 @@ dgov ledger resolve 3                       # mark entry #3 resolved
 Run the settlement acceptance gates against the local working tree without
 spawning a worker. The result tells you whether the current checkout would
 pass the gates a dispatched task has to clear. It also checks dgov source
-policy drift: guidance mirrors and bootstrap policy packaging must match the
-canonical repo files.
+policy drift: guidance mirrors, bootstrap policy packaging, and agent skill
+packaging must match the canonical repo files.
 
 ```bash
 dgov preflight

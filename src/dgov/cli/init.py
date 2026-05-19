@@ -508,11 +508,11 @@ _LANG_TEMPLATES: dict[str, dict[str, str]] = {
         "format_check_cmd": "gofmt -l {file}",
     },
     "swift": {
-        "test_cmd": "swift test",
-        "lint_cmd": "xcrun swift-format lint --strict {file}",
-        "format_cmd": "xcrun swift-format format --in-place {file}",
-        "lint_fix_cmd": "xcrun swift-format format --in-place {file}",
-        "format_check_cmd": "xcrun swift-format lint --strict {file}",
+        "test_cmd": "",
+        "lint_cmd": "",
+        "format_cmd": "",
+        "lint_fix_cmd": "",
+        "format_check_cmd": "",
     },
     "unknown": {
         "test_cmd": "",
@@ -524,12 +524,12 @@ _LANG_TEMPLATES: dict[str, dict[str, str]] = {
 }
 
 _COMMAND_HINTS = {
-    "test_cmd": "Not detected. Try: 'npx vitest run {test_dir}'",
-    "lint_cmd": "Not detected. Try: 'npx eslint {file}'",
-    "format_cmd": "Not detected. Try: 'npx prettier --write {file}'",
-    "lint_fix_cmd": "Not detected. Try: 'npx eslint --fix {file}'",
-    "format_check_cmd": "Not detected. Try: 'npx prettier --check {file}'",
-    "type_check_cmd": "Not detected. Try: 'npx tsc --noEmit'",
+    "test_cmd": "Configure a project-local test command or verify recipe",
+    "lint_cmd": "Configure a project-local lint command or verify recipe",
+    "format_cmd": "Configure a project-local format command or verify recipe",
+    "lint_fix_cmd": "Configure a project-local lint-fix command or verify recipe",
+    "format_check_cmd": "Configure a project-local format-check command or verify recipe",
+    "type_check_cmd": "Configure a project-local type-check command or verify recipe",
 }
 
 
@@ -551,6 +551,7 @@ def _render_project_toml(
         *_coverage_lines(cmds),
         *_setup_lines(language),
         *_runtime_config_lines(),
+        *_provider_lines(),
         *_tool_policy_lines(language),
         *_scope_lines(ignore_files),
         *_convention_lines(),
@@ -595,11 +596,6 @@ def _project_header_lines(
         f'src_dir = "{src_dir}"',
         f'test_dir = "{test_dir}"',
         f"source_extensions = [{ext_str}]",
-        "",
-        "# OpenAI-compatible worker endpoint",
-        'default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"',
-        'llm_base_url = "https://api.fireworks.ai/inference/v1"',
-        'llm_api_key_env = "FIREWORKS_API_KEY"',
         "",
         "# Sentrux baseline is explicit governor-owned state.",
         '# Run "dgov sentrux gate-save" after bootstrap and whenever you intentionally',
@@ -649,8 +645,6 @@ def _setup_lines(language: str) -> list[str]:
             'setup_cmd = "npm ci --ignore-scripts 2>/dev/null'
             ' || npm install --ignore-scripts 2>/dev/null"'
         ]
-    if language == "swift":
-        return ['setup_cmd = "if [ -f project.yml ]; then USER=$(whoami) xcodegen generate; fi"']
     return ['# setup_cmd = ""  # Runs in worktree before gates']
 
 
@@ -675,6 +669,20 @@ def _runtime_config_lines() -> list[str]:
     ]
 
 
+def _provider_lines() -> list[str]:
+    return [
+        "# OpenAI-compatible worker provider.",
+        "# Configure this before running executable worker plans.",
+        '# provider = "your-provider"',
+        "",
+        "# [providers.your-provider]",
+        '# default_agent = "provider/model-name"',
+        '# base_url = "https://provider.example.com/v1"',
+        '# api_key_env = "YOUR_PROVIDER_API_KEY"',
+        "",
+    ]
+
+
 def _tool_policy_lines(language: str) -> list[str]:
     return [
         "[tool_policy]",
@@ -690,6 +698,11 @@ def _tool_policy_lines(language: str) -> list[str]:
 def _scope_lines(ignore_files: list[str]) -> list[str]:
     return [
         "[scope]",
+        "# Optional project-level merge surface. deny_files wins over allow_files and",
+        "# cannot be bypassed by plan file claims. Leave allow_files empty for claim-only scope.",
+        "allow_files = []",
+        "deny_files = []",
+        "",
         "# Files exempted from scope-violation checks in addition to dgov's built-in",
         "# Python defaults: .venv, uv.lock, __pycache__, and *.pyc.",
         "# Add repo-specific managed files here when workers may touch them incidentally.",
@@ -842,13 +855,6 @@ def _worker_env_probe(
         ("whoami", "whoami"),
         ("USER", "printenv USER"),
     ]
-    if detection.language == "swift":
-        probes = [
-            ("xcodegen", "command -v xcodegen"),
-            ("swift-format", "command -v swift-format"),
-            ("xcrun swift-format", "xcrun --find swift-format"),
-            *probes,
-        ]
     try:
         return [(name, *_probe_status(tools.run_bash(command))) for name, command in probes]
     finally:

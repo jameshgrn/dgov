@@ -8,9 +8,8 @@ from pathlib import Path
 
 import click
 
-from dgov.cli import _output, cli, want_json
+from dgov.cli import _output, cli, load_project_config_or_exit, want_json
 from dgov.cli.run import run_sentrux, sentrux_available
-from dgov.config import load_project_config
 from dgov.repo_snapshot import format_structural_offender_report, likely_structural_offenders
 from dgov.sentrux_baseline import (
     record_sentrux_baseline_metadata,
@@ -55,11 +54,17 @@ def _run_sentrux_check(target: str) -> subprocess.CompletedProcess[str]:
     try:
         return run_sentrux(["check", target])
     except subprocess.CalledProcessError as e:
-        click.echo(f"Error: sentrux check failed: {e.stderr or e.stdout}", err=True)
+        output = _completed_process_output(e.stdout, e.stderr)
+        click.echo(f"Error: sentrux check failed: {output}", err=True)
         raise click.exceptions.Exit(code=1) from e
     except subprocess.TimeoutExpired as e:
         click.echo("Error: sentrux check timed out", err=True)
         raise click.exceptions.Exit(code=1) from e
+
+
+def _completed_process_output(stdout: str | None, stderr: str | None) -> str:
+    parts = [part.strip() for part in (stdout, stderr) if part and part.strip()]
+    return "\n".join(parts) if parts else "no output"
 
 
 def _run_sentrux_gate(target: str) -> subprocess.CompletedProcess[str]:
@@ -103,7 +108,7 @@ def _assess_gate_degradation(
     returncode: int,
     fail_on_degradation: bool,
 ) -> None:
-    config = load_project_config(target_path)
+    config = load_project_config_or_exit(target_path)
     assessment = assess_sentrux_gate(
         scan_root=target_path,
         project_root=target_path,

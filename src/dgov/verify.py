@@ -6,7 +6,7 @@ import subprocess
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
 
@@ -66,6 +66,11 @@ def _recipe_from_section(name: str, section: Mapping[str, Any]) -> VerifyRecipe:
     _reject_unknown_fields(section, name)
     description = _optional_string(section, name, "description")
     log_name = _optional_string(section, name, "log_name")
+    _validate_log_file_name(
+        name,
+        log_name or f"{name}.log",
+        "log_name" if log_name else "log file name",
+    )
     parser = _optional_string(section, name, "parser")
     return VerifyRecipe(
         name=name,
@@ -84,12 +89,12 @@ def load_verify_recipes(raw: Mapping[str, Any]) -> dict[str, VerifyRecipe]:
     """
     verify_section = raw.get("verify", {})
     if not isinstance(verify_section, dict):
-        return {}
+        raise ValueError(".dgov/project.toml [verify] must be a table")
 
     recipes: dict[str, VerifyRecipe] = {}
     for name, section in verify_section.items():
         if not isinstance(section, dict):
-            continue
+            raise ValueError(f"verify recipe {name!r}: section must be a table")
         recipes[name] = _recipe_from_section(name, section)
 
     return recipes
@@ -98,6 +103,38 @@ def load_verify_recipes(raw: Mapping[str, Any]) -> dict[str, VerifyRecipe]:
 def _count_warnings(text: str) -> int:
     """Conservatively count warning lines in captured output."""
     return sum(1 for line in text.splitlines() if "warning" in line.lower())
+
+
+def _validate_log_file_name(recipe_name: str, value: str, field: str) -> None:
+    windows_path = PureWindowsPath(value)
+    if (
+        value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+        or Path(value).is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+    ):
+        raise ValueError(f"verify recipe {recipe_name!r}: {field} must be a file name, not a path")
+
+
+def _log_file_for_recipe(log_dir: Path, recipe: VerifyRecipe) -> Path:
+    file_name = recipe.log_name or f"{recipe.name}.log"
+    _validate_log_file_name(
+        recipe.name,
+        file_name,
+        "log_name" if recipe.log_name else "log file name",
+    )
+    log_file = log_dir / file_name
+    resolved_dir = log_dir.resolve(strict=False)
+    resolved_file = log_file.resolve(strict=False)
+    try:
+        resolved_file.relative_to(resolved_dir)
+    except ValueError as exc:
+        raise ValueError(
+            f"verify recipe {recipe.name!r}: log file must stay under {log_dir}"
+        ) from exc
+    return log_file
 
 
 def _execute_verify_command(
@@ -129,8 +166,8 @@ def _run_single(
     timeout: float,
 ) -> VerifyCommandResult:
     log_dir = root / ".dgov" / "runtime" / "verify"
+    log_file = _log_file_for_recipe(log_dir, recipe)
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / (recipe.log_name or f"{recipe.name}.log")
 
     start = time.monotonic()
     exit_code, output = _execute_verify_command(root, recipe, timeout)
@@ -174,7 +211,7 @@ def run_verify_recipes(
 ) -> VerifyRunResult:
     """Execute multiple verification recipes and return the aggregated result."""
     root_path = Path(root)
-    selected = recipes if names is None else {k: recipes[k] for k in names if k in recipes}
+    selected = recipes if names is None else _select_recipes(recipes, names)
 
     results: list[VerifyCommandResult] = []
     for recipe in selected.values():
@@ -182,3 +219,13 @@ def run_verify_recipes(
 
     status = "pass" if all(r.exit_code == 0 for r in results) else "fail"
     return VerifyRunResult(status=status, results=tuple(results))
+
+
+def _select_recipes(
+    recipes: Mapping[str, VerifyRecipe],
+    names: tuple[str, ...],
+) -> dict[str, VerifyRecipe]:
+    missing = [name for name in names if name not in recipes]
+    if missing:
+        raise ValueError(f"unknown verify recipe {missing[0]!r}")
+    return {name: recipes[name] for name in names}

@@ -69,9 +69,82 @@ def test_policy_drift_accepts_derived_bootstrap_policy_assets(tmp_path: Path) ->
     assert find_policy_drift(tmp_path) == []
 
 
+def test_policy_drift_flags_stale_agent_skill_mirrors(tmp_path: Path) -> None:
+    _write(tmp_path / "agent-guidance" / "skills" / "dgov-plan" / "SKILL.md", "source\n")
+    _write(tmp_path / "src" / "dgov" / "agent_skill_data" / "__init__.py", "")
+    _write(
+        tmp_path / "src" / "dgov" / "agent_skill_data" / "skills" / "dgov-plan" / "SKILL.md",
+        "mirror\n",
+    )
+    _write(
+        tmp_path / "pyproject.toml",
+        """
+[tool.hatch.build.targets.wheel.force-include]
+"agent-guidance/skills" = "dgov/agent_skill_data/skills"
+""",
+    )
+
+    assert find_policy_drift(tmp_path) == [
+        "Agent skill assets are mirrored under "
+        "src/dgov/agent_skill_data/skills: dgov-plan/SKILL.md"
+    ]
+
+
+def test_policy_drift_flags_missing_agent_skill_force_include(tmp_path: Path) -> None:
+    _write(tmp_path / "agent-guidance" / "skills" / "dgov-plan" / "SKILL.md", "source\n")
+    _write(tmp_path / "src" / "dgov" / "agent_skill_data" / "__init__.py", "")
+    _write(tmp_path / "pyproject.toml", "[tool.hatch.build.targets.wheel.force-include]\n")
+
+    assert find_policy_drift(tmp_path) == [
+        "Agent skill wheel force-include missing: "
+        "agent-guidance/skills -> dgov/agent_skill_data/skills"
+    ]
+
+
+def test_policy_drift_flags_project_local_swift_xcode_bootstrap_sops(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path / ".dgov" / "governor.md", "repo governor\n")
+    _write(
+        tmp_path / ".dgov" / "sops" / "swift.md",
+        """---
+name: swift
+title: Swift Toolchain & Project Setup
+summary: Swift and Xcode project rules.
+applies_to: [swift, xcode, xcodebuild, swift-format, xcodegen, macos]
+priority: must
+---
+## When
+- editing Swift source
+## Do
+- prefer project-local wrappers
+## Do Not
+- hardcode wrappers in core
+## Verify
+- run project-local checks
+## Escalate
+- if tooling is missing
+""",
+    )
+    _write(tmp_path / "src" / "dgov" / "bootstrap_policy_data" / "__init__.py", "")
+    _write(
+        tmp_path / "pyproject.toml",
+        """
+[tool.hatch.build.targets.wheel.force-include]
+".dgov/governor.md" = "dgov/bootstrap_policy_data/governor.md"
+".dgov/sops" = "dgov/bootstrap_policy_data/sops"
+""",
+    )
+
+    assert find_policy_drift(tmp_path) == [
+        "Project-local Swift/Xcode policy is in core bootstrap SOPs: swift.md"
+    ]
+
+
 def test_pyproject_packages_bootstrap_policy_from_repo_canonical_files() -> None:
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     force_include = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
 
     assert force_include[".dgov/governor.md"] == "dgov/bootstrap_policy_data/governor.md"
     assert force_include[".dgov/sops"] == "dgov/bootstrap_policy_data/sops"
+    assert force_include["agent-guidance/skills"] == "dgov/agent_skill_data/skills"

@@ -197,9 +197,10 @@ async def _read_planner_event(proc: asyncio.subprocess.Process) -> dict | None:
     if not line:
         return {}
     try:
-        return json.loads(line)
+        data = json.loads(line)
     except json.JSONDecodeError:
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 async def _handle_planner_event(
@@ -352,9 +353,21 @@ def _plan_create_settings(
 ) -> tuple[str, str, bool]:
     from dgov.config import load_project_config
 
-    pc = load_project_config(str(project_root))
-    agent = model or pc.default_agent
-    return agent, json.dumps(pc.to_worker_payload()), not autonomous
+    try:
+        pc = load_project_config(str(project_root))
+    except ValueError as exc:
+        raise click.ClickException(f"Planner provider is not configured: {exc}") from None
+    agent = (model or pc.default_agent).strip()
+    if not agent:
+        raise click.ClickException(
+            "Planner model is not configured. Set [providers.<name>].default_agent "
+            "in .dgov/project.toml, or pass --model."
+        )
+    try:
+        config_json = json.dumps(pc.to_worker_payload())
+    except ValueError as exc:
+        raise click.ClickException(f"Planner provider is not configured: {exc}") from None
+    return agent, config_json, not autonomous
 
 
 def _run_planner_or_exit(

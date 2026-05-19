@@ -57,6 +57,7 @@ packages = ["src/dgov"]
 [tool.hatch.build.targets.wheel.force-include]
 ".dgov/governor.md" = "dgov/bootstrap_policy_data/governor.md"
 ".dgov/sops" = "dgov/bootstrap_policy_data/sops"
+"agent-guidance/skills" = "dgov/agent_skill_data/skills"
 
 [tool.ruff]
 line-length = 99

@@ -8,6 +8,20 @@ from typing import Any
 
 from dgov.tool_policy import ToolPolicy, parse_tool_policy
 
+DEFAULT_LLM_PROVIDER = ""
+DEFAULT_LLM_BASE_URL = ""
+DEFAULT_LLM_API_KEY_ENV = ""
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    """Resolved OpenAI-compatible provider endpoint."""
+
+    name: str
+    base_url: str
+    api_key_env: str
+    default_agent: str = ""
+
 
 @dataclass(frozen=True)
 class AtomicConfig:
@@ -21,8 +35,9 @@ class AtomicConfig:
     language: str = "python"
     src_dir: str = "src/"
     test_dir: str = "tests/"
-    llm_base_url: str = "https://api.fireworks.ai/inference/v1"
-    llm_api_key_env: str = "FIREWORKS_API_KEY"
+    llm_provider: str = DEFAULT_LLM_PROVIDER
+    llm_base_url: str = DEFAULT_LLM_BASE_URL
+    llm_api_key_env: str = DEFAULT_LLM_API_KEY_ENV
     test_cmd: str = "python -m pytest {test_dir} -q --tb=short"
     lint_cmd: str = "python -m ruff check {file}"
     format_cmd: str = "python -m ruff format {file}"
@@ -52,6 +67,97 @@ def _coerce_conventions(v: object) -> dict[str, str]:
 
 def _coerce_tool_policy(v: object) -> ToolPolicy:
     return parse_tool_policy(v if isinstance(v, dict) else {})
+
+
+def _table(raw: Mapping[str, Any], key: str) -> dict[str, Any]:
+    if key not in raw:
+        return {}
+    value = raw[key]
+    if not isinstance(value, dict):
+        raise ValueError(f".dgov/project.toml [{key}] must be a table")
+    return value
+
+
+def _provider_name(proj: Mapping[str, Any], providers: Mapping[str, ProviderConfig]) -> str:
+    if "provider" in proj:
+        raw = proj["provider"]
+        if not isinstance(raw, str):
+            raise ValueError(".dgov/project.toml [project].provider must be a string")
+        name = raw.strip()
+        if not name:
+            raise ValueError(".dgov/project.toml [project].provider must be a non-empty string")
+        return name
+    if len(providers) == 1:
+        return next(iter(providers))
+    return ""
+
+
+def _string_field(
+    data: Mapping[str, Any],
+    key: str,
+    *,
+    context: str,
+    required: bool = True,
+) -> str:
+    raw = data.get(key)
+    if raw is None:
+        value = ""
+    elif isinstance(raw, str):
+        value = raw.strip()
+    else:
+        raise ValueError(f".dgov/project.toml {context}.{key} must be a string")
+    if required and not value:
+        raise ValueError(f".dgov/project.toml {context}.{key} must be a non-empty string")
+    return value
+
+
+def _provider_from_table(name: str, data: Mapping[str, Any]) -> ProviderConfig:
+    context = f"[providers.{name}]"
+    return ProviderConfig(
+        name=name,
+        base_url=_string_field(data, "base_url", context=context),
+        api_key_env=_string_field(data, "api_key_env", context=context),
+        default_agent=_string_field(
+            data,
+            "default_agent",
+            context=context,
+            required=False,
+        ),
+    )
+
+
+def provider_configs_from_project_toml(raw: Mapping[str, Any]) -> dict[str, ProviderConfig]:
+    """Parse named provider definitions from raw project TOML."""
+    providers_raw = _table(raw, "providers")
+    providers: dict[str, ProviderConfig] = {}
+    for name, data in providers_raw.items():
+        provider_name = str(name).strip()
+        if not provider_name:
+            raise ValueError(".dgov/project.toml [providers] names must be non-empty")
+        if not isinstance(data, dict):
+            raise ValueError(f".dgov/project.toml [providers.{provider_name}] must be a table")
+        providers[provider_name] = _provider_from_table(provider_name, data)
+    return providers
+
+
+def selected_provider_from_project_toml(raw: Mapping[str, Any]) -> ProviderConfig:
+    """Resolve the active worker provider from project.toml data.
+
+    The returned provider is flattened for worker subprocess payloads. A repo
+    with a single provider may omit `[project].provider`; repos with multiple
+    providers must select a default or set `provider` on every task.
+    """
+    proj = _table(raw, "project")
+    providers = provider_configs_from_project_toml(raw)
+    name = _provider_name(proj, providers)
+    if not name:
+        return ProviderConfig(name="", base_url="", api_key_env="")
+    if name in providers:
+        return providers[name]
+
+    raise ValueError(
+        f".dgov/project.toml selects provider {name!r}, but [providers.{name}] is not defined"
+    )
 
 
 # Per-field payload to AtomicConfig coercion. Fields omitted from this map
@@ -94,8 +200,12 @@ def atomic_config_to_payload(config: AtomicConfig) -> dict[str, object]:
 
 def worker_payload_from_project_toml(raw: dict[str, Any]) -> dict[str, object]:
     """Normalize raw project.toml data into the worker payload shape."""
-    proj = raw.get("project", {})
+    proj = _table(raw, "project")
+    provider = selected_provider_from_project_toml(raw)
     flat: dict[str, Any] = dict(proj)
-    flat["conventions"] = raw.get("conventions", {})
-    flat["tool_policy"] = raw.get("tool_policy", {})
+    flat["llm_provider"] = provider.name
+    flat["llm_base_url"] = provider.base_url
+    flat["llm_api_key_env"] = provider.api_key_env
+    flat["conventions"] = _table(raw, "conventions")
+    flat["tool_policy"] = _table(raw, "tool_policy")
     return atomic_config_to_payload(atomic_config_from_payload(flat))

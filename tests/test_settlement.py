@@ -365,6 +365,53 @@ class TestReviewSandbox:
         result = review_sandbox(tmp_path, claimed_files=["new.py"])
         assert result.passed
 
+    def test_scope_deny_rejects_claimed_file(self, tmp_path: Path):
+        """Project hard-deny patterns reject paths even when the task claimed them."""
+        _init_repo(tmp_path)
+        target = tmp_path / "registry" / "snapshots" / "snapshot_0001.toml"
+        target.parent.mkdir(parents=True)
+        target.write_text("changed\n")
+
+        result = review_sandbox(
+            tmp_path,
+            claimed_files=["registry/snapshots/snapshot_0001.toml"],
+            scope_deny_files=("registry/snapshots/**",),
+        )
+
+        assert not result.passed
+        assert result.verdict == "path_policy_violation"
+        assert "registry/snapshots/snapshot_0001.toml" in (result.error or "")
+
+    def test_scope_allow_rejects_claimed_file_outside_allowlist(self, tmp_path: Path):
+        """Project allowlist constrains claimed paths before merge."""
+        _init_repo(tmp_path)
+        _add_tracked_file(tmp_path, "README.md", "old\n")
+        _modify_tracked(tmp_path, "README.md", "new\n")
+
+        result = review_sandbox(
+            tmp_path,
+            claimed_files=["README.md"],
+            scope_allow_files=("corpus/feed/**",),
+        )
+
+        assert not result.passed
+        assert result.verdict == "path_policy_violation"
+        assert "README.md" in (result.error or "")
+
+    def test_scope_allow_accepts_matching_claimed_file(self, tmp_path: Path):
+        _init_repo(tmp_path)
+        target = tmp_path / "corpus" / "feed" / "handler.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("x = 1\n")
+
+        result = review_sandbox(
+            tmp_path,
+            claimed_files=["corpus/feed/handler.py"],
+            scope_allow_files=("corpus/feed/**",),
+        )
+
+        assert result.passed
+
     def test_scope_ignore_files_exempts_lockfile(self, tmp_path: Path):
         """Files in scope_ignore_files pass through without a claim."""
         _init_repo(tmp_path)

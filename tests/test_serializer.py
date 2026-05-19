@@ -624,15 +624,15 @@ class TestSerializeCompiledTomlWithSopMapping:
 class TestSerializeCompiledTomlWithAgentAndTimeout:
     """Test serialize_compiled_toml with agent and timeout_s fields."""
 
-    def test_agent_and_timeout_in_output(self, tmp_path):
-        """Agent and timeout_s should appear in output when populated."""
+    def _agent_timeout_bundle(self, tmp_path) -> BundleResult:
         plan_root = tmp_path / "test_plan"
         plan_root.mkdir()
-
         root_meta = RootMeta(
             name="agent-plan",
             summary="Test with agent",
             sections=("section1",),
+            default_agent="gpt-test",
+            default_provider="openai",
         )
 
         unit = PlanUnit(
@@ -641,10 +641,10 @@ class TestSerializeCompiledTomlWithAgentAndTimeout:
             prompt="Do something",
             commit_message="Done",
             files=PlanUnitFiles(),
-            agent="accounts/fireworks/routers/kimi-k2p6-turbo",
+            agent="provider/model-name",
+            provider="llm",
             timeout_s=1200,
         )
-
         flat_plan = FlatPlan(
             plan_root=plan_root,
             root_meta=root_meta,
@@ -652,16 +652,22 @@ class TestSerializeCompiledTomlWithAgentAndTimeout:
             source_map={"section1/file.agent_task": plan_root / "section1" / "file.toml"},
             source_mtime_max=1234567890.0,
         )
-
-        bundle = BundleResult(
+        return BundleResult(
             plan=flat_plan,
             sop_mapping={"section1/file.agent_task": ()},
             sop_set_hash="agent_hash",
         )
 
+    def test_agent_and_timeout_in_output(self, tmp_path):
+        """Agent and timeout_s should appear in output when populated."""
+        bundle = self._agent_timeout_bundle(tmp_path)
+        flat_plan = bundle.plan
         result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
 
-        assert 'agent = "accounts/fireworks/routers/kimi-k2p6-turbo"' in result
+        assert 'default_agent = "gpt-test"' in result
+        assert 'agent = "provider/model-name"' in result
+        assert 'default_provider = "openai"' in result
+        assert 'provider = "llm"' in result
         assert "timeout_s = 1200" in result
 
     def test_agent_and_timeout_not_present_when_empty(self, tmp_path):
@@ -750,6 +756,66 @@ class TestSerializeCompiledTomlWithAgentAndTimeout:
         result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
 
         assert "iteration_budget = 12" in result
+
+    def test_self_review_and_fork_controls_emit_only_when_overridden(self, tmp_path):
+        """Task-local review/fork controls should round-trip through compiled TOML."""
+        plan_root = tmp_path / "test_plan"
+        plan_root.mkdir()
+
+        root_meta = RootMeta(
+            name="worker-controls-plan",
+            summary="Test worker controls",
+            sections=("section1",),
+        )
+
+        review_unit = PlanUnit(
+            slug="section1/file.review_task",
+            summary="Review task",
+            prompt="Implement carefully",
+            commit_message="Done",
+            files=PlanUnitFiles(),
+            self_review=True,
+            max_fork_depth=0,
+        )
+        default_unit = PlanUnit(
+            slug="section1/file.default_task",
+            summary="Default task",
+            prompt="Implement normally",
+            commit_message="Done",
+            files=PlanUnitFiles(),
+        )
+
+        flat_plan = FlatPlan(
+            plan_root=plan_root,
+            root_meta=root_meta,
+            units={
+                "section1/file.review_task": review_unit,
+                "section1/file.default_task": default_unit,
+            },
+            source_map={
+                "section1/file.review_task": plan_root / "section1" / "file.toml",
+                "section1/file.default_task": plan_root / "section1" / "file.toml",
+            },
+            source_mtime_max=1234567890.0,
+        )
+
+        bundle = BundleResult(
+            plan=flat_plan,
+            sop_mapping={
+                "section1/file.review_task": (),
+                "section1/file.default_task": (),
+            },
+            sop_set_hash="worker_controls_hash",
+        )
+
+        result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
+        review_section = _extract_task_section(result, "section1/file.review_task")
+        default_section = _extract_task_section(result, "section1/file.default_task")
+
+        assert "self_review = true" in review_section
+        assert "max_fork_depth = 0" in review_section
+        assert "self_review" not in default_section
+        assert "max_fork_depth" not in default_section
 
     @pytest.mark.unit
     def test_sop_mapping_appears_after_numeric_and_test_cmd_fields(self, tmp_path):

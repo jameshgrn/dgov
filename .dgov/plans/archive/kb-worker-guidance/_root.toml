@@ -1,0 +1,4 @@
+[plan]
+name = "kb-worker-guidance"
+summary = "Add worker SOP guidance for source-backed knowledge-base edits."
+sections = ["tasks"]

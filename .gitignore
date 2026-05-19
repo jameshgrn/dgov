@@ -11,6 +11,7 @@ _compiled.toml
 __pycache__/
 *.pyc
 .DS_Store
+.obsidian/
 *.db-shm
 *.db-wal
 config.toml

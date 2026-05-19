@@ -1,123 +1,140 @@
 # LLM Providers
 
-`dgov` uses one OpenAI-compatible endpoint at a time, for both:
+`dgov` uses OpenAI-compatible endpoints for worker execution at `dgov run`
+time. Provider definitions live in `.dgov/project.toml`; plans and tasks can
+select a named provider from that registry.
 
-- worker execution at `dgov run` time
-- SOP assignment at `dgov compile` time
-
-Provider configuration is therefore repo-level, not per-task.
-
-The current standard provider is Fireworks Kimi K2.6 Turbo. Use it anywhere
-older examples used OpenAI, OpenRouter, or Anthropic model names.
+`dgov init` scaffolds commented provider placeholders. Configure or add named
+providers in `.dgov/project.toml` before running executable worker plans.
 
 ## Configuration
 
-Three fields in `.dgov/project.toml` control the endpoint:
+The `[providers]` registry defines endpoints. `[project].provider` selects the
+default provider for tasks that do not name one.
 
 ```toml
 [project]
-default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
-llm_base_url = "https://api.fireworks.ai/inference/v1"
-llm_api_key_env = "FIREWORKS_API_KEY"
+provider = "llm"
+
+[providers.llm]
+default_agent = "provider/model-name"
+base_url = "https://provider.example.com/v1"
+api_key_env = "PROVIDER_API_KEY"
 ```
 
 | Field | Meaning |
 |-------|---------|
-| `default_agent` | Model or router name passed in the request body |
-| `llm_base_url` | OpenAI-compatible API base URL |
-| `llm_api_key_env` | Name of the env var that holds the API key |
+| `[project].provider` | Default provider name |
+| `[providers.<name>].default_agent` | Default model/router for that provider |
+| `[providers.<name>].base_url` | OpenAI-compatible API base URL |
+| `[providers.<name>].api_key_env` | Env var that holds the API key |
 
-Task-level `agent = "..."` overrides only the model/router name. It does not
-override the base URL or the API-key env var.
+Task-level `provider = "..."` selects a provider endpoint. Task-level
+`agent = "..."` overrides only the model/router name.
 
-## Fireworks (default)
-
-```toml
-[project]
-default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
-llm_base_url = "https://api.fireworks.ai/inference/v1"
-llm_api_key_env = "FIREWORKS_API_KEY"
-```
-
-```bash
-export FIREWORKS_API_KEY=your-key-here
-```
-
-## OpenAI-Compatible Fireworks
+## Generic endpoint example
 
 ```toml
 [project]
-default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
-llm_base_url = "https://api.fireworks.ai/inference/v1"
-llm_api_key_env = "FIREWORKS_API_KEY"
+provider = "llm"
+
+[providers.llm]
+default_agent = "provider/model-name"
+base_url = "https://provider.example.com/v1"
+api_key_env = "PROVIDER_API_KEY"
 ```
 
 ```bash
-export FIREWORKS_API_KEY=your-key-here
+export PROVIDER_API_KEY=your-key-here
 ```
 
-## Anthropic-Compatible Fireworks
+## OpenAI-compatible endpoint
 
-`dgov` itself uses the OpenAI-compatible endpoint above. For tools that call
-Anthropic-compatible APIs, use the same router with Fireworks' Anthropic-style
-base URL:
+```toml
+[project]
+provider = "llm"
+
+[providers.llm]
+default_agent = "provider/model-name"
+base_url = "https://provider.example.com/v1"
+api_key_env = "PROVIDER_API_KEY"
+```
+
+```bash
+export PROVIDER_API_KEY=your-key-here
+```
+
+## Other API-compatible clients
+
+`dgov` itself uses OpenAI-compatible endpoints. For tools that call a different
+API shape, use that provider's matching base URL and model name outside dgov:
 
 ```text
-base_url = "https://api.fireworks.ai/inference"
-model = "accounts/fireworks/routers/kimi-k2p6-turbo"
-api_key_env = "FIREWORKS_API_KEY"
+base_url = "https://provider.example.com/v1"
+model = "provider/model-name"
+api_key_env = "PROVIDER_API_KEY"
 ```
 
 ```bash
-export FIREWORKS_API_KEY=your-key-here
+export PROVIDER_API_KEY=your-key-here
 ```
 
 ## Other OpenAI-compatible endpoints
 
 ```toml
 [project]
+provider = "custom"
+
+[providers.custom]
 default_agent = "your-model-name"
-llm_base_url = "https://your-provider.example.com/v1"
-llm_api_key_env = "YOUR_PROVIDER_API_KEY"
+base_url = "https://your-provider.example.com/v1"
+api_key_env = "YOUR_PROVIDER_API_KEY"
 ```
 
 ```bash
 export YOUR_PROVIDER_API_KEY=your-key-here
 ```
 
-## Compile-time behavior
+## Plan selection
 
-`dgov compile` calls the LLM when SOP bundling is on. The provider config
-must be valid at compile time, not only at run time.
+Set a plan-wide default in `_root.toml`:
 
-To skip the compile-time LLM call:
-
-```bash
-dgov compile .dgov/plans/my-plan --dry-run
+```toml
+[plan]
+name = "provider-demo"
+sections = ["tasks"]
+default_provider = "openai"
 ```
 
-`--dry-run` uses the identity SOP bundler instead of the LLM-backed one.
+Override one task in a task TOML:
+
+```toml
+[tasks.review]
+summary = "Review with another endpoint"
+provider = "openrouter"
+agent = "openrouter/model-name"
+```
 
 ## Common mistakes
 
-**Wrong env var name.** `.dgov/project.toml` says `llm_api_key_env =
-"FIREWORKS_API_KEY"`, so both `dgov compile` and `dgov run` read that env var
-literally.
+**Wrong env var name.** `.dgov/project.toml` might say `api_key_env =
+"PROVIDER_API_KEY"` under the selected provider, so `dgov run` reads that env
+var literally.
 
 **Confusing model name with endpoint.** `default_agent` is the model or
-router identifier. It does not select the provider — the endpoint is set by
-`llm_base_url`.
+router identifier. The provider endpoint is selected by `provider`.
 
-**Assuming a task `agent` switches provider.** Per-task `agent` overrides
-the model name only. Provider selection is repo-level.
+**Assuming a task `agent` switches provider.** Per-task `agent` overrides the
+model name only. Use task `provider` for endpoint selection.
 
 ## Recommendation
 
 For most repos:
 
 1. set `default_agent`
-2. set `llm_base_url`
-3. set `llm_api_key_env`
-4. export the matching env var
+2. set `base_url`
+3. set `api_key_env`
+4. set `[project].provider`
+5. export the matching env var
 
-That is the entire provider configuration surface.
+That is the complete provider configuration surface.

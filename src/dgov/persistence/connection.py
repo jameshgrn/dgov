@@ -27,6 +27,31 @@ _conn_lock = threading.Lock()
 # last-resort layer — cap them tightly so we fail fast instead of hanging.
 _LOCK_RETRIES = 5
 _LOCK_BACKOFF_S = 0.25
+_CONNECT_TIMEOUT_S = 10.0
+
+
+def _open_db_connection(db_path: str) -> sqlite3.Connection:
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path, isolation_level=None, timeout=_CONNECT_TIMEOUT_S)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=10000")
+
+        # Schema initialization (idempotent)
+        from dgov.persistence.sql import _CREATE_LEDGER_TABLE_SQL, _CREATE_SLUG_HISTORY_TABLE_SQL
+
+        conn.execute(_CREATE_TABLE_SQL)
+        conn.execute(_CREATE_EVENTS_TABLE_SQL)
+        conn.execute(_CREATE_DISPATCH_RUNS_TABLE_SQL)
+        conn.execute(_CREATE_SLUG_HISTORY_TABLE_SQL)
+        conn.execute(_CREATE_LEDGER_TABLE_SQL)
+
+        _migrate_schema(conn)
+    except Exception:
+        with contextlib.suppress(Exception):
+            conn.close()
+        raise
+    return conn
 
 
 def _get_db(session_root: str) -> sqlite3.Connection:
@@ -45,21 +70,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
             return conn
 
     # Outside the lock — only one thread will ever hit this for a given key.
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, isolation_level=None)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=10000")
-
-    # Schema initialization (idempotent)
-    from dgov.persistence.sql import _CREATE_LEDGER_TABLE_SQL, _CREATE_SLUG_HISTORY_TABLE_SQL
-
-    conn.execute(_CREATE_TABLE_SQL)
-    conn.execute(_CREATE_EVENTS_TABLE_SQL)
-    conn.execute(_CREATE_DISPATCH_RUNS_TABLE_SQL)
-    conn.execute(_CREATE_SLUG_HISTORY_TABLE_SQL)
-    conn.execute(_CREATE_LEDGER_TABLE_SQL)
-
-    _migrate_schema(conn)
+    conn = _retry_on_lock(_open_db_connection, db_path)
 
     with _conn_lock:
         # Another racer may have inserted; prefer the first one.
@@ -78,9 +89,18 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     existing_events_cols = {row[1] for row in cursor.fetchall()}
 
     new_events_cols = {
+        "data": "TEXT NOT NULL DEFAULT '{}'",
         "task_slug": "TEXT DEFAULT NULL",
         "plan_name": "TEXT DEFAULT NULL",
         "action": "TEXT DEFAULT NULL",
+        "commit_count": "TEXT DEFAULT NULL",
+        "error": "TEXT DEFAULT NULL",
+        "reason": "TEXT DEFAULT NULL",
+        "merge_sha": "TEXT DEFAULT NULL",
+        "branch": "TEXT DEFAULT NULL",
+        "new_slug": "TEXT DEFAULT NULL",
+        "target_agent": "TEXT DEFAULT NULL",
+        "message": "TEXT DEFAULT NULL",
         "run_source": "TEXT DEFAULT NULL",
     }
     for col, dtype in new_events_cols.items():

@@ -30,10 +30,128 @@ def shell_quote(s: str) -> str:
     return shlex.quote(s)
 
 
+_UV_RUN_OPTIONS_WITH_VALUE = frozenset({
+    "-C",
+    "-P",
+    "-f",
+    "-i",
+    "-p",
+    "-s",
+    "-w",
+    "--allow-insecure-host",
+    "--cache-dir",
+    "--color",
+    "--config-file",
+    "--config-setting",
+    "--config-settings-package",
+    "--default-index",
+    "--directory",
+    "--env-file",
+    "--exclude-newer",
+    "--exclude-newer-package",
+    "--extra",
+    "--extra-index-url",
+    "--find-links",
+    "--fork-strategy",
+    "--no-extra",
+    "--group",
+    "--index",
+    "--index-strategy",
+    "--index-url",
+    "--keyring-provider",
+    "--link-mode",
+    "--no-binary-package",
+    "--no-build-isolation-package",
+    "--no-build-package",
+    "--no-group",
+    "--no-sources-package",
+    "--only-group",
+    "--package",
+    "--prerelease",
+    "--project",
+    "--python",
+    "--python-platform",
+    "--refresh-package",
+    "--reinstall-package",
+    "--resolution",
+    "--script",
+    "--upgrade-package",
+    "--with",
+    "--with-editable",
+    "--with-requirements",
+})
+_UV_RUN_FLAGS = frozenset({
+    "-m",
+    "-n",
+    "-U",
+    "-q",
+    "-v",
+    "--all-extras",
+    "--no-dev",
+    "--no-default-groups",
+    "--all-groups",
+    "--module",
+    "--only-dev",
+    "--compile-bytecode",
+    "--no-editable",
+    "--exact",
+    "--gui-script",
+    "--isolated",
+    "--active",
+    "--no-sync",
+    "--locked",
+    "--frozen",
+    "--all-packages",
+    "--managed-python",
+    "--no-binary",
+    "--no-build",
+    "--no-build-isolation",
+    "--no-cache",
+    "--no-config",
+    "--no-env-file",
+    "--no-index",
+    "--no-managed-python",
+    "--no-project",
+    "--no-progress",
+    "--no-python-downloads",
+    "--no-sources",
+    "--offline",
+    "--quiet",
+    "--refresh",
+    "--reinstall",
+    "--system-certs",
+    "--upgrade",
+    "--verbose",
+})
+
+
+def _is_repeated_short_uv_flag(token: str) -> bool:
+    return len(token) > 2 and token[0] == "-" and set(token[1:]) in ({"q"}, {"v"})
+
+
+def _strip_uv_run_options(core: list[str]) -> list[str]:
+    index = 0
+    while index < len(core):
+        token = core[index]
+        if token == "--":
+            return core[index + 1 :]
+        if not token.startswith("-"):
+            return core[index:]
+        option = token.split("=", 1)[0]
+        if option in _UV_RUN_OPTIONS_WITH_VALUE:
+            index += 1 if "=" in token else 2
+            continue
+        if option in _UV_RUN_FLAGS or _is_repeated_short_uv_flag(token):
+            index += 1
+            continue
+        return core[index:]
+    return []
+
+
 def _unwrap_shell_command(tokens: list[str]) -> tuple[bool, list[str]]:
     """Peel off the narrow wrapper forms we intentionally understand."""
     if len(tokens) >= 2 and tokens[0] == "uv" and tokens[1] == "run":
-        core = tokens[2:]
+        core = _strip_uv_run_options(tokens[2:])
         if not core:
             return True, []
         return True, core
@@ -188,7 +306,9 @@ class AtomicTools:
     def _check_path(self, path: str) -> Path | str:
         """Resolve and validate path is within worktree. Returns Path or error string."""
         target = (self.worktree / path).resolve()
-        if not str(target).startswith(str(self.worktree)):
+        try:
+            target.relative_to(self.worktree)
+        except ValueError:
             return "Error: Path traversal attempt blocked."
         return target
 
@@ -521,7 +641,12 @@ class AtomicTools:
     def _grep_file_is_searchable(self, file_path: Path) -> bool:
         if not file_path.is_file() or file_path.suffix in (".pyc", ".pyo", ".so", ".dylib"):
             return False
-        return not any(part.startswith(".") for part in file_path.parts)
+        try:
+            rel_parts = file_path.relative_to(self.worktree).parts
+            resolved_parts = file_path.resolve().relative_to(self.worktree).parts
+        except ValueError:
+            return False
+        return not any(part.startswith(".") for part in (*rel_parts, *resolved_parts))
 
     def glob(self, pattern: str) -> str:
         """Find files matching a glob pattern. Returns newline-separated relative paths."""

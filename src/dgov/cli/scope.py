@@ -10,8 +10,7 @@ from pathlib import Path
 
 import click
 
-from dgov.cli import cli, want_json
-from dgov.config import load_project_config
+from dgov.cli import cli, load_project_config_or_exit, want_json
 from dgov.plan import parse_plan_file
 from dgov.project_root import resolve_project_root
 from dgov.scope_status import ScopeStatus, analyze_scope_status, render_scope_status_lines
@@ -185,7 +184,7 @@ def scope_status_cmd(
     """
     project_root = str(resolve_project_root())
 
-    config = load_project_config(project_root)
+    config = load_project_config_or_exit(project_root)
     claims = _resolve_scope_claims(
         plan=plan,
         task=task,

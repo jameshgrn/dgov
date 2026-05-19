@@ -7,8 +7,7 @@ from pathlib import Path
 
 import click
 
-from dgov.cli import cli, want_json
-from dgov.config import load_project_config
+from dgov.cli import cli, load_project_config_or_exit, want_json
 from dgov.project_root import resolve_project_root
 from dgov.verify import run_verify_recipe
 
@@ -24,7 +23,7 @@ def verify_cmd() -> None:
 def verify_list(root: str) -> None:
     """List configured verification recipes."""
     project_root = resolve_project_root(Path(root))
-    config = load_project_config(project_root)
+    config = load_project_config_or_exit(project_root)
     recipes = config.verify_recipes
 
     if want_json():
@@ -57,7 +56,7 @@ def verify_list(root: str) -> None:
 def verify_run(name: str, root: str) -> None:
     """Run a single verification recipe by name."""
     project_root = resolve_project_root(Path(root))
-    config = load_project_config(project_root)
+    config = load_project_config_or_exit(project_root)
     recipes = config.verify_recipes
 
     if name not in recipes:

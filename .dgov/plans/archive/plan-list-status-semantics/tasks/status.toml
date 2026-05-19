@@ -1,0 +1,29 @@
+[tasks.fix-list-semantics]
+summary = "Make plan list use plan status semantics for stale and degraded plans"
+prompt = """
+Orient:
+- Read `src/dgov/cli/plan.py`, especially `_load_status_inputs`, `_compute_remediation_fields`, `_render_status_from_inputs`, and the new `plan list` helpers.
+- Read `tests/test_cli_plan_list.py` and `tests/test_cli_plan_status.py` for expected CLI behavior.
+- Preserve the existing `dgov plan list` interface: default active-only, `--all`, `--archived`, JSON via `--json`, and text output.
+- Do not add a second independent status model. Reuse or factor the existing plan-status helpers so list and status agree on stale, deployed, pending, and remediation state.
+- Do not create, write, or delete scratch/debug files such as `tmp/*` or ad hoc repro scripts. If you need to test a tiny reproduction, use a read-only inline command or add a focused pytest case in the claimed test file.
+- Only call edit/write tools for the claimed edit files: `src/dgov/cli/plan.py` and `tests/test_cli_plan_list.py`.
+
+Edit:
+1. In `src/dgov/cli/plan.py`, change `_summarize_plan_entry` and related list rendering so a stale plan is visibly stale and is not marked green complete.
+2. In `src/dgov/cli/plan.py`, include degraded/remediation state from the run envelope in list entries so a fully deployed degraded plan is not labeled as normal complete.
+3. Keep JSON fields backward compatible where practical, but add explicit fields needed to expose stale/remediation state.
+4. In `tests/test_cli_plan_list.py`, add behavior tests for stale compiled plans and degraded fully deployed plans.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_cli_plan_list.py tests/test_cli_plan_status.py`
+- `uv run ruff check src/dgov/cli/plan.py tests/test_cli_plan_list.py`
+- `uv run ruff format --check src/dgov/cli/plan.py tests/test_cli_plan_list.py`
+- `uv run ty check`
+"""
+commit_message = "Fix plan list status semantics"
+test_cmd = "uv run pytest -q -m unit tests/test_cli_plan_list.py tests/test_cli_plan_status.py"
+
+[tasks.fix-list-semantics.files]
+edit = ["src/dgov/cli/plan.py", "tests/test_cli_plan_list.py"]
+read = ["tests/test_cli_plan_status.py"]

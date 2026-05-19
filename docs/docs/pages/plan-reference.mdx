@@ -52,6 +52,7 @@ files.create = ["src/api/types.py"]
 | `summary` | string | No | `""` | One-line plan summary |
 | `sections` | array of strings | Yes | — | Top-level section directories to compile |
 | `default_agent` | string | No | project default | Plan-level model override |
+| `default_provider` | string | No | project default | Plan-level provider override |
 
 `sections` is the list of immediate subdirectories that `dgov compile`
 walks. Files prefixed with `_` are ignored — use that prefix for scaffolds,
@@ -68,6 +69,7 @@ Tasks live inside section TOMLs such as `tasks/main.toml`.
 | `prompt` | string | Worker/researcher: Yes | — | Instructions sent to the worker |
 | `prompt_file` | string | No | — | Prompt text file, resolved relative to the compiled plan file |
 | `agent` | string | No | plan/project default | Model/router override for this task |
+| `provider` | string | No | plan/project default | Provider endpoint override for this task |
 | `depends_on` | array of strings | No | `[]` | Slugs that must complete first |
 | `commit_message` | string | Yes | — | Git commit message on success |
 | `timeout_s` | integer | No | 900 | Seconds before the task aborts |
@@ -274,3 +276,4 @@ dgov validate .dgov/plans/payment-gateway-refactor/_compiled.toml
 - Every `depends_on` references an existing slug
 - No file-claim conflicts between independent tasks
 - Every task's agent resolves through the chain
+- Every selected provider must exist in `.dgov/project.toml` before `dgov run`

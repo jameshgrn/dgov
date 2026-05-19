@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, NoReturn
 
 import click
 
-from dgov.cli import cli, print_dag_graph, want_json
+from dgov.cli import cli, load_project_config_or_exit, print_dag_graph, want_json
 from dgov.project_root import resolve_project_root
 
 if TYPE_CHECKING:
@@ -61,7 +61,7 @@ def compile_cmd(plan_root: Path, dry_run: bool, recompile_sops: bool, graph: boo
 def compile_plan_dir(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph: bool) -> None:
     """Compile pipeline: walk → merge → resolve → validate → bundle → write."""
     resolved = _load_resolved_plan(plan_root)
-    project_root = resolve_project_root()
+    project_root = _resolve_compile_project_root(plan_root)
     project_config = _load_project_config(project_root)
     bundle_result = _bundle_sops(
         resolved,
@@ -71,11 +71,33 @@ def compile_plan_dir(plan_root: Path, *, dry_run: bool, recompile_sops: bool, gr
         recompile_sops=recompile_sops,
     )
     out_path = _write_compiled_plan(plan_root, bundle_result, resolved)
-    warnings = _validate_compiled_plan(out_path, project_config, project_root)
+    warnings = _validate_compiled_plan(
+        out_path,
+        project_config,
+        project_root,
+        require_provider=not dry_run,
+    )
     summary = _build_summary(out_path, resolved, bundle_result, dry_run, warnings)
 
     _print_summary(summary)
     _print_graph_if_requested(graph, resolved)
+
+
+def _resolve_compile_project_root(plan_root: Path) -> Path:
+    """Resolve config from a project-scoped plan, preserving standalone plan behavior."""
+    project_root = resolve_project_root(plan_root)
+    if _is_project_root(project_root):
+        return project_root
+    return resolve_project_root()
+
+
+def _is_project_root(path: Path) -> bool:
+    """True when ``path`` carries a project marker.
+
+    ``resolve_project_root`` returns the literal input when no marker is found
+    upstream, so this distinguishes a real hit from the no-marker fallback.
+    """
+    return (path / ".dgov").is_dir() or (path / ".git").exists()
 
 
 def _load_resolved_plan(plan_root: Path) -> FlatPlan:
@@ -234,9 +256,7 @@ def _validate_dag(plan: FlatPlan) -> None:
 
 
 def _load_project_config(project_root: Path) -> ProjectConfig:
-    from dgov.config import load_project_config
-
-    return load_project_config(project_root)
+    return load_project_config_or_exit(project_root)
 
 
 def _bundle_sops(
@@ -368,11 +388,15 @@ def _validate_compiled_plan(
     out_path: Path,
     project_config: ProjectConfig,
     project_root: Path,
+    *,
+    require_provider: bool,
 ) -> tuple[PlanIssue, ...]:
     from dgov.plan import parse_plan_file, validate_plan
 
     compiled_spec = parse_plan_file(str(out_path))
     plan_issues = validate_plan(compiled_spec, departments=project_config.departments)
+    if require_provider:
+        plan_issues.extend(_execution_resolution_issues(compiled_spec, project_config))
     plan_issues.extend(_setup_cmd_warnings(compiled_spec, project_config, project_root))
     plan_issues.extend(_prompt_tool_warnings(compiled_spec, project_config, project_root))
     plan_issues.extend(_archive_ignore_warnings(project_root))
@@ -385,6 +409,19 @@ def _validate_compiled_plan(
         raise click.exceptions.Exit(code=1) from None
 
     return plan_warnings
+
+
+def _execution_resolution_issues(plan, project_config: ProjectConfig) -> list[PlanIssue]:
+    from dgov.plan import validate_execution_resolution
+
+    return validate_execution_resolution(
+        plan,
+        project_agent=project_config.default_agent,
+        project_provider=project_config.llm_provider,
+        provider_agents=project_config.provider_default_agents(),
+        provider_names=tuple(project_config.providers),
+        require_provider=True,
+    )
 
 
 _SETUP_PATH_RE = re.compile(r"(?<![\w/.-])([\w.-]+\.(?:yml|yaml|json|toml|xcodeproj|xcworkspace))")
