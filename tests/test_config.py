@@ -521,6 +521,23 @@ class TestScopeIgnoreFiles:
         with pytest.raises(ValueError, match="reserved paths"):
             load_project_config(tmp_path)
 
+    def test_reports_scope_ignore_reserved_path_shadow(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            '[project]\n\n[scope]\nignore_files = ["*.json", ".sentrux/"]\n'
+        )
+
+        with pytest.raises(ValueError) as exc:
+            load_project_config(tmp_path)
+
+        message = str(exc.value)
+        assert (
+            "project.toml [scope] ignore_files cannot include patterns that shadow reserved paths:"
+        ) in message
+        assert "  '*.json' would match '.coverage-baseline/coverage.json'" in message
+        assert "  '.sentrux/' would match '.sentrux/baseline.json'" in message
+
     def test_missing_section_yields_empty(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"
         dgov_dir.mkdir()

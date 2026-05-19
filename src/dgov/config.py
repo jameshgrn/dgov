@@ -227,19 +227,26 @@ def _scope_patterns(raw: Mapping[str, Any], key: str) -> tuple[str, ...]:
 
 def _validate_scope_ignores(configured_scope_ignores: tuple[str, ...]) -> None:
     bad = sorted(
-        path for path in configured_scope_ignores if _scope_ignore_entry_covers_reserved_path(path)
+        (entry, reserved_path)
+        for entry in configured_scope_ignores
+        if (reserved_path := _scope_ignore_entry_covers_reserved_path(entry)) is not None
     )
     if bad:
-        raise ValueError(f"project.toml [scope] ignore_files cannot include reserved paths: {bad}")
+        lines = [
+            "project.toml [scope] ignore_files cannot include patterns that shadow reserved paths:"
+        ]
+        lines.extend(f"  {entry!r} would match {reserved_path!r}" for entry, reserved_path in bad)
+        raise ValueError("\n".join(lines))
 
 
-def _scope_ignore_entry_covers_reserved_path(entry: str) -> bool:
-    return any(
-        entry == reserved or entry.startswith(reserved)
-        for reserved in _RESERVED_SCOPE_IGNORE_PATHS
-    ) or any(
-        _scope_ignore_entry_matches_path(entry, path) for path in _RESERVED_SCOPE_IGNORE_SAMPLES
-    )
+def _scope_ignore_entry_covers_reserved_path(entry: str) -> str | None:
+    for path in sorted(_RESERVED_SCOPE_IGNORE_SAMPLES):
+        if _scope_ignore_entry_matches_path(entry, path):
+            return path
+    for reserved in sorted(_RESERVED_SCOPE_IGNORE_PATHS):
+        if entry == reserved or entry.startswith(reserved):
+            return reserved
+    return None
 
 
 def _scope_ignore_entry_matches_path(entry: str, path: str) -> bool:
