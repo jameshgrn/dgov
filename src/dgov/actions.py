@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from dgov.types import TaskState
+from dgov.types import DagState, TaskState
 
 # --- Actions (Kernel -> Runner) ---
 
@@ -34,7 +34,7 @@ class MergeTask:
 
 @dataclass(frozen=True)
 class DagDone:
-    status: str  # DagState value
+    status: DagState
     merged: tuple[str, ...]
     failed: tuple[str, ...]
     skipped: tuple[str, ...]

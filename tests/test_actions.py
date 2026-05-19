@@ -19,7 +19,7 @@ from dgov.actions import (
     TaskReviewDone,
     TaskWaitDone,
 )
-from dgov.types import TaskState
+from dgov.types import DagState, TaskState
 
 
 class TestConstruction:
@@ -46,13 +46,13 @@ class TestConstruction:
 
     def test_dag_done(self) -> None:
         action = DagDone(
-            status="success",
+            status=DagState.PARTIAL,
             merged=("task1",),
             failed=("task2",),
             skipped=("task3",),
             blocked=("task4",),
         )
-        assert action.status == "success"
+        assert action.status == DagState.PARTIAL
         assert action.merged == ("task1",)
         assert action.failed == ("task2",)
         assert action.skipped == ("task3",)
@@ -147,7 +147,9 @@ class TestTypeUnions:
         assert isinstance(action, InterruptGovernor)
 
     def test_dag_done_is_dag_action(self) -> None:
-        action: DagAction = DagDone(status="success", merged=(), failed=(), skipped=(), blocked=())
+        action: DagAction = DagDone(
+            status=DagState.COMPLETED, merged=(), failed=(), skipped=(), blocked=()
+        )
         assert isinstance(action, DagDone)
 
     def test_task_dispatched_is_dag_event(self) -> None:
