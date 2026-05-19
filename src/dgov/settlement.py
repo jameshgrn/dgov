@@ -27,6 +27,7 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 from dgov.config import ProjectConfig, load_project_config
+from dgov.git_status import porcelain_status_paths
 from dgov.persistence import read_events
 from dgov.sentrux_gate import assess_sentrux_gate, sentrux_is_warn_only
 from dgov.typecheck_diagnostics import parse_diagnostic_identities
@@ -288,14 +289,7 @@ def _get_all_changes(worktree_path: Path) -> frozenset[str] | ReviewResult:
     if status.returncode != 0:
         return ReviewResult(passed=False, verdict="git_error", error="git status failed")
 
-    files = set()
-    for line in status.stdout.rstrip("\n").split("\n"):
-        if not line:
-            continue
-        path_part = line[3:]
-        if " -> " in path_part:
-            path_part = path_part.split(" -> ", 1)[1]
-        files.add(path_part)
+    files = set(porcelain_status_paths(status.stdout))
 
     if not files:
         return ReviewResult(passed=False, verdict="empty_diff", error="No changes produced")
@@ -519,7 +513,7 @@ def check_scope(
     ``read_scope_violation`` verdict — the runner can retry the worker
     instead of cascading failure.
     """
-    if not claimed_files:
+    if claimed_files is None:
         return None
 
     claimed = frozenset(claimed_files)
@@ -617,7 +611,7 @@ def check_transient_scope(
     Only write-capable activities (write_file, edit_file, apply_patch, revert_file)
     are checked. Read-only activity such as read_file is ignored.
     """
-    if not session_root or not task_slug or not claimed_files:
+    if not session_root or not task_slug or claimed_files is None:
         return None
 
     claimed = frozenset(claimed_files)

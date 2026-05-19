@@ -198,10 +198,14 @@ def _tuple_if_list(value: Any) -> Any:
 
 def _configured_scope_ignores(raw: Mapping[str, Any]) -> tuple[str, ...]:
     scope_section = _table(raw, "scope")
-    ignore_raw = scope_section.get("ignore_files", ())
-    if not isinstance(ignore_raw, list):
+    if "ignore_files" not in scope_section:
         return ()
-    return tuple(str(p).strip() for p in ignore_raw if str(p).strip())
+    ignore_raw = scope_section["ignore_files"]
+    if not isinstance(ignore_raw, list):
+        raise ValueError(".dgov/project.toml [scope].ignore_files must be a list of strings")
+    if not all(isinstance(pattern, str) for pattern in ignore_raw):
+        raise ValueError(".dgov/project.toml [scope].ignore_files must be a list of strings")
+    return tuple(pattern.strip() for pattern in ignore_raw if pattern.strip())
 
 
 def _scope_patterns(raw: Mapping[str, Any], key: str) -> tuple[str, ...]:

@@ -21,6 +21,7 @@ from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition
 from dgov.deploy_log import is_plan_complete
 from dgov.event_types import RunCompleted
+from dgov.git_status import porcelain_status_paths
 from dgov.persistence.events import emit_event
 from dgov.plan import PlanSpec, compile_plan, parse_plan_file
 from dgov.project_root import ProjectPathError, resolve_project_path, resolve_project_root
@@ -212,15 +213,7 @@ def _working_tree_files(project_root: str) -> list[str]:
         env=_git_env(project_root),
         check=False,
     )
-    files: list[str] = []
-    for line in result.stdout.splitlines():
-        if not line:
-            continue
-        path_part = line[3:]
-        if " -> " in path_part:
-            path_part = path_part.split(" -> ", 1)[1]
-        files.append(path_part)
-    return files
+    return list(porcelain_status_paths(result.stdout))
 
 
 def _create_bootstrap_commit(project_root: str, files: list[str]) -> None:

@@ -260,6 +260,19 @@ class TestCommitInWorktree:
         assert len(sha) == 40
         assert sha != wt.commit
 
+    def test_commit_stages_claimed_deletion(self, git_repo):
+        _commit_repo_file(git_repo, "gone.py", "x = 1\n", "add gone.py")
+        wt = create_worktree(git_repo, "delete-task")
+        (wt.path / "gone.py").unlink()
+
+        sha = commit_in_worktree(wt, "delete gone.py", file_claims=("gone.py",))
+
+        assert len(sha) == 40
+        assert sha != wt.commit
+        assert _git(wt.path, "show", "--name-status", "--format=", sha).stdout.strip() == (
+            "D\tgone.py"
+        )
+
 
 @pytest.mark.unit
 class TestMergeWorktree:

@@ -11,6 +11,7 @@ from pathlib import Path
 import click
 
 from dgov.cli import cli, load_project_config_or_exit, want_json
+from dgov.git_status import porcelain_status_paths
 from dgov.plan import parse_plan_file
 from dgov.project_root import resolve_project_root
 from dgov.scope_status import ScopeStatus, analyze_scope_status, render_scope_status_lines
@@ -33,16 +34,7 @@ def _get_actual_files(project_root: str) -> frozenset[str] | None:
     if status.returncode != 0:
         return None
 
-    files: set[str] = set()
-    for line in status.stdout.rstrip("\n").split("\n"):
-        if not line:
-            continue
-        path_part = line[3:]
-        if " -> " in path_part:
-            path_part = path_part.split(" -> ", 1)[1]
-        files.add(path_part)
-
-    return frozenset(files)
+    return frozenset(porcelain_status_paths(status.stdout))
 
 
 def _load_task_claims(plan_path: Path, task_slug: str) -> tuple[list[str], list[str]]:

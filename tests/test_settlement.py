@@ -365,6 +365,27 @@ class TestReviewSandbox:
         result = review_sandbox(tmp_path, claimed_files=["new.py"])
         assert result.passed
 
+    def test_empty_claims_fail_closed(self, tmp_path: Path):
+        """An explicit empty claim set is different from disabling scope checks."""
+        _init_repo(tmp_path)
+        _add_tracked_file(tmp_path, "anything.py", "x = 1\n")
+        _modify_tracked(tmp_path, "anything.py", "x = 2\n")
+
+        result = review_sandbox(tmp_path, claimed_files=())
+
+        assert not result.passed
+        assert result.verdict == "scope_violation"
+        assert "anything.py" in (result.error or "")
+
+    def test_scope_decodes_quoted_status_paths(self, tmp_path: Path):
+        _init_repo(tmp_path)
+        (tmp_path / "file with space.py").write_text("x = 1\n")
+
+        result = review_sandbox(tmp_path, claimed_files=["file with space.py"])
+
+        assert result.passed
+        assert "file with space.py" in result.actual_files
+
     def test_scope_deny_rejects_claimed_file(self, tmp_path: Path):
         """Project hard-deny patterns reject paths even when the task claimed them."""
         _init_repo(tmp_path)

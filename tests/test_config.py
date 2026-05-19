@@ -444,6 +444,22 @@ class TestScopeIgnoreFiles:
         with pytest.raises(ValueError, match=rf"\[scope\]\.{key} must be a list of strings"):
             load_project_config(tmp_path)
 
+    def test_rejects_non_list_scope_ignore_files(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text('[project]\n\n[scope]\nignore_files = "uv.lock"\n')
+
+        with pytest.raises(ValueError, match=r"\[scope\]\.ignore_files must be a list"):
+            load_project_config(tmp_path)
+
+    def test_rejects_non_string_scope_ignore_file_entries(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text("[project]\n\n[scope]\nignore_files = [123]\n")
+
+        with pytest.raises(ValueError, match=r"\[scope\]\.ignore_files must be a list"):
+            load_project_config(tmp_path)
+
     def test_scope_ignore_files_is_governor_only(self):
         """scope_ignore_files is consumed by settlement, not the worker, so it
         must not appear in the worker payload. Keeps AtomicConfig minimal."""

@@ -157,7 +157,7 @@ def _analyze_transient_scope(
     task_slug: str | None,
     pane_slug: str | None,
 ) -> _TransientScope:
-    if not session_root or not task_slug or not claimed_files:
+    if not session_root or not task_slug or claimed_files is None:
         return _TransientScope(frozenset(), frozenset(), frozenset())
 
     transient_paths = collect_transient_write_paths(session_root, task_slug, pane_slug)

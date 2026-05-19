@@ -139,6 +139,24 @@ class TestAnalyzeScopeStatus:
         assert status.blocking_failure.verdict == "scope_violation"
         assert "scratch.py" in (status.blocking_failure.error or "")
 
+    def test_empty_claims_check_transient_writes(self, tmp_path: Path) -> None:
+        session_root = tmp_path / "session"
+        _emit_worker_result_activity(
+            session_root, "pane-1", "task-1", "write_file", "scratch.py", "create"
+        )
+
+        status = analyze_scope_status(
+            actual_files=frozenset(),
+            claimed_files=(),
+            session_root=str(session_root),
+            task_slug="task-1",
+        )
+
+        assert status.transient_write_paths == frozenset({"scratch.py"})
+        assert status.unclaimed_transient_paths == frozenset({"scratch.py"})
+        assert status.blocking_failure is not None
+        assert status.blocking_failure.verdict == "scope_violation"
+
     def test_transient_claimed_tool_write(self, tmp_path: Path) -> None:
         session_root = tmp_path / "session"
         _emit_worker_result_activity(

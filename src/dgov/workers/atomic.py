@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import dgov.workers.config as worker_config
+from dgov.git_status import porcelain_status_paths
 
 
 def shell_quote(s: str) -> str:
@@ -1250,15 +1251,7 @@ class AtomicTools:
         if status.returncode != 0:
             return "Error: git status failed."
 
-        files: set[str] = set()
-        for line in status.stdout.rstrip("\n").split("\n"):
-            if not line:
-                continue
-            path_part = line[3:]
-            if " -> " in path_part:
-                path_part = path_part.split(" -> ", 1)[1]
-            files.add(path_part)
-        return frozenset(files)
+        return frozenset(porcelain_status_paths(status.stdout))
 
     def _format_scope_status(self, status: object) -> str:
         from dgov.scope_status import ScopeStatus, render_scope_status_lines

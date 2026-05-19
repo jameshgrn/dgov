@@ -75,6 +75,12 @@ def _load_root_meta(root_file: Path) -> RootMeta:
         raise ValueError(f"_root.toml [plan].sections must be a list: {root_file}")
     if not all(isinstance(s, str) for s in sections):
         raise ValueError(f"_root.toml [plan].sections must contain only strings: {root_file}")
+    invalid_sections = [s for s in sections if not _SLUG_RE.match(s)]
+    if invalid_sections:
+        raise ValueError(
+            "_root.toml [plan].sections contains invalid section names "
+            f"{invalid_sections}: section names must match {_SLUG_RE.pattern}"
+        )
 
     return RootMeta(
         name=name,

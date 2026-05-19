@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from dgov.git_status import porcelain_status_paths
+
 SENTRUX_BASELINE_REL_PATH = ".sentrux/baseline.json"
 DGOV_SENTRUX_BASELINE_META_REL_PATH = ".sentrux/dgov-baseline.json"
 
@@ -229,18 +231,10 @@ def _non_refreshable_worktree_changes(root: Path) -> list[str]:
     for line in status.splitlines():
         if not line:
             continue
-        paths = _status_paths(line)
+        paths = porcelain_status_paths(line, include_rename_sources=True)
         if any(not _is_refresh_compatible_path(path) for path in paths):
             changes.extend(paths)
     return changes
-
-
-def _status_paths(line: str) -> tuple[str, ...]:
-    path = line[2:].strip()
-    if " -> " in path:
-        old, new = path.split(" -> ", 1)
-        return (old, new)
-    return (path,)
 
 
 def _is_refresh_compatible_path(path: str) -> bool:
