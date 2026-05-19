@@ -318,6 +318,56 @@ def test_list_degraded_fully_deployed(
     assert "complete" not in result.output.lower()
 
 
+def test_list_empty_plan_not_marked_stale(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A compiled plan with zero units stays 'empty' even when source is newer than compiled."""
+    import time
+
+    root = _make_project_root(tmp_path)
+    plans = root / ".dgov" / "plans"
+    plan_dir = plans / "empty-plan"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "_root.toml").write_text('[plan]\nname = "empty-plan"\nsections = []\n')
+    (plan_dir / "_compiled.toml").write_text('[plan]\nname = "empty-plan"\n')
+    monkeypatch.chdir(root)
+
+    time.sleep(0.1)
+    # Touch the source so its mtime is now newer than the compiled artifact.
+    (plan_dir / "_root.toml").write_text('[plan]\nname = "empty-plan"\nsections = []\n# bump\n')
+
+    result = runner.invoke(cli, ["plan", "list"])
+    assert result.exit_code == 0, result.output
+    assert "empty" in result.output.lower()
+    assert "stale" not in result.output.lower()
+
+
+def test_list_empty_plan_not_marked_stale_json(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """JSON entry for an empty compiled plan stays status=empty regardless of stale."""
+    import time
+
+    root = _make_project_root(tmp_path)
+    plans = root / ".dgov" / "plans"
+    plan_dir = plans / "empty-plan"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "_root.toml").write_text('[plan]\nname = "empty-plan"\nsections = []\n')
+    (plan_dir / "_compiled.toml").write_text('[plan]\nname = "empty-plan"\n')
+    monkeypatch.chdir(root)
+
+    time.sleep(0.1)
+    (plan_dir / "_root.toml").write_text('[plan]\nname = "empty-plan"\nsections = []\n# bump\n')
+
+    result = runner.invoke(cli, ["--json", "plan", "list"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert len(payload) == 1
+    entry = payload[0]
+    assert entry["status"] == "empty"
+    assert entry["total"] == 0
+
+
 def test_list_degraded_fully_deployed_json(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

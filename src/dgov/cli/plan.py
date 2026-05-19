@@ -349,10 +349,14 @@ def _compute_staleness(
         return False
     try:
         tree = walk_tree(plan_root)
-        current_mtime = max(
-            (plan_root / "_root.toml").stat().st_mtime,
-            *(p.stat().st_mtime for paths in tree.section_files.values() for p in paths),
+        # Build the full mtime list with the root as a floor — a plan with zero
+        # section files would otherwise unpack an empty generator into `max()`
+        # and raise TypeError.
+        source_mtimes = [(plan_root / "_root.toml").stat().st_mtime]
+        source_mtimes.extend(
+            p.stat().st_mtime for paths in tree.section_files.values() for p in paths
         )
+        current_mtime = max(source_mtimes)
         baseline_mtime = (
             parse_compiled_source_mtime(compiled_source_mtime)
             if isinstance(compiled_source_mtime, str) and compiled_source_mtime
@@ -804,10 +808,13 @@ def _summarize_plan_entry(
     )
 
     status = _plan_list_status(total, deployed_count)
-    if stale:
-        status = "stale"
-    elif remediation_needed:
-        status = "degraded"
+    # Don't override "empty" — a plan with zero units is more informative than "stale".
+    # `_needs_remediation` already guards on `unit_count > 0`.
+    if total > 0:
+        if stale:
+            status = "stale"
+        elif remediation_needed:
+            status = "degraded"
 
     return {
         **base,
