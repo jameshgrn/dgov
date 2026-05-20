@@ -14,8 +14,8 @@ State-machine hole to close:
 - Decision: `reviewed_pass` and `reviewed_fail` are transient live states (the task is between review and merge, or between review and final failure). Add both to `LIVE_STATES`. Do NOT add them to `TERMINAL_STATES`.
 
 Out of scope:
-- Do not rename any member, change any string value, or restructure the file beyond the typed sets and the hole-closure.
-- File claims restrict edits to `src/dgov/live_state.py` only. Other consumers (plan-review, runner) must keep compiling because `StrEnum` equality with `str` is symmetric.
+- Do not rename any TaskState member, change any string value, or restructure beyond the typed sets and the hole-closure.
+- Tests that currently encode the old buggy behavior (reviewed_pass / reviewed_fail filtered out) should be updated to assert the new correct behavior — reviewed states are live until merged/failed.
 
 Edit:
 1. In `src/dgov/live_state.py`, add `from dgov.types import TaskState` at the top (grouped with other imports).
@@ -34,11 +34,13 @@ Verify:
 """
 commit_message = "Type live-state sets against TaskState and close reviewed-state hole"
 
-files.edit = ["src/dgov/live_state.py"]
+files.edit = [
+  "src/dgov/live_state.py",
+  "tests/test_live_state.py",
+]
 files.read = [
   "src/dgov/types.py",
   "src/dgov/cli/__init__.py",
-  "tests/test_live_state.py",
   "tests/test_boundaries.py",
   ".dgov/governor.md",
 ]

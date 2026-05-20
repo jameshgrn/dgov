@@ -54,11 +54,11 @@ commit_message = "Type run_status as RunStatus(StrEnum) for plan-level run vocab
 files.edit = [
   "src/dgov/plan_review.py",
   "src/dgov/types.py",
-]
-files.read = [
   "tests/test_plan_review.py",
   "tests/test_cli_plan_review.py",
   "tests/test_cli_plan_status.py",
+]
+files.read = [
   "tests/test_boundaries.py",
   ".dgov/governor.md",
 ]
