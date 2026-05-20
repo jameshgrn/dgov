@@ -1,0 +1,48 @@
+[tasks.plan-list-entry]
+summary = "Model dgov plan list entries as typed data and derive stale from status"
+prompt = """
+Orient:
+- Read `src/dgov/cli/plan.py`, especially `PlanListStatus`, `plan_list_cmd`,
+  `_iter_plan_dirs`, `_summarize_plan_entry`, `_collect_plan_list_entries`,
+  `_render_plan_list_section`, and `_render_plan_list_text`.
+- Read `tests/test_cli_plan_list.py` for the public `dgov plan list` behavior.
+- This task addresses debt #232 items 3 and 4 only:
+  `dgov plan list` currently returns loose `dict[str, Any]` entries and stores
+  `stale` even though it is derived from `status == PlanListStatus.STALE`.
+- Preserve the existing JSON output shape, including the `stale` key, but do
+  not store stale as independent mutable state in the internal model.
+
+Edit:
+1. Add a small frozen, slots dataclass `PlanListEntry` near `PlanListStatus`.
+   It should hold the fields currently returned for a plan-list row except
+   `stale`; implement `stale` as a derived property from `status`.
+2. Give `PlanListEntry` a JSON/payload method used by `plan_list_cmd` so
+   `--json plan list` still emits the same keys and string values as today.
+3. Change `_summarize_plan_entry()` and `_collect_plan_list_entries()` to
+   return `PlanListEntry` objects instead of dictionaries.
+4. Update the text render helpers to consume `PlanListEntry` attributes
+   instead of dictionary keys.
+5. Remove `typing.Any` from `src/dgov/cli/plan.py` if it becomes unused.
+6. Update focused tests in `tests/test_cli_plan_list.py` only where needed to
+   keep the JSON behavior explicit. Do not add implementation-only assertions
+   if existing behavior coverage is enough.
+
+Verify:
+- `uv run ruff check src/dgov/cli/plan.py tests/test_cli_plan_list.py`
+- `uv run ruff format --check src/dgov/cli/plan.py tests/test_cli_plan_list.py`
+- `uv run ty check src/dgov/cli/plan.py`
+- `uv run pytest -q tests/test_cli_plan_list.py`
+- `uv run pytest -q tests/test_boundaries.py`
+"""
+commit_message = "Type plan-list entries and derive stale status"
+test_cmd = "uv run pytest -q tests/test_cli_plan_list.py"
+
+[tasks.plan-list-entry.files]
+edit = [
+  "src/dgov/cli/plan.py",
+  "tests/test_cli_plan_list.py",
+]
+read = [
+  ".dgov/plans/state-model-typing-remediation/fix/_context.md",
+  "tests/test_boundaries.py",
+]

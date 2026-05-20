@@ -1,0 +1,4 @@
+[plan]
+name = "state-model-typing-remediation"
+summary = "Remediate degradation from state-model-typing"
+sections = ["fix"]
