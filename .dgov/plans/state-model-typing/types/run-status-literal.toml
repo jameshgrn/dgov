@@ -1,0 +1,64 @@
+[tasks.run-status-literal]
+summary = "Type PlanReview.run_status and _normalize_runs_log_status against a RunStatus Literal so invalid status strings are impossible"
+prompt = """
+Orient:
+- Read `src/dgov/plan_review.py` and locate every use of `run_status`. Key sites:
+  - `PlanReview.run_status: str | None = None  # \"complete\", \"degraded\", \"partial\", \"failed\"` at line 215.
+  - `_RUNS_LOG_RUN_STATUSES` frozenset (search for it) — the canonical 4-value vocabulary.
+  - `_normalize_runs_log_status(status: str) -> str | None` at line 1521.
+  - Constructor sites that pass `run_status=...` (search for `run_status=`).
+- Read `.dgov/governor.md` §"State Modeling" — invariant: prefer designs where invalid states are impossible.
+- Read `src/dgov/types.py` lines 23-48 for the precedent: `TaskState(StrEnum)` and `DagState(StrEnum)` are the dgov pattern for state vocabularies.
+
+Decision:
+- The 4-value vocabulary should be a `StrEnum` named `RunStatus` placed in `src/dgov/types.py` alongside `DagState` and `TaskState` (single-identity invariant from MEMORY.md). Use a `StrEnum`, not a `Literal`, so it composes with the established pattern.
+
+Out of scope:
+- Do not touch `UnitReview.sentrux_degradation` — that is debt #232 item 1 and was determined (ledger #238) to be NOT redundant with run_status.
+- Do not touch `integration_risk_detected` — that is debt #232 item 2 and is NOT strictly derivable (ledger #238).
+- Do not touch `_RUNS_LOG_STATUS_ALIASES` semantics — only the typed surface changes.
+- Do not modify the JSON output shape of `dgov plan review` or `dgov plan status`. `StrEnum` JSON-serializes to its string value, so consumers see the same strings.
+
+Edit:
+1. In `src/dgov/types.py`, add a `RunStatus(StrEnum)` definition immediately after `DagState`:
+   ```python
+   class RunStatus(StrEnum):
+       \"\"\"Outcome status for a plan run.\"\"\"
+
+       COMPLETE = \"complete\"
+       DEGRADED = \"degraded\"
+       PARTIAL = \"partial\"
+       FAILED = \"failed\"
+   ```
+   Add `\"RunStatus\"` to the `__all__` list.
+2. In `src/dgov/plan_review.py`:
+   a. Add `RunStatus` to the existing `from dgov.types import ...` import.
+   b. Replace `_RUNS_LOG_RUN_STATUSES` (the frozenset of strings) with a typed reference: either leave it as-is and verify the strings match exactly, or replace with `frozenset(s.value for s in RunStatus)`. Prefer the latter — single source of truth.
+   c. Change `PlanReview.run_status: str | None = None  # \"complete\", \"degraded\", \"partial\", \"failed\"` to `run_status: RunStatus | None = None` (drop the comment — the type carries the meaning).
+   d. Change `_normalize_runs_log_status(status: str) -> str | None` to return `RunStatus | None`. The body that returns `normalized` (a string) should return `RunStatus(normalized)` instead.
+   e. The dict returned at line 1518 — `{\"run_status\": status}` — should now carry a `RunStatus` value rather than a string. Verify the dict consumers handle it (StrEnum equality with `str` works, so most consumers compile without changes; updating constructor calls to pass `RunStatus` members is the strictest fix).
+   f. The dict returned at line 1455 — `{\"run_status\": event.run_status, ...}` — `event.run_status` is whatever the run_completed event carries. If it is a `str`, wrap it in `RunStatus(event.run_status)` IF the value is valid; otherwise pass through `None`. Match the existing tolerance behavior — do not crash on unexpected values.
+3. Update `PlanReview` and constructor sites that pass `run_status=`. Search:
+   `rg -n 'run_status=' src/dgov/ tests/`
+   Each site that currently passes a string must either continue passing the string (StrEnum equality handles it) or be updated to pass `RunStatus.X`. Prefer updating production-code sites to pass `RunStatus.X` members for type safety; tests can keep raw strings.
+
+Verify:
+- `uv run ruff check src/dgov/plan_review.py src/dgov/types.py tests/test_plan_review.py tests/test_cli_plan_review.py`
+- `uv run ruff format --check src/dgov/plan_review.py src/dgov/types.py tests/test_plan_review.py tests/test_cli_plan_review.py`
+- `uv run ty check src/dgov/plan_review.py src/dgov/types.py`
+- `uv run pytest -q tests/test_plan_review.py tests/test_cli_plan_review.py tests/test_cli_plan_status.py`
+- `uv run pytest -q tests/test_boundaries.py`
+"""
+commit_message = "Type run_status as RunStatus(StrEnum) for plan-level run vocabulary"
+
+files.edit = [
+  "src/dgov/plan_review.py",
+  "src/dgov/types.py",
+  "tests/test_plan_review.py",
+  "tests/test_cli_plan_review.py",
+  "tests/test_cli_plan_status.py",
+]
+files.read = [
+  "tests/test_boundaries.py",
+  ".dgov/governor.md",
+]

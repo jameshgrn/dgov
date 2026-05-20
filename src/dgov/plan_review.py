@@ -56,6 +56,7 @@ from dgov.event_types import (
 from dgov.persistence import read_events
 from dgov.repo_snapshot import format_structural_offender_report
 from dgov.semantic_settlement import describe_evidence_payload
+from dgov.types import RunStatus
 
 _log = logging.getLogger(__name__)
 _ITERATION_EXHAUSTED_RE = re.compile(r"Exceeded max iterations \((?P<budget>\d+)\)", re.IGNORECASE)
@@ -70,7 +71,7 @@ _RUNS_LOG_STATUS_ALIASES = {
     "warn": "degraded",
     "fail": "failed",
 }
-_RUNS_LOG_RUN_STATUSES = frozenset({"complete", "degraded", "failed", "partial"})
+_RUNS_LOG_RUN_STATUSES = frozenset(s.value for s in RunStatus)
 _RUNS_LOG_FIELD_KEYS = {
     "branch_verification_status": "branch_verification_status",
     "branch_verification_error": "branch_verification_error",
@@ -212,7 +213,7 @@ class PlanReview:
     last_run_duration_s: float | None
     units: list[UnitReview] = field(default_factory=list)
     # Run-level fields extracted from run_completed event or runs.log fallback
-    run_status: str | None = None  # "complete", "degraded", "partial", "failed"
+    run_status: RunStatus | None = None
     sentrux_degradation: bool | None = None
     sentrux_quality_before: int | None = None
     sentrux_quality_after: int | None = None
@@ -1452,8 +1453,9 @@ def _extract_run_completed_fields(
     offenders = sentrux.get("structural_offenders")
     offender_summary = _format_structural_offenders(offenders)
 
+    run_status = event.run_status
     return {
-        "run_status": event.run_status,
+        "run_status": RunStatus(run_status) if run_status in _RUNS_LOG_RUN_STATUSES else None,
         "sentrux_degradation": sentrux.get("degradation"),
         "sentrux_quality_before": sentrux.get("quality_before"),
         "sentrux_quality_after": sentrux.get("quality_after"),
@@ -1518,10 +1520,10 @@ def _parse_runs_log_header(line: str) -> dict[str, Any]:
     return {"run_status": status} if status else {}
 
 
-def _normalize_runs_log_status(status: str) -> str | None:
+def _normalize_runs_log_status(status: str) -> RunStatus | None:
     normalized = _RUNS_LOG_STATUS_ALIASES.get(status, status)
     if normalized in _RUNS_LOG_RUN_STATUSES:
-        return normalized
+        return RunStatus(normalized)
     return None
 
 

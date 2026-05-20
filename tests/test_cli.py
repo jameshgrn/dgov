@@ -390,7 +390,7 @@ def test_status_all_marks_unterminated_completed_run_stale(
     assert "active          stale-task" not in result.output
 
 
-def test_status_hides_reviewed_failure_by_default(
+def test_status_shows_reviewed_failure_as_live(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -420,9 +420,10 @@ def test_status_hides_reviewed_failure_by_default(
     result = runner.invoke(cli, ["status"])
 
     assert result.exit_code == 0
-    assert "status: idle" in result.output
-    assert "active: 0" in result.output
-    assert "failed-review-task" not in result.output
+    # reviewed_fail is a live state — task awaits governor handling, not terminal.
+    assert "status: active" in result.output
+    assert "failed-review-task" in result.output
+    assert "reviewed_fail" in result.output
 
 
 def test_status_all_shows_reviewed_failure(
@@ -455,7 +456,7 @@ def test_status_all_shows_reviewed_failure(
     result = runner.invoke(cli, ["status", "--all"])
 
     assert result.exit_code == 0
-    assert "status: idle" in result.output
+    assert "status: active" in result.output
     assert "reviewed_fail" in result.output
     assert "failed-review-task" in result.output
 

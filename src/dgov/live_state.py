@@ -7,14 +7,17 @@ state. Mutable task rows are persistence/cache, not authority.
 from __future__ import annotations
 
 from dgov.persistence import read_events
+from dgov.types import TaskState
 
-LIVE_STATES = frozenset({
-    "pending",
-    "active",
-    "done",
-    "reviewing",
-    "merging",
+LIVE_STATES: frozenset[str] = frozenset({
+    TaskState.PENDING,
+    TaskState.ACTIVE,
+    TaskState.DONE,
+    TaskState.REVIEWING,
+    TaskState.MERGING,
     "settling",
+    TaskState.REVIEWED_PASS,
+    TaskState.REVIEWED_FAIL,
 })
 
 # Settlement phases that indicate active settlement work
@@ -25,13 +28,13 @@ SETTLEMENT_PHASES = frozenset({
 })
 
 # Terminal states that end settlement visibility
-TERMINAL_STATES = frozenset({
-    "merged",
-    "failed",
-    "closed",
-    "abandoned",
-    "timed_out",
-    "skipped",
+TERMINAL_STATES: frozenset[TaskState] = frozenset({
+    TaskState.MERGED,
+    TaskState.FAILED,
+    TaskState.CLOSED,
+    TaskState.ABANDONED,
+    TaskState.TIMED_OUT,
+    TaskState.SKIPPED,
 })
 
 PLAN_BOUNDARY_EVENTS = frozenset({
@@ -39,22 +42,22 @@ PLAN_BOUNDARY_EVENTS = frozenset({
     "run_completed",
 })
 
-_EVENT_STATE_MAP = {
-    "dag_task_dispatched": "active",
-    "task_done": "done",
-    "task_abandoned": "abandoned",
-    "task_timed_out": "timed_out",
-    "review_pass": "reviewed_pass",
-    "review_fail": "reviewed_fail",
-    "merge_completed": "merged",
-    "task_merge_failed": "failed",
-    "task_closed": "closed",
+_EVENT_STATE_MAP: dict[str, TaskState] = {
+    "dag_task_dispatched": TaskState.ACTIVE,
+    "task_done": TaskState.DONE,
+    "task_abandoned": TaskState.ABANDONED,
+    "task_timed_out": TaskState.TIMED_OUT,
+    "review_pass": TaskState.REVIEWED_PASS,
+    "review_fail": TaskState.REVIEWED_FAIL,
+    "merge_completed": TaskState.MERGED,
+    "task_merge_failed": TaskState.FAILED,
+    "task_closed": TaskState.CLOSED,
 }
 
-_GOVERNOR_RESUME_STATE_MAP = {
-    "retry": "pending",
-    "skip": "skipped",
-    "fail": "failed",
+_GOVERNOR_RESUME_STATE_MAP: dict[str, TaskState] = {
+    "retry": TaskState.PENDING,
+    "skip": TaskState.SKIPPED,
+    "fail": TaskState.FAILED,
 }
 
 
@@ -69,12 +72,12 @@ def _event_id(event: dict) -> int:
     return int(event.get("id", 0))
 
 
-def state_from_event(event: dict) -> str | None:
+def state_from_event(event: dict) -> TaskState | None:
     """Map a lifecycle event to the task state it establishes."""
     event_name = event.get("event")
     if event_name == "task_failed":
         error = str(event.get("error", "")).lower()
-        return "timed_out" if "timeout" in error else "failed"
+        return TaskState.TIMED_OUT if "timeout" in error else TaskState.FAILED
     if event_name == "dag_task_governor_resumed":
         return _GOVERNOR_RESUME_STATE_MAP.get(str(event.get("action") or ""))
     return _EVENT_STATE_MAP.get(str(event_name))
@@ -151,7 +154,7 @@ def _record_task_state(
     task_statuses: dict[tuple[str, str], dict[str, str]],
     task_phases: dict[tuple[str, str], str],
     key: tuple[str, str],
-    state: str,
+    state: TaskState,
 ) -> None:
     plan_name, task_slug = key
     task_statuses[key] = {
