@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import tomllib
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -41,6 +42,42 @@ class PlanListStatus(StrEnum):
     COMPLETE = "complete"
     STALE = "stale"
     DEGRADED = "degraded"
+
+
+@dataclass(frozen=True, slots=True)
+class PlanListEntry:
+    """Immutable row model for `dgov plan list`.
+
+    `stale` is derived from `status` and is not stored as mutable state.
+    """
+
+    name: str
+    path: str
+    archived: bool
+    compiled: bool = False
+    total: int = 0
+    deployed: int = 0
+    status: PlanListStatus = PlanListStatus.UNCOMPILED
+    run_status: str | None = None
+    remediation_needed: bool = False
+
+    @property
+    def stale(self) -> bool:
+        return self.status == PlanListStatus.STALE
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "path": self.path,
+            "archived": self.archived,
+            "compiled": self.compiled,
+            "total": self.total,
+            "deployed": self.deployed,
+            "status": self.status.value,
+            "stale": self.stale,
+            "run_status": self.run_status,
+            "remediation_needed": self.remediation_needed,
+        }
 
 
 def _format_unit_files(unit: PlanUnit) -> str:
@@ -746,7 +783,7 @@ def plan_list_cmd(show_all: bool, archived: bool) -> None:
         project_root, plans_dir, show_all=show_all, archived_only=archived
     )
     if want_json():
-        click.echo(json.dumps(entries, indent=2))
+        click.echo(json.dumps([e.to_dict() for e in entries], indent=2))
     else:
         _render_plan_list_text(entries)
 
@@ -781,30 +818,24 @@ def _plan_list_status(total: int, deployed: int) -> PlanListStatus:
     return PlanListStatus.IN_PROGRESS
 
 
-def _summarize_plan_entry(
-    project_root: Path, plan_path: Path, *, archived: bool
-) -> dict[str, Any]:
+def _summarize_plan_entry(project_root: Path, plan_path: Path, *, archived: bool) -> PlanListEntry:
     from dgov.plan_review import load_run_envelope
 
     compiled_path = plan_path / "_compiled.toml"
-    base: dict[str, Any] = {
-        "name": plan_path.name,
-        "path": str(plan_path),
-        "archived": archived,
-        "compiled": False,
-        "total": 0,
-        "deployed": 0,
-        "status": PlanListStatus.UNCOMPILED,
-        "stale": False,
-        "run_status": None,
-        "remediation_needed": False,
-    }
     if not compiled_path.exists():
-        return base
+        return PlanListEntry(
+            name=plan_path.name,
+            path=str(plan_path),
+            archived=archived,
+        )
     try:
         raw = tomllib.loads(compiled_path.read_text())
     except (tomllib.TOMLDecodeError, OSError):
-        return base
+        return PlanListEntry(
+            name=plan_path.name,
+            path=str(plan_path),
+            archived=archived,
+        )
     tasks = raw.get("tasks", {}) or {}
     plan_section = raw.get("plan", {})
     plan_name = plan_section.get("name", plan_path.name)
@@ -833,16 +864,17 @@ def _summarize_plan_entry(
         elif remediation_needed:
             status = PlanListStatus.DEGRADED
 
-    return {
-        **base,
-        "compiled": True,
-        "total": total,
-        "deployed": deployed_count,
-        "status": status,
-        "stale": stale,
-        "run_status": run_envelope.run_status,
-        "remediation_needed": remediation_needed,
-    }
+    return PlanListEntry(
+        name=plan_name,
+        path=str(plan_path),
+        archived=archived,
+        compiled=True,
+        total=total,
+        deployed=deployed_count,
+        status=status,
+        run_status=run_envelope.run_status,
+        remediation_needed=remediation_needed,
+    )
 
 
 def _collect_plan_list_entries(
@@ -851,7 +883,7 @@ def _collect_plan_list_entries(
     *,
     show_all: bool,
     archived_only: bool,
-) -> list[dict[str, Any]]:
+) -> list[PlanListEntry]:
     include_active = not archived_only
     include_archived = archived_only or show_all
     return [
@@ -883,24 +915,24 @@ def _format_status_label(status: PlanListStatus) -> str:
     return status.value
 
 
-def _render_plan_list_section(label: str, entries: list[dict[str, Any]]) -> None:
+def _render_plan_list_section(label: str, entries: list[PlanListEntry]) -> None:
     if not entries:
         return
     click.echo(f"  {label}:")
-    name_width = max(len(e["name"]) for e in entries)
+    name_width = max(len(e.name) for e in entries)
     for entry in entries:
-        marker = _plan_list_marker(entry["status"])
-        progress = f"  ({entry['deployed']}/{entry['total']})" if entry["compiled"] else ""
-        label_text = _format_status_label(entry["status"])
-        click.echo(f"    {marker} {entry['name'].ljust(name_width)}  {label_text}{progress}")
+        marker = _plan_list_marker(entry.status)
+        progress = f"  ({entry.deployed}/{entry.total})" if entry.compiled else ""
+        label_text = _format_status_label(entry.status)
+        click.echo(f"    {marker} {entry.name.ljust(name_width)}  {label_text}{progress}")
 
 
-def _render_plan_list_text(entries: list[dict[str, Any]]) -> None:
+def _render_plan_list_text(entries: list[PlanListEntry]) -> None:
     if not entries:
         click.echo("No plans found.")
         return
-    active = [e for e in entries if not e["archived"]]
-    archived = [e for e in entries if e["archived"]]
+    active = [e for e in entries if not e.archived]
+    archived = [e for e in entries if e.archived]
     click.echo(f"Plans ({len(entries)}):")
     _render_plan_list_section("active", active)
     _render_plan_list_section("archive", archived)
