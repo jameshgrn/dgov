@@ -29,6 +29,13 @@ system level. Workers may be probabilistic. Governance should not be.
   hand-maintain skill mirrors under `src/dgov/agent_skill_data/`. Local
   `~/.agents/skills/dgov-*` copies are derived machine state refreshed with
   `uv run dgov agents sync`.
+- Commit durable `.dgov/` source before dispatch. Worker deployment and
+  post-run sentrux finalization are separate states; uncommitted governance
+  source blocks dispatch even when generated runtime artifacts are dirty.
+  Plan `_root.toml` and task TOML files are durable source;
+  `_compiled.toml`, `.dgov/plans/deployed.jsonl`, `.dgov/runs.log`,
+  `.dgov/state.db*`, `.dgov/out/`, and `.dgov/runtime/` are generated/runtime
+  state.
 
 ## Governor Invocation
 
