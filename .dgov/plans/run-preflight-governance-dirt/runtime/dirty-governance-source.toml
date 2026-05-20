@@ -1,0 +1,56 @@
+[tasks.dirty-governance-source]
+summary = "Block dirty durable .dgov source files before dgov run dispatch"
+prompt = """
+Orient:
+- Read `src/dgov/cli/run.py`, especially `_working_tree_files`,
+  `_dirty_worker_files`, `_ensure_git_ready`, and `_block_dirty_committed_worktree`.
+- Read `src/dgov/sentrux_baseline.py`, especially
+  `_is_refresh_compatible_path()` and `_non_refreshable_worktree_changes()`.
+- Read `tests/test_cli_run_strict.py` around existing dirty-worktree tests.
+- Ledger context: decision #227 allowed all `.dgov/` dirt so plan authoring did
+  not block dispatch, but we just reproduced the bad consequence: dirty durable
+  plan source allowed dispatch and then blocked post-run sentrux finalization.
+
+Decision:
+- Keep runtime/generated dgov dirt compatible with dispatch where it is already
+  tolerated: `.dgov/plans/deployed.jsonl`, `.dgov/runs.log`, `.dgov/state.db*`,
+  `.dgov/out/`, `.dgov/runtime/`, and plan `_compiled.toml` artifacts.
+- Block dirty durable governance source before dispatch, including
+  `.dgov/plans/<name>/_root.toml`, task TOML files, `.dgov/governor.md`,
+  `.dgov/sops/*.md`, and `.dgov/project.toml`.
+- Reuse one explicit classifier in `src/dgov/cli/run.py`; do not copy the
+  sentrux-baseline private helper directly.
+- Preserve the public blocked status key: `blocked_by_dirty_worktree`.
+
+Edit:
+1. Replace `_dirty_worker_files()` with a helper that filters only
+   dispatch-compatible generated/runtime paths rather than every `.dgov/` path.
+2. Add focused tests in `tests/test_cli_run_strict.py`:
+   - a dirty plan source file blocks before compile and before sentrux baseline checks;
+   - dirty generated plan metadata or runtime metadata still reaches compile.
+3. Rename or adjust the existing `test_run_allows_dirty_dgov_plan_metadata_before_compile`
+   if its name becomes misleading.
+4. Keep error text actionable; if changing the existing message, ensure current
+   tests still assert the shared status and bounded dirty path payload.
+
+Verify:
+- `uv run ruff check src/dgov/cli/run.py tests/test_cli_run_strict.py`
+- `uv run ruff format --check src/dgov/cli/run.py tests/test_cli_run_strict.py`
+- `uv run ty check src/dgov/cli/run.py`
+- `uv run pytest -q tests/test_cli_run_strict.py::test_dirty_worker_files_counts_rename_source_into_dgov tests/test_cli_run_strict.py::test_run_blocks_dirty_worktree_with_shared_status tests/test_cli_run_strict.py::test_run_json_bounds_dirty_worktree_paths tests/test_cli_run_strict.py::test_run_blocks_dirty_dgov_plan_source_before_compile tests/test_cli_run_strict.py::test_run_allows_dirty_dgov_generated_metadata_before_compile`
+- `uv run pytest -q tests/test_boundaries.py`
+"""
+commit_message = "Block dirty governance source before dgov run dispatch"
+test_cmd = "uv run pytest -q tests/test_cli_run_strict.py::test_dirty_worker_files_counts_rename_source_into_dgov tests/test_cli_run_strict.py::test_run_blocks_dirty_worktree_with_shared_status tests/test_cli_run_strict.py::test_run_json_bounds_dirty_worktree_paths tests/test_cli_run_strict.py::test_run_blocks_dirty_dgov_plan_source_before_compile tests/test_cli_run_strict.py::test_run_allows_dirty_dgov_generated_metadata_before_compile"
+
+[tasks.dirty-governance-source.files]
+edit = [
+  "src/dgov/cli/run.py",
+  "tests/test_cli_run_strict.py",
+]
+read = [
+  "src/dgov/sentrux_baseline.py",
+  ".dgov/governor.md",
+  ".dgov/project.toml",
+  "tests/test_boundaries.py",
+]
