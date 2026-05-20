@@ -1,0 +1,5 @@
+[plan]
+name = "run-preflight-governance-dirt"
+summary = "Fail early when dirty durable governance source would block post-run finalization."
+sections = ["runtime", "guidance"]
+
