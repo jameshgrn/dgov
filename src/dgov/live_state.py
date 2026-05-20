@@ -9,15 +9,20 @@ from __future__ import annotations
 from dgov.persistence import read_events
 from dgov.types import TaskState
 
-LIVE_STATES: frozenset[str] = frozenset({
+SETTLING_STATE = "settling"
+
+LIVE_TASK_STATES: frozenset[TaskState] = frozenset({
     TaskState.PENDING,
     TaskState.ACTIVE,
     TaskState.DONE,
     TaskState.REVIEWING,
     TaskState.MERGING,
-    "settling",
     TaskState.REVIEWED_PASS,
     TaskState.REVIEWED_FAIL,
+})
+
+LIVE_STATES: frozenset[str] = frozenset(state.value for state in LIVE_TASK_STATES) | frozenset({
+    SETTLING_STATE
 })
 
 # Settlement phases that indicate active settlement work
@@ -90,7 +95,7 @@ def phase_from_event(event: dict) -> str | None:
         phase = event.get("phase", "")
         if phase in SETTLEMENT_PHASES:
             return f"settling:{phase}"
-        return "settling"
+        return SETTLING_STATE
     if event_name == "settlement_phase_completed":
         # Phase completed - returns None to indicate phase should be cleared
         # The actual state transition is handled by merge_completed or task_merge_failed
@@ -159,7 +164,7 @@ def _record_task_state(
     plan_name, task_slug = key
     task_statuses[key] = {
         "slug": task_slug,
-        "state": state,
+        "state": state.value,
         "plan_name": plan_name,
     }
     if state in TERMINAL_STATES:
@@ -185,8 +190,8 @@ def _apply_task_phases(
     for key, phase in task_phases.items():
         if key not in task_statuses:
             continue
-        if phase.startswith("settling:"):
-            task_statuses[key]["state"] = "settling"
+        if phase.startswith(f"{SETTLING_STATE}:"):
+            task_statuses[key]["state"] = SETTLING_STATE
             task_statuses[key]["phase"] = phase.split(":", 1)[1]
         else:
             task_statuses[key]["phase"] = phase
