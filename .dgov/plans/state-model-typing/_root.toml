@@ -1,0 +1,4 @@
+[plan]
+name = "state-model-typing"
+summary = "Type live-state sets and run_status against their enums so invalid states are impossible (debt #232 items 5, 6)."
+sections = ["types"]

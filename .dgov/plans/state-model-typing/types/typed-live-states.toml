@@ -1,0 +1,44 @@
+[tasks.typed-live-states]
+summary = "Type LIVE_STATES, TERMINAL_STATES, and _EVENT_STATE_MAP against TaskState and close the reviewed_pass/reviewed_fail hole"
+prompt = """
+Orient:
+- Read `src/dgov/live_state.py` end-to-end. The frozensets `LIVE_STATES`, `TERMINAL_STATES`, `SETTLEMENT_PHASES`, `PLAN_BOUNDARY_EVENTS` and the dicts `_EVENT_STATE_MAP`, `_GOVERNOR_RESUME_STATE_MAP` are currently typed as `frozenset[str]` / `dict[str, str]` even though every value mirrors a member of `dgov.types.TaskState`.
+- Read `src/dgov/types.py` lines 23-38 to confirm the TaskState members.
+- Read `.dgov/governor.md` §"State Modeling" — invariant is that invalid states should be impossible at the type level.
+- Read `src/dgov/cli/__init__.py` at lines 14 and 222 — the one external consumer that does `t.get("state") in _LIVE_STATES`. Equality between `str` and `StrEnum` members works in both directions, so this consumer keeps compiling without changes.
+- Read `tests/test_live_state.py` to understand what's tested.
+
+State-machine hole to close:
+- `_EVENT_STATE_MAP` maps `review_pass → "reviewed_pass"` and `review_fail → "reviewed_fail"`.
+- Neither value appears in `LIVE_STATES` or `TERMINAL_STATES`. Tasks in either reviewed state fall through the staleness check at line 199 (`if task.get("state") not in LIVE_STATES: continue`) and through the terminal check at line 162 (`if state in TERMINAL_STATES: task_phases.pop`).
+- Decision: `reviewed_pass` and `reviewed_fail` are transient live states (the task is between review and merge, or between review and final failure). Add both to `LIVE_STATES`. Do NOT add them to `TERMINAL_STATES`.
+
+Out of scope:
+- Do not rename any member, change any string value, or restructure the file beyond the typed sets and the hole-closure.
+- File claims restrict edits to `src/dgov/live_state.py` only. Other consumers (plan-review, runner) must keep compiling because `StrEnum` equality with `str` is symmetric.
+
+Edit:
+1. In `src/dgov/live_state.py`, add `from dgov.types import TaskState` at the top (grouped with other imports).
+2. Replace each string literal in `LIVE_STATES`, `TERMINAL_STATES`, `_EVENT_STATE_MAP` values, and `_GOVERNOR_RESUME_STATE_MAP` values with the matching `TaskState` member. For example: `"pending"` → `TaskState.PENDING`, `"merged"` → `TaskState.MERGED`. Leave `SETTLEMENT_PHASES` and `PLAN_BOUNDARY_EVENTS` alone — those are not task states; they are phase/event names.
+3. Annotate the typed collections: `LIVE_STATES: frozenset[TaskState] = frozenset({...})`, `TERMINAL_STATES: frozenset[TaskState] = frozenset({...})`, `_EVENT_STATE_MAP: dict[str, TaskState] = {...}`, `_GOVERNOR_RESUME_STATE_MAP: dict[str, TaskState] = {...}`.
+4. Add `TaskState.REVIEWED_PASS` and `TaskState.REVIEWED_FAIL` to the `LIVE_STATES` frozenset (closing the state-machine hole).
+5. Update `state_from_event()` return type to `TaskState | None` and the body to return `TaskState` members. The early-return `"timed_out" if "timeout" in error else "failed"` becomes `TaskState.TIMED_OUT if "timeout" in error else TaskState.FAILED`.
+6. Update any internal call sites in `src/dgov/live_state.py` itself that compare returned states or look them up in the maps; equality between `TaskState` and `str` is automatic via `StrEnum`, but produced values should now be `TaskState` members. The `task["state"]` dict stored in `_record_task_state` should store the `TaskState` member directly — the existing consumer in `src/dgov/cli/__init__.py` will still see `task["state"] == "active"` as True.
+
+Verify:
+- `uv run ruff check src/dgov/live_state.py tests/test_live_state.py`
+- `uv run ruff format --check src/dgov/live_state.py tests/test_live_state.py`
+- `uv run ty check src/dgov/live_state.py src/dgov/cli/__init__.py`
+- `uv run pytest -q tests/test_live_state.py`
+- `uv run pytest -q tests/test_boundaries.py`
+"""
+commit_message = "Type live-state sets against TaskState and close reviewed-state hole"
+
+files.edit = ["src/dgov/live_state.py"]
+files.read = [
+  "src/dgov/types.py",
+  "src/dgov/cli/__init__.py",
+  "tests/test_live_state.py",
+  "tests/test_boundaries.py",
+  ".dgov/governor.md",
+]
