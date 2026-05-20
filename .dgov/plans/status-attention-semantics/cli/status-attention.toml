@@ -1,0 +1,70 @@
+[tasks.status-attention]
+summary = "Derive dgov status from running versus attention-requiring live states"
+prompt = """
+Orient:
+- Read `src/dgov/cli/__init__.py`, especially `_cmd_status`,
+  `_status_view`, `_status_payload`, and `_echo_status_text`.
+- Read `src/dgov/live_state.py` to understand which states are event-derived
+  live states.
+- Read `tests/test_cli.py` around the existing status tests.
+- Problem evidence: `dgov plan list` can correctly report no active plans while
+  `dgov status` prints `status: active` and `active: 0` because reviewed states
+  are live but not running worker activity.
+
+Decision:
+- Do not add a stored boolean. Derive operator status from the visible live
+  task states each time.
+- Keep `active` as the existing count of actively running worker tasks.
+- Add an `attention` count for live reviewed states that require governor
+  action or indicate a stuck post-review state: `reviewed_fail` and
+  `reviewed_pass`.
+- Derive top-level status with this precedence:
+  1. `active` if any live task is running or in progress outside attention-only
+     states. This preserves the existing public status value for actual live
+     execution.
+  2. `needs_attention` if there are attention states and no running/in-progress
+     states.
+  3. `idle` when there is no live state.
+- Preserve existing JSON keys and add `attention`; do not remove `state_counts`
+  or `task_list`.
+- Human text should make the distinction clear: show `attention: N` when nonzero.
+
+Edit:
+1. Update `_status_view()` in `src/dgov/cli/__init__.py` to derive:
+   - `live`
+   - `active`
+   - `settling`
+   - `attention`
+   - `state_counts`
+   - top-level `status`
+   without introducing independent mutable state.
+2. Update `_status_payload()` and `_echo_status_text()` to include the
+   `attention` count.
+3. Update focused status tests in `tests/test_cli.py`:
+   - reviewed failure with no active worker now reports `status: needs_attention`;
+   - `--all` preserves the same top-level status for the latest live view;
+   - JSON includes `attention` and counts reviewed states;
+   - active/settling tests still report `status: active`.
+4. Keep the change scoped to status rendering; do not alter `tasks_from_events`
+   semantics in this task.
+
+Verify:
+- `uv run ruff check src/dgov/cli/__init__.py tests/test_cli.py`
+- `uv run ruff format --check src/dgov/cli/__init__.py tests/test_cli.py`
+- `uv run ty check src/dgov/cli/__init__.py`
+- `uv run pytest -q tests/test_cli.py::test_status_shows_reviewed_failure_as_live tests/test_cli.py::test_status_all_shows_reviewed_failure tests/test_cli.py::test_status_shows_settling_task_after_review_pass tests/test_cli.py::test_status_json_includes_phase_and_state_counts`
+- `uv run pytest -q tests/test_boundaries.py`
+"""
+commit_message = "Separate dgov status attention from running work"
+test_cmd = "uv run pytest -q tests/test_cli.py::test_status_shows_reviewed_failure_as_live tests/test_cli.py::test_status_all_shows_reviewed_failure tests/test_cli.py::test_status_shows_settling_task_after_review_pass tests/test_cli.py::test_status_json_includes_phase_and_state_counts"
+
+[tasks.status-attention.files]
+edit = [
+  "src/dgov/cli/__init__.py",
+  "tests/test_cli.py",
+]
+read = [
+  "src/dgov/live_state.py",
+  "tests/test_boundaries.py",
+]
+

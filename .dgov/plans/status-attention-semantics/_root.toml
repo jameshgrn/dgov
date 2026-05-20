@@ -1,0 +1,5 @@
+[plan]
+name = "status-attention-semantics"
+summary = "Separate running work from governor-attention states in dgov status."
+sections = ["cli", "guidance"]
+
