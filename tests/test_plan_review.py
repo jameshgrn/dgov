@@ -1341,21 +1341,21 @@ class TestExtractRunCompletedFields:
 
     def test_ignores_run_completed_before_run_start_id(self):
         events = [
-            {"id": 10, "event": "run_completed", "plan_name": "p", "run_status": "old"},
+            {"id": 10, "event": "run_completed", "plan_name": "p", "run_status": "complete"},
             {"id": 20, "event": "run_start", "plan_name": "p"},
-            {"id": 30, "event": "run_completed", "plan_name": "p", "run_status": "new"},
+            {"id": 30, "event": "run_completed", "plan_name": "p", "run_status": "failed"},
         ]
         fields = _extract_run_completed_fields(_convert_events(events), 20)
-        assert fields["run_status"] == "new"
+        assert fields["run_status"] == "failed"
 
     def test_uses_latest_run_completed_when_multiple_exist(self):
         events = [
             {"id": 1, "event": "run_start", "plan_name": "p"},
-            {"id": 10, "event": "run_completed", "plan_name": "p", "run_status": "first"},
-            {"id": 20, "event": "run_completed", "plan_name": "p", "run_status": "second"},
+            {"id": 10, "event": "run_completed", "plan_name": "p", "run_status": "complete"},
+            {"id": 20, "event": "run_completed", "plan_name": "p", "run_status": "degraded"},
         ]
         fields = _extract_run_completed_fields(_convert_events(events), 1)
-        assert fields["run_status"] == "second"
+        assert fields["run_status"] == "degraded"
 
 
 # ---------------------------------------------------------------------------

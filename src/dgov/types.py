@@ -48,6 +48,15 @@ class DagState(StrEnum):
     PARTIAL = "partial"
 
 
+class RunStatus(StrEnum):
+    """Outcome status for a plan run."""
+
+    COMPLETE = "complete"
+    DEGRADED = "degraded"
+    PARTIAL = "partial"
+    FAILED = "failed"
+
+
 # -- Runner events --
 
 
@@ -80,6 +89,7 @@ __all__ = [
     "DagState",
     "DispatchRun",
     "DispatchRunState",
+    "RunStatus",
     "TaskState",
     "WatermasterId",
     "WorkerExit",

@@ -11,6 +11,7 @@ from click.testing import CliRunner
 
 from dgov.cli import cli
 from dgov.plan_review import DiffStat, PlanReview, UnitReview
+from dgov.types import RunStatus
 
 pytestmark = pytest.mark.unit
 
@@ -375,7 +376,7 @@ def test_review_renders_run_level_status_and_advisory(
         source_dir=None,
         last_run_ts="2026-04-10T12:00:00Z",
         last_run_duration_s=30.0,
-        run_status="degraded",
+        run_status=RunStatus.DEGRADED,
         sentrux_degradation=True,
         sentrux_quality_before=85,
         sentrux_quality_after=82,
@@ -417,7 +418,7 @@ def test_review_failed_run_status_shows_red(
         source_dir=None,
         last_run_ts="2026-04-10T12:00:00Z",
         last_run_duration_s=10.0,
-        run_status="failed",
+        run_status=RunStatus.FAILED,
         units=[unit],
     )
     plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
@@ -450,7 +451,7 @@ def test_review_json_includes_run_level_fields(
         source_dir=Path("/some/path"),
         last_run_ts="2026-04-10T12:00:00Z",
         last_run_duration_s=25.0,
-        run_status="degraded",
+        run_status=RunStatus.DEGRADED,
         sentrux_degradation=True,
         sentrux_quality_before=90,
         sentrux_quality_after=87,

@@ -11,6 +11,7 @@ from click.testing import CliRunner
 
 from dgov.cli import cli
 from dgov.deploy_log import append as deploy_append
+from dgov.types import RunStatus
 
 pytestmark = pytest.mark.unit
 
@@ -378,7 +379,7 @@ def test_status_shows_degraded_follow_up_hint(
     envelope = RunEnvelope(
         plan_name="test-plan",
         last_run_ts="2026-04-10T12:00:00Z",
-        run_status="degraded",
+        run_status=RunStatus.DEGRADED,
         sentrux_degradation=True,
         sentrux_offender_summary="2 offenders in src/module.py",
     )
@@ -431,7 +432,7 @@ def test_status_json_includes_remediation_fields(
     envelope = RunEnvelope(
         plan_name="test-plan",
         last_run_ts="2026-04-10T12:00:00Z",
-        run_status="degraded",
+        run_status=RunStatus.DEGRADED,
         sentrux_degradation=True,
         sentrux_offender_summary="1 offender in src/module.py",
     )
@@ -462,7 +463,7 @@ def test_status_shows_branch_verification_failure(
     envelope = RunEnvelope(
         plan_name="test-plan",
         last_run_ts="2026-04-10T12:00:00Z",
-        run_status="degraded",
+        run_status=RunStatus.DEGRADED,
         branch_verification_status="failed",
         branch_verification_error="Type check failure",
     )
