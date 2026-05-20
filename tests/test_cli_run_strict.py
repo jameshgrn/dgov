@@ -94,6 +94,11 @@ def _init_committed_repo(repo: Path) -> str:
     return _git_head(repo)
 
 
+def _commit_all(repo: Path, message: str = "add files") -> None:
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
+
+
 def test_dirty_worker_files_counts_rename_source_into_dgov(tmp_path: Path) -> None:
     from dgov.cli.run import _dirty_worker_files
 
@@ -106,15 +111,16 @@ def test_dirty_worker_files_counts_rename_source_into_dgov(tmp_path: Path) -> No
     subprocess.run(["git", "commit", "-q", "-m", "add files"], cwd=tmp_path, check=True)
     subprocess.run(["git", "mv", "src/foo.py", ".dgov/foo.py"], cwd=tmp_path, check=True)
 
-    assert _dirty_worker_files(str(tmp_path)) == ["src/foo.py"]
+    assert _dirty_worker_files(str(tmp_path)) == ["src/foo.py", ".dgov/foo.py"]
 
 
 def test_run_blocks_dirty_worktree_with_shared_status(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _init_committed_repo(tmp_path)
     plan_dir = _write_plan_tree(tmp_path, "dirty-block")
     _write_compiled(plan_dir, "dirty-block")
-    _init_committed_repo(tmp_path)
+    _commit_all(tmp_path, "add plan")
     (tmp_path / "README.md").write_text("dirty\n")
 
     def _unexpected_baseline(_project_root: str) -> int:
@@ -139,9 +145,10 @@ def test_run_blocks_dirty_worktree_with_shared_status(
 def test_run_json_bounds_dirty_worktree_paths(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _init_committed_repo(tmp_path)
     plan_dir = _write_plan_tree(tmp_path, "dirty-json")
     _write_compiled(plan_dir, "dirty-json")
-    _init_committed_repo(tmp_path)
+    _commit_all(tmp_path, "add plan")
     for index in range(12):
         (tmp_path / f"dirty-{index:02d}.txt").write_text("dirty\n")
 
@@ -171,13 +178,15 @@ def test_run_json_bounds_dirty_worktree_paths(
     assert data["dirty_omitted"] == 2
 
 
-def test_run_allows_dirty_dgov_plan_metadata_before_compile(
+def test_run_allows_dirty_dgov_generated_metadata_before_compile(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _init_committed_repo(tmp_path)
     plan_dir = _write_plan_tree(tmp_path, "dirty-dgov")
     _write_compiled(plan_dir, "dirty-dgov")
-    _init_committed_repo(tmp_path)
-    (plan_dir / "runtime.jsonl").write_text('{"status": "dirty"}\n')
+    _commit_all(tmp_path, "add plan")
+    (tmp_path / ".dgov" / "runtime").mkdir()
+    (tmp_path / ".dgov" / "runtime" / "run.jsonl").write_text('{"status": "dirty"}\n')
     captured: dict[str, Path] = {}
 
     def _reached_compile(path: Path) -> None:
@@ -192,6 +201,32 @@ def test_run_allows_dirty_dgov_plan_metadata_before_compile(
     assert result.exit_code == 7
     assert captured["path"] == plan_dir
     assert "blocked_by_dirty_worktree" not in result.output
+
+
+def test_run_blocks_dirty_dgov_plan_source_before_compile(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_committed_repo(tmp_path)
+    plan_dir = _write_plan_tree(tmp_path, "dirty-source")
+    _write_compiled(plan_dir, "dirty-source")
+    _commit_all(tmp_path, "add plan")
+    (plan_dir / "_root.toml").write_text('[plan]\nname = "dirty-source"\nmodified = true\n')
+
+    def _unexpected_baseline(_project_root: str) -> int:
+        pytest.fail("dirty worktree block should happen before sentrux baseline checks")
+
+    def _unexpected_compile(_path: Path) -> None:
+        pytest.fail("dirty worktree block should happen before plan compilation")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dgov.cli.run.compile_plan_for_run", _unexpected_compile)
+    monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", _unexpected_baseline)
+
+    result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
+
+    assert result.exit_code == 1
+    assert "dispatch_status: blocked_by_dirty_worktree" in result.output
+    assert ".dgov/plans/dirty-source/_root.toml" in result.output
 
 
 def test_branch_changed_source_files_decodes_unicode_path(tmp_path: Path) -> None:

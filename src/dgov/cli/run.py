@@ -330,9 +330,21 @@ def _ensure_bootstrap_commit(project_root: str, yes: bool) -> None:
     _raise_bootstrap_declined()
 
 
+def _is_dispatch_compatible_path(path: str) -> bool:
+    """Return True for generated/runtime dgov paths that may be dirty during dispatch."""
+    return (
+        path == ".dgov/plans/deployed.jsonl"
+        or path == ".dgov/runs.log"
+        or path.startswith(".dgov/state.db")
+        or path.startswith(".dgov/out/")
+        or path.startswith(".dgov/runtime/")
+        or (path.startswith(".dgov/") and path.endswith("/_compiled.toml"))
+    )
+
+
 def _dirty_worker_files(project_root: str) -> list[str]:
     dirty = _working_tree_files(project_root)
-    return [f for f in dirty if not f.startswith(".dgov/")]
+    return [f for f in dirty if not _is_dispatch_compatible_path(f)]
 
 
 def _dirty_worktree_block_data(dirty: Sequence[str]) -> dict[str, object]:

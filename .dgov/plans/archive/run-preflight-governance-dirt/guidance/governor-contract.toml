@@ -1,0 +1,30 @@
+[tasks.governor-contract]
+summary = "Document durable governance source cleanliness before dispatch"
+prompt = """
+Orient:
+- Read `.dgov/governor.md`.
+- Read the landed diff from `runtime/dirty-governance-source.dirty-governance-source`.
+- This is guidance for governors/operators, not worker prompt duplication.
+
+Edit:
+1. Add one concise rule to `.dgov/governor.md` explaining that durable
+   governance source changes under `.dgov/` must be committed before dispatch,
+   because worker deployment and post-run sentrux finalization are separate
+   states.
+2. Reference examples only if useful: plan `_root.toml` and task TOML are
+   durable source; `_compiled.toml`, deployed log, and runtime DB/log artifacts
+   are generated/runtime state.
+3. Do not update `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`; this is governor
+   charter guidance, not instruction-pack guidance.
+
+Verify:
+- `uv run ruff check .dgov/governor.md`
+- `uv run pytest -q tests/test_boundaries.py`
+"""
+commit_message = "Document governance-source run preflight"
+test_cmd = "uv run pytest -q tests/test_boundaries.py"
+depends_on = ["runtime/dirty-governance-source.dirty-governance-source"]
+
+[tasks.governor-contract.files]
+edit = [".dgov/governor.md"]
+read = ["tests/test_boundaries.py"]
