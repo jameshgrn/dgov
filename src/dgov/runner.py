@@ -148,6 +148,23 @@ def _summarize_evidence(risk_record: IntegrationRiskRecord) -> str:
     return summarize_runner_evidence(risk_record.overlap_evidence)
 
 
+@dataclass(frozen=True, slots=True)
+class _RetryProvenance:
+    """Marks a TaskContext as awaiting dispatch as a retry of a prior run."""
+
+    from_dispatch_run_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ForkProvenance:
+    """Marks a TaskContext as awaiting fork dispatch after iteration exhaustion."""
+
+    from_dispatch_run_id: str
+
+
+_DispatchProvenance = _RetryProvenance | _ForkProvenance | None
+
+
 @dataclass
 class TaskContext:
     """Per-task runtime state tracked by EventDagRunner."""
@@ -166,8 +183,7 @@ class TaskContext:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     current_dispatch_run_id: str | None = None
-    retried_from_dispatch_run_id: str | None = None
-    forked_from_dispatch_run_id: str | None = None
+    provenance: _DispatchProvenance = None
 
 
 @dataclass(frozen=True)
@@ -362,7 +378,8 @@ class EventDagRunner:
         logger.info("Resuming task: %s (prior state: %s)", slug, prior_state)
         ctx = self._ctx(slug)
         ctx.attempts += 1
-        ctx.retried_from_dispatch_run_id = ctx.current_dispatch_run_id
+        if ctx.current_dispatch_run_id is not None:
+            ctx.provenance = _RetryProvenance(ctx.current_dispatch_run_id)
         self.kernel.handle(TaskGovernorResumed(slug, GovernorAction.RETRY))
         emit_event(
             self.session_root,
@@ -838,7 +855,8 @@ class EventDagRunner:
         task: DagTaskSpec,
     ) -> None:
         ctx.fork_depth += 1
-        ctx.forked_from_dispatch_run_id = ctx.current_dispatch_run_id
+        if ctx.current_dispatch_run_id is not None:
+            ctx.provenance = _ForkProvenance(ctx.current_dispatch_run_id)
         ctx.call_count = 0
         ctx.start_time = time.time()
         self._pending_dispatches.add(exit_event.task_slug)
@@ -1546,7 +1564,8 @@ class EventDagRunner:
         if attempts < self.kernel.max_retries:
             ctx = self._ctx(action.task_slug)
             ctx.attempts = attempts + 1
-            ctx.retried_from_dispatch_run_id = ctx.current_dispatch_run_id
+            if ctx.current_dispatch_run_id is not None:
+                ctx.provenance = _RetryProvenance(ctx.current_dispatch_run_id)
             logger.info(
                 "Task %s failed — retry %d/%d: %s",
                 action.task_slug,
@@ -1688,8 +1707,19 @@ class EventDagRunner:
     ) -> DispatchRun:
         effective_sop_set_hash = self._effective_sop_set_hash()
         plan_hash = self.dag.sop_set_hash or None
-        retried_from = ctx.retried_from_dispatch_run_id
-        forked_from = ctx.forked_from_dispatch_run_id
+        retried_from: str | None = None
+        forked_from: str | None = None
+        retry_index = 0
+        fork_depth = 0
+        match ctx.provenance:
+            case _RetryProvenance(from_dispatch_run_id=rid):
+                retried_from = rid
+                retry_index = ctx.attempts
+            case _ForkProvenance(from_dispatch_run_id=fid):
+                forked_from = fid
+                fork_depth = ctx.fork_depth
+            case None:
+                pass
         dispatch_run = DispatchRun(
             from_plan_id=self.dag.name,
             unit_slug=task_slug,
@@ -1706,15 +1736,14 @@ class EventDagRunner:
             ),
             retried_from=retried_from,
             forked_from=forked_from,
-            retry_index=ctx.attempts if retried_from is not None else 0,
-            fork_depth=ctx.fork_depth if forked_from is not None else 0,
+            retry_index=retry_index,
+            fork_depth=fork_depth,
             dispatched_by=self._dispatched_by,
             dispatched_at=datetime.now(UTC),
         ).start_active()
         save_dispatch_run(self.session_root, dispatch_run)
         ctx.current_dispatch_run_id = dispatch_run.id
-        ctx.retried_from_dispatch_run_id = None
-        ctx.forked_from_dispatch_run_id = None
+        ctx.provenance = None
         return dispatch_run
 
     def _record_terminal_dispatch_run(

@@ -24,7 +24,7 @@ from dgov.persistence import (
     get_dispatch_run,
     save_dispatch_run,
 )
-from dgov.runner import EventDagRunner, _test_failure_command
+from dgov.runner import EventDagRunner, _ForkProvenance, _test_failure_command
 from dgov.types import TaskState, WorkerExit, Worktree
 
 # ---------------------------------------------------------------------------
@@ -679,7 +679,7 @@ class TestDispatchRunRecording:
             ctx=ctx,
         )
 
-        ctx.forked_from_dispatch_run_id = first.id
+        ctx.provenance = _ForkProvenance(first.id)
         ctx.fork_depth = 1
         second = runner._mint_dispatch_run(
             task_slug="a",
