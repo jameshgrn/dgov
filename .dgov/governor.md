@@ -15,6 +15,10 @@ system level. Workers may be probabilistic. Governance should not be.
 - Respect file claims. A task must only edit files it explicitly claims.
 - Prefer explicit contracts over clever prompts.
 - Fail closed. If structure or scope is unclear, stop and fix the plan.
+- Distinguish running work from attention states in operator status.
+  `dgov status` is `active` when workers or settlement are in flight,
+  `needs_attention` when reviewed results await governor handling, and `idle`
+  otherwise.
 - Project-specific build, test, runtime, platform, data, CI, secrets, and
   convention policy lives in the target repo's `.dgov/project.toml`,
   `.dgov/sops/`, or repo scripts. Core dgov owns generic hooks, diagnostics,

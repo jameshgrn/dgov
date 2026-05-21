@@ -1,0 +1,24 @@
+[tasks.status-contract]
+summary = "Document dgov status attention semantics in the governor charter"
+prompt = """
+Orient:
+- Read `.dgov/governor.md`.
+- Read the landed diff from `cli/status-attention.status-attention`.
+
+Edit:
+1. Add one concise rule to `.dgov/governor.md` explaining that operator status
+   must distinguish running worker/settlement activity from live states that
+   need governor attention.
+2. Keep it narrow: this is about the governor-facing status surface, not a
+   broader docs rewrite.
+
+Verify:
+- `uv run pytest -q tests/test_boundaries.py`
+"""
+commit_message = "Document status attention semantics"
+test_cmd = "uv run pytest -q tests/test_boundaries.py"
+depends_on = ["cli/status-attention.status-attention"]
+
+[tasks.status-contract.files]
+edit = [".dgov/governor.md"]
+read = ["tests/test_boundaries.py"]

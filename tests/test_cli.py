@@ -421,7 +421,7 @@ def test_status_shows_reviewed_failure_as_live(
 
     assert result.exit_code == 0
     # reviewed_fail is a live state — task awaits governor handling, not terminal.
-    assert "status: active" in result.output
+    assert "status: needs_attention" in result.output
     assert "failed-review-task" in result.output
     assert "reviewed_fail" in result.output
 
@@ -456,7 +456,7 @@ def test_status_all_shows_reviewed_failure(
     result = runner.invoke(cli, ["status", "--all"])
 
     assert result.exit_code == 0
-    assert "status: active" in result.output
+    assert "status: needs_attention" in result.output
     assert "reviewed_fail" in result.output
     assert "failed-review-task" in result.output
 
@@ -519,6 +519,8 @@ def test_status_json_includes_phase_and_state_counts(
     assert "state_counts" in data
     assert "settling" in data.get("state_counts", {})
     assert data["settling"] == 1
+    assert "attention" in data
+    assert data["attention"] == 0
     _assert_settling_task_has_phase(data, expected_phase="integration")
 
 

@@ -222,16 +222,26 @@ def _status_view(
     live = [t for t in live_history if t.get("state") in _LIVE_STATES]
     active = [t for t in live if t.get("state") == "active"]
     settling = [t for t in live if t.get("state") == "settling"]
+    attention_states = {"reviewed_fail", "reviewed_pass"}
+    attention = [t for t in live if t.get("state") in attention_states]
     visible = all_history if show_all else live
     state_counts: dict[str, int] = {}
     for t in live:
         state = t.get("state", "unknown")
         state_counts[state] = state_counts.get(state, 0) + 1
+    has_non_attention = any(t.get("state") not in attention_states for t in live)
+    if live and has_non_attention:
+        top_status = "active"
+    elif attention:
+        top_status = "needs_attention"
+    else:
+        top_status = "idle"
     return {
-        "status": "active" if live else "idle",
+        "status": top_status,
         "tasks": len(all_history),
         "active": len(active),
         "settling": len(settling),
+        "attention": len(attention),
         "state_counts": state_counts,
         "visible": visible,
     }
@@ -244,6 +254,7 @@ def _status_payload(status: dict[str, object]) -> dict[str, object]:
         "tasks": status["tasks"],
         "active": status["active"],
         "settling": status["settling"],
+        "attention": status["attention"],
         "state_counts": status["state_counts"],
         "task_list": [_status_task_payload(task) for task in visible],
     }
@@ -265,6 +276,8 @@ def _echo_status_text(status: dict[str, object], show_all: bool) -> None:
     click.echo(f"active: {status['active']}")
     if status["settling"]:
         click.echo(f"settling: {status['settling']}")
+    if status["attention"]:
+        click.echo(f"attention: {status['attention']}")
     if visible:
         click.echo("tasks:")
         for task in visible:
