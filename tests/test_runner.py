@@ -1203,6 +1203,7 @@ def _capture_retry_scope_factory(captured: dict[str, object]):
     return _capture
 
 
+@pytest.mark.unit
 class TestVerificationScope:
     def test_dispatch_passes_verify_test_targets(self):
         captured: dict[str, object] = {}
