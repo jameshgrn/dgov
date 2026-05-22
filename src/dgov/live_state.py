@@ -6,10 +6,26 @@ state. Mutable task rows are persistence/cache, not authority.
 
 from __future__ import annotations
 
+import re
+
 from dgov.persistence import read_events
 from dgov.types import TaskState
 
 SETTLING_STATE = "settling"
+
+# Matches both "timed out" and "timeout" so error strings emitted by the runner
+# ("Timed out after Xs", "Fork timed out after Xs", "Wall-clock timeout after Xs")
+# all classify as timeouts. A bare `"timeout" in error` substring check misses
+# the "timed out" wording the runner actually uses for fork and worker exits.
+_TIMEOUT_ERROR_RE = re.compile(r"\b(?:timed out|timeout)\b", re.IGNORECASE)
+
+
+def is_timeout_error(error: str | None) -> bool:
+    """Return True if an error string describes a timeout failure."""
+    if not error:
+        return False
+    return _TIMEOUT_ERROR_RE.search(error) is not None
+
 
 LIVE_TASK_STATES: frozenset[TaskState] = frozenset({
     TaskState.PENDING,
@@ -81,8 +97,7 @@ def state_from_event(event: dict) -> TaskState | None:
     """Map a lifecycle event to the task state it establishes."""
     event_name = event.get("event")
     if event_name == "task_failed":
-        error = str(event.get("error", "")).lower()
-        return TaskState.TIMED_OUT if "timeout" in error else TaskState.FAILED
+        return TaskState.TIMED_OUT if is_timeout_error(event.get("error")) else TaskState.FAILED
     if event_name == "dag_task_governor_resumed":
         return _GOVERNOR_RESUME_STATE_MAP.get(str(event.get("action") or ""))
     return _EVENT_STATE_MAP.get(str(event_name))
