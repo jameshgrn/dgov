@@ -1819,13 +1819,7 @@ class EventDagRunner:
         if exit_event.exit_code == 0:
             return "done"
         error = exit_event.last_error or ""
-        error_lower = error.lower()
-        if (
-            will_fork
-            or self._ITERATION_EXHAUSTED_MARKER in error
-            or "timed out after" in error_lower
-            or "wall-clock timeout" in error_lower
-        ):
+        if will_fork or self._ITERATION_EXHAUSTED_MARKER in error or is_timeout_error(error):
             return "timed_out"
         return "failed"
 

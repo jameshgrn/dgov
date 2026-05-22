@@ -53,6 +53,7 @@ from dgov.event_types import (
     WorkerLog,
     deserialize_event,
 )
+from dgov.live_state import is_timeout_error
 from dgov.persistence import read_events
 from dgov.repo_snapshot import format_structural_offender_report
 from dgov.semantic_settlement import describe_evidence_payload
@@ -62,7 +63,6 @@ _log = logging.getLogger(__name__)
 _ITERATION_EXHAUSTED_RE = re.compile(r"Exceeded max iterations \((?P<budget>\d+)\)", re.IGNORECASE)
 _ERROR_PATH_COLLECTION_RE = re.compile(r":\s*(?P<paths>\[[^\]]*\]|\([^)]*\)|\{[^}]*\})")
 _ERROR_PATH_FALLBACK_RE = re.compile(r"\b(?P<path>(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+)\b")
-_TIMEOUT_ERROR_RE = re.compile(r"\b(?:timed out|timeout)\b", re.IGNORECASE)
 _RUNS_LOG_HEADER_RE = re.compile(r"^\[([^\]]+)\]\s+(\S+)")
 _RUNS_LOG_STATUS_RE = re.compile(r"^\[[^\]]+\]\s+\S+\s+\([^)]+\)\s+—\s+(\w+)")
 _RUNS_LOG_SENTRUX_RE = re.compile(r"sentrux:\s*(\d+)\s*->\s*(\d+|None)")
@@ -334,7 +334,7 @@ def _read_scope_violation_hint(error: str | None) -> str:
 
 def _error_shape_hint(verdict: str | None, error: str | None) -> str | None:
     v = verdict.lower() if isinstance(verdict, str) else ""
-    if v in {"task_timed_out", "timed_out"} or (error and _TIMEOUT_ERROR_RE.search(error)):
+    if v in {"task_timed_out", "timed_out"} or is_timeout_error(error):
         return (
             "worker timed out before settlement — split the task or raise timeout_s "
             "if the work is legitimately long"
