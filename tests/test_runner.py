@@ -1978,6 +1978,35 @@ class TestRecoveryPipeline:
             assert isinstance(call_args, TaskWaitDone)
             assert call_args.task_state == TaskState.TIMED_OUT
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            "Timed out after 60s",
+            "Fork timed out after 60s",
+            "Worker timed out after 30s",
+        ],
+    )
+    def test_apply_rehydrate_event_task_failed_timed_out_phrasing(self, error: str):
+        """Regression: 'timed out' phrasing (without 'timeout') must rehydrate as TIMED_OUT.
+
+        The runner emits these exact error strings from `_emit_worker_terminal_event`
+        and `_fork_worker`. A bare `"timeout" in error` substring check missed them,
+        causing genuine timeouts to rehydrate as TaskState.FAILED.
+        """
+        from dgov.actions import TaskWaitDone
+        from dgov.event_types import TaskFailed
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            ev = TaskFailed(task_slug="a", pane="pane-1", error=error)
+
+            with patch.object(runner.kernel, "handle") as mock_handle:
+                runner._apply_rehydrate_event(ev)
+
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskWaitDone)
+            assert call_args.task_state == TaskState.TIMED_OUT
+
     def test_apply_rehydrate_event_governor_resumed(self):
         """Rehydration restores governor-resume events for retry state."""
         from dgov.actions import GovernorAction, TaskGovernorResumed

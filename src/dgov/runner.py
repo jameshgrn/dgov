@@ -67,6 +67,7 @@ from dgov.event_types import (
     deserialize_event,
 )
 from dgov.kernel import DagKernel
+from dgov.live_state import is_timeout_error
 from dgov.persistence import (
     emit_event,
     record_runtime_artifact,
@@ -465,8 +466,7 @@ class EventDagRunner:
         if isinstance(event, TaskAbandoned):
             return TaskState.ABANDONED
         if isinstance(event, TaskFailed):
-            error = (event.error or "").lower()
-            return TaskState.TIMED_OUT if "timeout" in error else TaskState.FAILED
+            return TaskState.TIMED_OUT if is_timeout_error(event.error) else TaskState.FAILED
         return None
 
     def _rehydrated_review_result(self, event: DgovEvent) -> tuple[bool, int] | None:

@@ -6,10 +6,51 @@ from pathlib import Path
 
 import pytest
 
-from dgov.live_state import live_plan_names, tasks_from_events
+from dgov.live_state import is_timeout_error, live_plan_names, state_from_event, tasks_from_events
 from dgov.persistence import emit_event
+from dgov.types import TaskState
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "Timed out after 60s",
+        "Fork timed out after 60s",
+        "Worker timed out after 30s",
+        "Wall-clock timeout after 60s",
+        "Read timeout occurred",
+    ],
+)
+def test_is_timeout_error_matches_runner_timeout_phrasings(error: str) -> None:
+    """The runner emits both 'timed out' and 'timeout' phrasings; both must classify."""
+    assert is_timeout_error(error) is True
+
+
+@pytest.mark.parametrize("error", ["", None, "merge conflict", "review_hook_fail"])
+def test_is_timeout_error_rejects_non_timeout_errors(error: str | None) -> None:
+    assert is_timeout_error(error) is False
+
+
+def test_state_from_event_classifies_timed_out_phrasing_as_timed_out() -> None:
+    """Regression: 'Timed out after Xs' is what _emit_worker_terminal_event re-emits.
+
+    Before the fix, a substring check for 'timeout' missed 'timed out' and these
+    task_failed events were misclassified as TaskState.FAILED.
+    """
+    event = {"event": "task_failed", "error": "Timed out after 60s"}
+    assert state_from_event(event) is TaskState.TIMED_OUT
+
+
+def test_state_from_event_classifies_fork_timeout_as_timed_out() -> None:
+    event = {"event": "task_failed", "error": "Fork timed out after 60s"}
+    assert state_from_event(event) is TaskState.TIMED_OUT
+
+
+def test_state_from_event_classifies_non_timeout_failure_as_failed() -> None:
+    event = {"event": "task_failed", "error": "merge conflict in src/foo.py"}
+    assert state_from_event(event) is TaskState.FAILED
 
 
 def test_tasks_from_events_scopes_each_plan_to_latest_run_start(tmp_path: Path) -> None:
