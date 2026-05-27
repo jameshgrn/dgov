@@ -515,7 +515,6 @@ class TestChain:
             ],
         ):
             runner = _make_runner(dag)
-            runner._upstream_units = lambda task_slug: ("a", "b")  # type: ignore[method-assign]
 
             assert runner._base_ref_for_task("c") == "sha-b"
 
