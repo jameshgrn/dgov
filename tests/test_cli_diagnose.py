@@ -65,7 +65,7 @@ def test_diagnose_clean_repo(
     assert "No failure shapes matched" in result.output
 
 
-def test_diagnose_reports_archive_drift(
+def test_diagnose_allows_ignored_plan_archive(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _init_repo(tmp_path)
@@ -75,7 +75,7 @@ def test_diagnose_reports_archive_drift(
     monkeypatch.setattr("dgov.cli.diagnose.read_events", lambda *a, **k: [])
     result = runner.invoke(cli, ["diagnose", "--root", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    assert "archive_policy_drift" in result.output
+    assert "No failure shapes matched" in result.output
 
 
 def test_diagnose_reports_scope_violation(
@@ -104,10 +104,18 @@ def test_diagnose_json_output(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _init_repo(tmp_path)
-    dgov_dir = tmp_path / ".dgov"
-    dgov_dir.mkdir()
-    (dgov_dir / ".gitignore").write_text("plans/archive/\n")
-    monkeypatch.setattr("dgov.cli.diagnose.read_events", lambda *a, **k: [])
+    (tmp_path / ".dgov").mkdir()
+    monkeypatch.setattr(
+        "dgov.cli.diagnose.read_events",
+        lambda *a, **k: [
+            {
+                "event": "review_fail",
+                "verdict": "scope_violation",
+                "plan_name": "p",
+                "task_slug": "t",
+            }
+        ],
+    )
     result = runner.invoke(cli, ["--json", "diagnose", "--root", str(tmp_path)])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)

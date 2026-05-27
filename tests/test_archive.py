@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from dgov.archive import ArchiveError, archive_plan
+from dgov.archive import archive_plan
 
 pytestmark = pytest.mark.unit
 
@@ -67,7 +67,7 @@ def test_archive_plan_multiple_plans(tmp_path: Path) -> None:
     assert (tmp_path / "archive" / "plan-b").exists()
 
 
-def test_archive_plan_refuses_ignored_durable_plan_archive(tmp_path: Path) -> None:
+def test_archive_plan_allows_ignored_durable_plan_archive(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     dgov_dir = tmp_path / ".dgov"
     plans_dir = dgov_dir / "plans"
@@ -75,11 +75,11 @@ def test_archive_plan_refuses_ignored_durable_plan_archive(tmp_path: Path) -> No
     (dgov_dir / ".gitignore").write_text("plans/archive/\n")
     plan_dir = _make_plan_dir(plans_dir, "my-plan")
 
-    with pytest.raises(ArchiveError, match=r"ignored \.dgov/plans/archive"):
-        archive_plan(plan_dir)
+    dest = archive_plan(plan_dir)
 
-    assert plan_dir.exists()
-    assert not (plans_dir / "archive" / "my-plan").exists()
+    assert dest == plans_dir / "archive" / "my-plan"
+    assert not plan_dir.exists()
+    assert dest.exists()
 
 
 def test_archive_plan_allows_ignored_runtime_fix_archive(tmp_path: Path) -> None:

@@ -399,7 +399,6 @@ def _validate_compiled_plan(
         plan_issues.extend(_execution_resolution_issues(compiled_spec, project_config))
     plan_issues.extend(_setup_cmd_warnings(compiled_spec, project_config, project_root))
     plan_issues.extend(_prompt_tool_warnings(compiled_spec, project_config, project_root))
-    plan_issues.extend(_archive_ignore_warnings(project_root))
     plan_errors = tuple(i for i in plan_issues if i.severity == "error")
     plan_warnings = tuple(i for i in plan_issues if i.severity == "warning")
 
@@ -657,35 +656,6 @@ def _tool_available(tool: str, worker_path: str, project_root: Path) -> bool:
         path = Path(tool)
         return path.exists() if path.is_absolute() else (project_root / path).exists()
     return shutil.which(tool, path=worker_path) is not None
-
-
-def _archive_ignore_warnings(project_root: Path) -> list[PlanIssue]:
-    from dgov.plan import PlanIssue
-
-    ignored_by = [
-        path
-        for path in (project_root / ".dgov" / ".gitignore", project_root / ".gitignore")
-        if _ignores_plan_archive(path)
-    ]
-    if not ignored_by:
-        return []
-    files = ", ".join(str(path.relative_to(project_root)) for path in ignored_by)
-    return [
-        PlanIssue(
-            severity="warning",
-            message=(
-                f"{files} ignores .dgov/plans/archive. Automatic archive moves can leave "
-                "tracked plan deletions without tracked archived source."
-            ),
-        )
-    ]
-
-
-def _ignores_plan_archive(ignore_file: Path) -> bool:
-    if not ignore_file.exists():
-        return False
-    ignored_patterns = {"plans/archive/", "/plans/archive/", ".dgov/plans/archive/"}
-    return any(line.strip() in ignored_patterns for line in ignore_file.read_text().splitlines())
 
 
 def _print_plan_errors(plan_errors: tuple[PlanIssue, ...]) -> None:

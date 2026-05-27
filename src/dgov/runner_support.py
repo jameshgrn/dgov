@@ -46,6 +46,19 @@ def deploy_records_by_unit(session_root: str, dag_name: str) -> dict[str, Any]:
     return {record.unit: record for record in deploy_log.read(session_root, dag_name)}
 
 
+def latest_deploy_record_for_units(
+    session_root: str, dag_name: str, units: Iterable[str]
+) -> Any | None:
+    from dgov import deploy_log
+
+    wanted = set(units)
+    latest = None
+    for record in deploy_log.read(session_root, dag_name):
+        if record.unit in wanted:
+            latest = record
+    return latest
+
+
 def effective_sop_set_hash(session_root: str) -> str:
     from dgov.sop_bundler import compute_sop_set_hash, load_sops
 

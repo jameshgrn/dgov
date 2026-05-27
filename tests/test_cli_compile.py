@@ -522,7 +522,7 @@ Verify:
     ]
 
 
-def test_compile_warns_when_plan_archive_is_ignored(
+def test_compile_allows_ignored_plan_archive(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dgov_dir = tmp_path / ".dgov"
@@ -549,7 +549,7 @@ def test_compile_warns_when_plan_archive_is_ignored(
     result = runner.invoke(cli, ["compile", str(plan_dir), "--dry-run"])
 
     assert result.exit_code == 0, result.output
-    assert "ignores .dgov/plans/archive" in result.output
+    assert "ignores .dgov/plans/archive" not in result.output
 
 
 def test_compile_does_not_warn_zero_sop_for_docs_only_task(
