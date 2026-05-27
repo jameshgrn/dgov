@@ -85,6 +85,7 @@ from dgov.runner_support import (
     deploy_records_by_unit,
     deployed_units,
     effective_sop_set_hash,
+    latest_deploy_record_for_units,
     latest_runner_run_start_ids,
     load_runner_project_config,
     reset_runner_plan_state,
@@ -1690,7 +1691,12 @@ class EventDagRunner:
                 f"missing for: {missing}. Fix: rerun or repair the plan state before continuing."
             )
 
-        latest = max((records[dep] for dep in upstream), key=lambda record: record.ts)
+        latest = latest_deploy_record_for_units(self.session_root, self.dag.name, upstream)
+        if latest is None:
+            raise RuntimeError(
+                f"Cannot create worktree for '{task_slug}' because no upstream deploy record "
+                "could be selected. Fix: rerun or repair the plan state before continuing."
+            )
         return latest.sha
 
     def _effective_sop_set_hash(self) -> str:

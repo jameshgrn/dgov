@@ -10,7 +10,6 @@ import click
 from dgov.cli import cli, want_json
 from dgov.diagnose import (
     DiagnosisFinding,
-    check_archive_policy_drift,
     check_plan_claims_violation,
 )
 from dgov.persistence.events import read_events
@@ -29,7 +28,6 @@ def diagnose_cmd(root: str) -> None:
     project_root = resolve_project_root(Path(root))
     session_root = project_root / ".dgov"
     findings: list[DiagnosisFinding] = []
-    findings.extend(_safe(check_archive_policy_drift, project_root=project_root))
     events = _load_events(session_root)
     findings.extend(_safe(check_plan_claims_violation, events=events))
     _emit(findings)

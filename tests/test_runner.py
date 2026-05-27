@@ -501,6 +501,23 @@ class TestChain:
 
         assert captured == ["b:dep-sha"]
 
+    def test_dependent_dispatch_uses_deploy_log_order_when_timestamps_tie(self):
+        dag = _dag({
+            "a": _task("a"),
+            "b": _task("b"),
+            "c": _task("c", depends_on=("a", "b")),
+        })
+        with patch(
+            "dgov.deploy_log.read",
+            return_value=[
+                MagicMock(unit="a", sha="sha-a", ts="2026-04-18T12:00:00Z"),
+                MagicMock(unit="b", sha="sha-b", ts="2026-04-18T12:00:00Z"),
+            ],
+        ):
+            runner = _make_runner(dag)
+
+            assert runner._base_ref_for_task("c") == "sha-b"
+
 
 class TestParallel:
     def test_parallel_both_merge(self):

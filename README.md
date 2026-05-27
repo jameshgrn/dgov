@@ -216,7 +216,7 @@ dgov plan list             # List plans under .dgov/plans/ with deploy progress
 dgov plan status <dir>     # Show pending vs deployed units
 dgov plan review <dir>     # Post-hoc debrief of the last run
 dgov plan remediate <dir>  # Scaffold a follow-up plan for a degraded deploy
-dgov archive-plan <name>   # Move a plan to .dgov/plans/archive/
+dgov archive-plan <name>   # Move a plan to local .dgov/plans/archive/
 
 # Observability
 dgov watch                 # Stream events live

@@ -102,7 +102,9 @@ Three stores carry different jobs:
 - **Event log** — lifecycle authority. Dispatch, retry, status, watch, and
   live cleanup decisions derive from events.
 - **Deploy log** — landed-output authority. The deploy log records what
-  actually made it onto main.
+  actually made it onto main. Its append order is the canonical order for
+  selecting the newest upstream base ref for dependent worktrees, avoiding
+  timestamp-tie ambiguity.
 - **Runtime artifact rows** — bookkeeping. These rows cache worktree paths,
   branch names, and similar operational crumbs for debugging and cleanup.
   They do not define lifecycle truth.
@@ -113,9 +115,11 @@ wins.
 ## Snapshot isolation
 
 Every dispatched task gets its own branch and worktree rooted at a specific
-commit. That gives `dgov` a concrete notion of "attempt." The bootstrap path
-is careful because branching requires a real snapshot — `dgov` does not need
-GitHub, but it does need local git state.
+commit. Root tasks use HEAD, while dependent tasks base from the latest
+upstream deploy record by deploy-log append order. That gives `dgov` a
+concrete notion of "attempt." The bootstrap path is careful because branching
+requires a real snapshot — `dgov` does not need GitHub, but it does need local
+git state.
 
 ## Settlement
 

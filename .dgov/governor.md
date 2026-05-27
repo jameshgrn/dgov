@@ -33,13 +33,14 @@ system level. Workers may be probabilistic. Governance should not be.
   hand-maintain skill mirrors under `src/dgov/agent_skill_data/`. Local
   `~/.agents/skills/dgov-*` copies are derived machine state refreshed with
   `uv run dgov agents sync`.
-- Commit durable `.dgov/` source before dispatch. Worker deployment and
-  post-run sentrux finalization are separate states; uncommitted governance
-  source blocks dispatch even when generated runtime artifacts are dirty.
-  Plan `_root.toml` and task TOML files are durable source;
-  `_compiled.toml`, `.dgov/plans/deployed.jsonl`, `.dgov/runs.log`,
-  `.dgov/state.db*`, `.dgov/out/`, and `.dgov/runtime/` are generated/runtime
-  state.
+- In this source repo, commit durable `.dgov/` source before dispatch. Worker
+  deployment and post-run sentrux finalization are separate states; uncommitted
+  governance source blocks dispatch even when generated runtime artifacts are
+  dirty. Plan `_root.toml` and task TOML files are durable source; `_compiled.toml`,
+  `.dgov/plans/deployed.jsonl`, `.dgov/runs.log`, `.dgov/state.db*`,
+  `.dgov/out/`, and `.dgov/runtime/` are generated/runtime state. Target repos
+  may keep `.dgov/` local-only; core dgov must not require production repos to
+  track dgov plan history.
 
 ## Governor Invocation
 
@@ -80,14 +81,15 @@ mechanical signal must be checked by hand.
   needs the refreshed skills.
 - Do not: Edit local `~/.agents/skills/dgov-*` as the only fix.
 
-**archive_policy_drift**
-- Evidence: `git check-ignore .dgov/plans/archive/<plan>/_root.toml` matches
-  a `.gitignore` rule.
-- Class: Project policy (target repo).
-- Next action: Edit the target repo's `.dgov/.gitignore` so durable plan
-  archives are trackable; retry the finalization path.
-- Do not: Rerun the landed worker task to recover bookkeeping. Worker-task
-  completion and governor finalization are separate states.
+**archive_locality_regression**
+- Evidence: `dgov run`, `dgov compile`, `dgov diagnose`, or `dgov archive-plan`
+  tells a target repo to unignore or commit `.dgov/plans/archive/` solely for
+  post-run bookkeeping.
+- Class: Implementation.
+- Next action: Fix core dgov so completed plan archives can remain local under
+  ignored `.dgov/`; target repos choose whether governance source is tracked.
+- Do not: Require a production repo to track `.dgov/` just to satisfy dgov's
+  archival contract.
 
 **cli_internal_helper_import**
 - Evidence: A CLI module imports a sibling underscore-prefixed helper from another `dgov.cli.*` module; the compose path bypasses the public API surface.
