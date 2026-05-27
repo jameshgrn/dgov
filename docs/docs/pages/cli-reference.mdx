@@ -251,7 +251,10 @@ Move a plan directory to `.dgov/plans/archive/<name>`.
 dgov archive-plan my-plan
 ```
 
-Successful runs auto-archive. Use this command to archive manually.
+Successful runs auto-archive. Archives are local dgov bookkeeping and may live
+under ignored `.dgov/` state in target repos. dgov does not require production
+repos to track `.dgov/` solely for archive finalization. Use this command to
+archive manually.
 
 ---
 
