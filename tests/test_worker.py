@@ -220,6 +220,44 @@ def test_head_missing(tools: AtomicTools) -> None:
     assert result.startswith("Error:")
 
 
+# -- run_bash network egress --
+
+
+def test_run_bash_rejects_curl_when_deny_network_egress(tools: AtomicTools) -> None:
+    tools.config = AtomicConfig(
+        tool_policy=ToolPolicy(restrict_run_bash=True, deny_network_egress=True)
+    )
+    result = tools.run_bash("curl https://example.com")
+    assert result.startswith("Error:")
+    assert "network egress" in result
+
+
+def test_run_bash_rejects_python_inline_code_when_deny_network_egress(tools: AtomicTools) -> None:
+    tools.config = AtomicConfig(
+        tool_policy=ToolPolicy(restrict_run_bash=True, deny_network_egress=True)
+    )
+    result = tools.run_bash("python -c 'print(1)'")
+    assert result.startswith("Error:")
+    assert "network egress" in result
+
+
+def test_run_bash_rejects_git_clone_when_deny_network_egress(tools: AtomicTools) -> None:
+    tools.config = AtomicConfig(
+        tool_policy=ToolPolicy(restrict_run_bash=True, deny_network_egress=True)
+    )
+    result = tools.run_bash("git clone https://github.com/example/repo.git")
+    assert result.startswith("Error:")
+    assert "network egress" in result
+
+
+def test_run_bash_allows_local_git_when_deny_network_egress(tools: AtomicTools) -> None:
+    tools.config = AtomicConfig(
+        tool_policy=ToolPolicy(restrict_run_bash=True, deny_network_egress=True)
+    )
+    result = tools.run_bash("git status")
+    assert not result.startswith("Error: run_bash policy rejected likely network egress")
+
+
 # -- _load_project_config --
 
 
@@ -308,6 +346,21 @@ api_key_env = "TEST_API_KEY"
     env = _build_worker_env(str(tmp_path), cast(Any, SimpleNamespace(provider="test")))
 
     assert str(tool_bin) in env["PATH"].split(os.pathsep)
+
+
+def test_load_project_config_tool_policy_deny_network_egress(tmp_path: Path) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text(
+        """
+[project]
+
+[tool_policy]
+deny_network_egress = true
+"""
+    )
+    config = load_project_config(tmp_path)
+    assert config.tool_policy.deny_network_egress is True
 
 
 def test_load_project_config_llm_defaults(tmp_path: Path) -> None:

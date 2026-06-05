@@ -401,6 +401,40 @@ deny_shell_commands = ["pip", "python -m pip"]
         assert pc.tool_policy.deny_shell_file_mutations is True
         assert pc.tool_policy.deny_shell_commands == ("pip", "python -m pip")
 
+    def test_tool_policy_loaded_with_deny_network_egress(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            """
+[project]
+
+[tool_policy]
+deny_network_egress = true
+"""
+        )
+        pc = load_project_config(tmp_path)
+        assert pc.tool_policy.deny_network_egress is True
+
+    def test_tool_policy_roundtrip_deny_network_egress(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            """
+[project]
+provider = "test"
+
+[providers.test]
+base_url = "https://test.example.com/v1"
+api_key_env = "TEST_KEY"
+
+[tool_policy]
+deny_network_egress = true
+"""
+        )
+        pc = load_project_config(tmp_path)
+        round_tripped = ProjectConfig.from_worker_payload(pc.to_worker_payload())
+        assert round_tripped.tool_policy.deny_network_egress is True
+
 
 class TestScopeIgnoreFiles:
     def test_default_is_empty(self):

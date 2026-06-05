@@ -623,6 +623,103 @@ class TestRunBashPolicy:
         assert str(tool) in result
         assert "EXIT:0" in result
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "curl https://example.com",
+            "wget https://example.com",
+            "nc example.com 80",
+            "netcat example.com 80",
+            "ssh user@example.com",
+            "scp file.txt user@example.com:file.txt",
+            "sftp user@example.com",
+            "rsync -avz file.txt user@example.com:file.txt",
+            "telnet example.com 80",
+            "ftp example.com",
+        ],
+    )
+    def test_rejects_network_tools_when_egress_denied(self, worktree, worker_module, command):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                deny_network_egress=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash(command)
+        assert result.startswith("Error:")
+        assert "network egress" in result
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "python -c 'print(1)'",
+            "python3 -c 'print(1)'",
+            "uv run python -c 'print(1)'",
+            "uv run python3 -c 'print(1)'",
+        ],
+    )
+    def test_rejects_python_inline_code_when_egress_denied(self, worktree, worker_module, command):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                deny_network_egress=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash(command)
+        assert result.startswith("Error:")
+        assert "network egress" in result
+        assert "Python inline code" in result
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git clone https://github.com/example/repo.git",
+            "git fetch origin",
+            "git pull origin main",
+            "git push origin main",
+            "git ls-remote https://github.com/example/repo.git",
+            "git remote add origin https://github.com/example/repo.git",
+            "git remote set-url origin https://github.com/example/repo.git",
+        ],
+    )
+    def test_rejects_git_url_egress_when_egress_denied(self, worktree, worker_module, command):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                deny_network_egress=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash(command)
+        assert result.startswith("Error:")
+        assert "network egress" in result
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git status",
+            "git diff",
+            "git log --oneline",
+            "git checkout -- file.txt",
+            "git add file.txt",
+            "git commit -m 'test'",
+            "git branch",
+            "git stash",
+        ],
+    )
+    def test_allows_local_git_commands_when_egress_denied(self, worktree, worker_module, command):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                deny_network_egress=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash(command)
+        assert not result.startswith("Error: run_bash policy rejected likely network egress")
+
 
 class TestLintCheck:
     def test_uses_project_config(self, worktree, worker_module):

@@ -85,6 +85,19 @@ _RIPGREP_ALLOWED_FLAG_RE = re.compile(
     r"))$"
 )
 
+_NETWORK_TOOLS = frozenset({
+    "curl",
+    "wget",
+    "nc",
+    "netcat",
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "telnet",
+    "ftp",
+})
+_GIT_NETWORK_SUBCOMMANDS = frozenset({"clone", "fetch", "pull", "push", "ls-remote"})
 
 _UV_RUN_OPTIONS_WITH_VALUE = frozenset({
     "-C",
@@ -250,6 +263,10 @@ def _ty_verify_tool(core: list[str]) -> str | None:
 
 def _python_module_command(core: list[str], module: str) -> bool:
     return core[:3] in (["python", "-m", module], ["python3", "-m", module])
+
+
+def _network_egress_error(detail: str) -> str:
+    return f"Error: run_bash policy rejected likely network egress. {detail}"
 
 
 _VERIFY_TOOL_REJECTION_MESSAGES = {
@@ -505,9 +522,45 @@ class AtomicTools:
             if verify_error is not None:
                 return verify_error
 
+        if policy.deny_network_egress:
+            network_error = self._reject_network_egress(tokens)
+            if network_error is not None:
+                return network_error
+
         if policy.require_uv_run and self._requires_uv_run(tool, uv_wrapped):
             return self._uv_run_required_error(tool)
 
+        return None
+
+    def _reject_network_egress(self, tokens: list[str]) -> str | None:
+        """Reject obvious network tools and remote-style git commands."""
+        _, core = _unwrap_shell_command(tokens)
+        if not core:
+            return None
+        return (
+            self._reject_network_tool(core[0])
+            or self._reject_python_inline_code(core)
+            or self._reject_git_network_operation(core)
+        )
+
+    def _reject_network_tool(self, tool: str) -> str | None:
+        if tool not in _NETWORK_TOOLS:
+            return None
+        return _network_egress_error(f"Denied tool: {tool!r}.")
+
+    def _reject_python_inline_code(self, core: list[str]) -> str | None:
+        if core[0] not in {"python", "python3"} or "-c" not in core:
+            return None
+        return _network_egress_error("Python inline code (-c) is not allowed.")
+
+    def _reject_git_network_operation(self, core: list[str]) -> str | None:
+        if len(core) < 2 or core[0] != "git":
+            return None
+        subcommand = core[1]
+        if subcommand in _GIT_NETWORK_SUBCOMMANDS:
+            return _network_egress_error(f"Git {subcommand} is not allowed.")
+        if subcommand == "remote" and len(core) >= 3 and core[2] in {"add", "set-url"}:
+            return _network_egress_error("Git remote URL manipulation is not allowed.")
         return None
 
     def _reject_denied_shell_prefix(self, cmd: str, normalized: str) -> str | None:

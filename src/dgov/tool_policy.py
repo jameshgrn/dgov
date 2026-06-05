@@ -14,6 +14,7 @@ class ToolPolicy:
     require_wrapped_verify_tools: bool = False
     require_uv_run: bool = False
     deny_shell_file_mutations: bool = False
+    deny_network_egress: bool = False
     deny_shell_commands: tuple[str, ...] = ()
 
     def as_jsonable(self) -> dict[str, Any]:
@@ -33,6 +34,8 @@ class ToolPolicy:
             lines.append("Python shell commands must use 'uv run'.")
         if self.deny_shell_file_mutations:
             lines.append("Do not mutate repo files via shell commands; use file tools.")
+        if self.deny_network_egress:
+            lines.append("Do not use network tools or remote-style git commands via shell.")
         if self.deny_shell_commands:
             lines.append("Denied shell commands: " + ", ".join(self.deny_shell_commands))
         return lines
@@ -60,5 +63,6 @@ def parse_tool_policy(raw: object) -> ToolPolicy:
         require_wrapped_verify_tools=bool(data.get("require_wrapped_verify_tools", False)),
         require_uv_run=bool(data.get("require_uv_run", False)),
         deny_shell_file_mutations=bool(data.get("deny_shell_file_mutations", False)),
+        deny_network_egress=bool(data.get("deny_network_egress", False)),
         deny_shell_commands=deny_shell_commands,
     )
