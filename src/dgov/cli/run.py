@@ -441,6 +441,19 @@ def _branch_verification_gate(project_root: str, config: object) -> dict[str, ob
     return run_checks.branch_verification_gate(project_root, config, git_stdout=_git_stdout)
 
 
+def _branch_verification_gate_from_base(
+    project_root: str,
+    config: object,
+    base_ref: str | None,
+) -> dict[str, object]:
+    return run_checks.branch_verification_gate_from_base(
+        project_root,
+        config,
+        base_ref,
+        git_stdout=_git_stdout,
+    )
+
+
 def _branch_verification_failed(branch_result: dict[str, object]) -> bool:
     return branch_result.get("status") == "failed"
 
@@ -1009,7 +1022,7 @@ def _execute_plan_with_gates(
     pre_run_head = _git_stdout(project_root, ["rev-parse", "HEAD"])
     results, duration = _run_plan_runner(runner)
     gate_result = _sentrux_compare(project_root, baseline_quality, pre_run_head, pc)
-    branch_result = _branch_verification_gate(project_root, pc)
+    branch_result = _branch_verification_gate_from_base(project_root, pc, pre_run_head)
     token_usage = cast(dict[str, tuple[int, int]], getattr(runner, "token_usage", {}))
     total_prompt_tokens, total_completion_tokens = _run_token_totals(token_usage)
     return PlanRunArtifacts(
