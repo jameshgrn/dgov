@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -147,6 +148,36 @@ def _handle_worker_event(
     return None
 
 
+def _build_worker_env(project_root: str, task: DagTaskSpec) -> dict[str, str]:
+    """Build a minimal, explicit environment for the worker subprocess."""
+    from dgov.config import load_project_config
+
+    config = load_project_config(project_root)
+    _, api_key_env = config.llm_runtime_settings(task.provider)
+
+    env: dict[str, str] = {
+        "PATH": os.pathsep.join(
+            dict.fromkeys((
+                str(Path(sys.executable).parent),
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin",
+            ))
+        )
+    }
+    for key in ("LANG", "LC_ALL", "LC_CTYPE", "DGOV_RUN_SOURCE", "PYTHONPATH"):
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
+
+    api_key_value = os.environ.get(api_key_env)
+    if api_key_value is not None:
+        env[api_key_env] = api_key_value
+
+    return env
+
+
 async def _launch_worker_subprocess(
     cmd: list[str],
     project_root: str,
@@ -251,7 +282,15 @@ async def run_headless_worker(
     )
 
     try:
-        process = await _launch_worker_subprocess(cmd, project_root)
+        env = _build_worker_env(project_root, task)
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=project_root,
+            env=env,
+        )
+        assert process.stdout is not None
         last_error, prompt_tokens, completion_tokens = await _drain_worker_stdout(
             process,
             project_root=project_root,
