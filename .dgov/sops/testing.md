@@ -16,6 +16,8 @@ priority: must
 - test behavior and edge cases, not just implementation details
 - mock boundaries only: network, filesystem, and external services
 - confirm a relevant test would fail before claiming the fix is real
+- when reporting verification, state the behavior claim, exact evidence command,
+  covered behavior, and known exclusions
 
 ## Do Not
 - run the full test suite
@@ -24,6 +26,7 @@ priority: must
 ## Verify
 - rerun the exact targeted command that covers the changed behavior
 - confirm scope violations are avoided before settlement
+- name any changed behavior the command does not cover
 
 ## Escalate
 - if the right test file is outside the current claim
