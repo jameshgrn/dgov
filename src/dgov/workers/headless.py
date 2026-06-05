@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 _WORKER_SCRIPT = Path(__file__).resolve().parent.parent / "worker.py"
 _RESEARCHER_SCRIPT = Path(__file__).resolve().parent.parent / "researcher.py"
 _PLANNER_SCRIPT = Path(__file__).resolve().parent.parent / "planner.py"
+_WORKER_TERMINATE_GRACE_S = 3.0
+_WORKER_KILL_GRACE_S = 3.0
 
 
 def _script_for_role(role: str) -> Path:
@@ -281,6 +283,47 @@ def _report_exit(
     on_exit(task_slug, pane_slug, exit_code, last_error, prompt_tokens, completion_tokens)
 
 
+async def _terminate_worker_process(
+    process: asyncio.subprocess.Process,
+    *,
+    task_slug: str,
+) -> None:
+    if process.returncode is not None:
+        return
+    logger.warning("Cancelling worker [%s] — terminating subprocess", task_slug)
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        return
+    except OSError as exc:
+        logger.warning("Worker [%s] terminate failed: %s", task_slug, exc)
+        return
+
+    if await _wait_for_worker_exit(process, _WORKER_TERMINATE_GRACE_S):
+        return
+
+    logger.warning("Worker [%s] did not terminate; killing subprocess", task_slug)
+    try:
+        process.kill()
+    except ProcessLookupError:
+        return
+    except OSError as exc:
+        logger.warning("Worker [%s] kill failed: %s", task_slug, exc)
+        return
+    await _wait_for_worker_exit(process, _WORKER_KILL_GRACE_S)
+
+
+async def _wait_for_worker_exit(
+    process: asyncio.subprocess.Process,
+    timeout_s: float,
+) -> bool:
+    try:
+        await asyncio.wait_for(process.wait(), timeout=timeout_s)
+    except TimeoutError:
+        return False
+    return True
+
+
 async def run_headless_worker(
     project_root: str,
     plan_name: str,
@@ -299,6 +342,7 @@ async def run_headless_worker(
         task=task,
         task_scope=task_scope,
     )
+    process: asyncio.subprocess.Process | None = None
 
     try:
         env = _build_worker_env(project_root, task)
@@ -328,6 +372,10 @@ async def run_headless_worker(
             prompt_tokens,
             completion_tokens,
         )
+    except asyncio.CancelledError:
+        if process is not None:
+            await _terminate_worker_process(process, task_slug=task_slug)
+        raise
     except Exception as exc:
         logger.error("Headless worker [%s] failed to start: %s", task_slug, exc)
         _report_exit(on_exit, task_slug, pane_slug, 1, str(exc), 0, 0)
