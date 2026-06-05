@@ -7,19 +7,20 @@ Orient:
 - This is policy hardening, not OS sandboxing. It should reduce obvious egress but must not claim hard zero-ambient-authority.
 
 Edit:
-1. Add a `deny_network_egress` field to `ToolPolicy` with a default that preserves backward compatibility for external projects.
+1. Add a `deny_network_egress: bool = False` field to `ToolPolicy` so external projects keep backward-compatible behavior unless they opt in.
 2. When enabled, reject obvious network tools in `run_bash`: `curl`, `wget`, `nc`, `netcat`, `ssh`, `scp`, `sftp`, `rsync`, `telnet`, `ftp`, and network-shaped `git` commands such as clone/fetch/pull/ls-remote/push against URLs.
-3. Reject obvious Python network escape forms under `run_bash`, including `python -c`, `python3 -c`, and `uv run python -c`, unless a later design gives them a constrained offline runner.
-4. Enable the policy in this repo's `.dgov/project.toml` and update docs/init template if default new-project policy should include it. If the compatibility tradeoff is not obvious, make this repo opt-in only and document it in README.
-5. Do not represent this as an OS-level sandbox; keep error messages precise: policy rejected likely network egress.
+3. Implement git URL egress detection with token-level command classification, not by denying every `git` prefix. Normal local `git status`, `git diff`, and similar non-network commands must continue to work.
+4. Reject obvious Python network escape forms under `run_bash`, including `python -c`, `python3 -c`, and `uv run python -c`, unless a later design gives them a constrained offline runner.
+5. Enable the policy in this repo's `.dgov/project.toml`. Do not edit `src/dgov/cli/init.py`; keep new-project defaults backward compatible and document this repo opt-in in README, including the `[tool_policy]` example.
+6. Do not represent this as an OS-level sandbox; keep error messages precise: policy rejected likely network egress.
 
 Verify:
-- Add tests for direct network tools, `uv run python -c`, and URL-shaped git egress.
+- Add tests with `network` or `egress` in their names for direct network tools, `uv run python -c`, URL-shaped git egress, and allowed local git commands.
 - Add config parsing/roundtrip tests for `deny_network_egress`.
-- `uv run pytest -q tests/test_worker_tools.py tests/test_config.py tests/test_worker.py -k "network or tool_policy or run_bash"`
+- `uv run pytest -q tests/test_worker_tools.py tests/test_config.py tests/test_worker.py -k "network or egress or tool_policy or run_bash"`
 - `uv run ruff check src/dgov/tool_policy.py src/dgov/workers/atomic.py src/dgov/config.py tests/test_worker_tools.py tests/test_config.py tests/test_worker.py`
 - `uv run ruff format --check src/dgov/tool_policy.py src/dgov/workers/atomic.py src/dgov/config.py tests/test_worker_tools.py tests/test_config.py tests/test_worker.py`
-- `uv run ty check src/dgov/tool_policy.py src/dgov/workers/atomic.py src/dgov/config.py`
+- `uv run ty check src/dgov/tool_policy.py src/dgov/workers/atomic.py src/dgov/config.py tests/test_worker_tools.py tests/test_config.py tests/test_worker.py`
 """
 commit_message = "Add worker network egress policy"
 role = "worker"
