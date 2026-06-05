@@ -7,6 +7,8 @@ import pytest
 from dgov.persistence.events import emit_event
 from dgov.tool_policy import ToolPolicy
 
+pytestmark = pytest.mark.unit
+
 
 # We mirror the old combined worker module for tool tests.
 @pytest.fixture(scope="module")
@@ -777,3 +779,66 @@ class TestToolSpec:
         assert "read_file" in spec_names
         assert "run_tests" in spec_names
         assert "done" in spec_names
+
+
+# -- Shell injection prevention for power tools --
+
+
+class TestRipgrepInjection:
+    def test_rejects_command_separator_in_flags(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        (worktree / "foo.py").write_text("x = 1\n")
+        result = t.ripgrep("x", flags="; touch pwned")
+        assert "Error:" in result
+        assert not (worktree / "pwned").exists()
+
+    def test_rejects_shell_redirection_in_flags(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        (worktree / "foo.py").write_text("x = 1\n")
+        result = t.ripgrep("x", flags="> pwned")
+        assert "Error:" in result
+        assert not (worktree / "pwned").exists()
+
+    def test_rejects_command_substitution_in_flags(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        (worktree / "foo.py").write_text("x = 1\n")
+        result = t.ripgrep("x", flags="$(touch pwned)")
+        assert "Error:" in result
+        assert not (worktree / "pwned").exists()
+
+    def test_allows_safe_flags(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        (worktree / "foo.py").write_text("hello = 1\n")
+        result = t.ripgrep("hello", flags="-i")
+        assert "hello" in result
+
+    def test_allows_safe_flag_arguments(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        (worktree / "foo.py").write_text("hello = 1\n")
+        result = t.ripgrep("hello", flags="--type py")
+        assert "hello" in result
+
+
+class TestTreeInjection:
+    def test_rejects_command_separator_in_max_depth(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        result = t.tree(max_depth="1; touch pwned")
+        assert "Error:" in result
+        assert not (worktree / "pwned").exists()
+
+
+class TestJqInjection:
+    def test_does_not_execute_shell_via_expr(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        (worktree / "data.json").write_text('{"key": "value"}')
+        t.jq(".key; touch pwned", "data.json")
+        assert not (worktree / "pwned").exists()
+
+
+class TestWordCountInjection:
+    def test_does_not_execute_shell_via_path(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        (worktree / "foo.py").write_text("x = 1\n")
+        result = t.word_count("foo.py; touch pwned")
+        assert "EXIT:" in result
+        assert not (worktree / "pwned").exists()

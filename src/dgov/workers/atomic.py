@@ -31,6 +31,61 @@ def shell_quote(s: str) -> str:
     return shlex.quote(s)
 
 
+_RIPGREP_SIMPLE_SHORT_FLAGS = frozenset("iIlwvVnNFxoUcsz0hHpuSq")
+_RIPGREP_ARG_SHORT_FLAGS = frozenset({"-C", "-A", "-B", "-t", "-g", "-d", "-E", "-m"})
+_RIPGREP_ARG_LONG_FLAGS = frozenset({
+    "type",
+    "glob",
+    "iglob",
+    "include",
+    "exclude",
+    "exclude-dir",
+    "engine",
+    "ignore-file",
+    "max-depth",
+    "max-count",
+    "max-columns",
+    "max-columns-preview",
+    "max-filesize",
+    "before-context",
+    "after-context",
+    "context",
+    "sort",
+    "threads",
+    "pre",
+    "field-match-separator",
+    "path-separator",
+    "color",
+    "colors",
+    "encoding",
+    "regex",
+    "pcre2-version",
+    "pre-glob",
+})
+_RIPGREP_ALLOWED_FLAG_RE = re.compile(
+    r"^(?:"
+    r"-[iIlwvVnNFxoUcsz0hHpuSq]+|"
+    r"-[CABtgdEm][0-9]*|"
+    r"-[0-9]+|"
+    r"--(?:"
+    r"ignore-case|files-with-matches|files-without-match|word-regexp|invert-match|"
+    r"line-number|no-line-number|fixed-strings|case-sensitive|smart-case|hidden|"
+    r"no-hidden|binary|no-binary|text|no-text|count|heading|no-heading|pretty|"
+    r"no-pretty|trim|no-trim|vimgrep|no-messages|no-ignore|no-ignore-vcs|"
+    r"no-ignore-parent|no-ignore-dot|no-global-ignore-file|json|no-json|sort-files|"
+    r"no-sort-files|follow|no-follow|one-file-system|no-one-file-system|"
+    r"search-zip|no-search-zip|stats|no-stats|unrestricted|column|no-column|"
+    r"byte-offset|no-byte-offset|with-filename|no-filename|multiline|multiline-dotall|"
+    r"line-regexp|no-line-regexp|pcre2|no-pcre2|no-regex|regex|engine|max-columns|"
+    r"max-columns-preview|max-filesize|max-count|max-depth|before-context|"
+    r"after-context|context|glob|iglob|include|exclude|exclude-dir|type|ignore-file|"
+    r"pre|field-match-separator|path-separator|sort|threads|line-buffered|"
+    r"no-line-buffered|color|colors|encoding|pcre2-version|pre-glob|no-pre-glob|"
+    r"null|no-null|null-data|print0"
+    r"))$"
+)
+
+
 _UV_RUN_OPTIONS_WITH_VALUE = frozenset({
     "-C",
     "-P",
@@ -621,6 +676,23 @@ class AtomicTools:
         except subprocess.TimeoutExpired:
             return "Error: Command timed out after 60s."
 
+    def _run_argv(self, argv: list[str]) -> str:
+        """Run a subprocess with argv list, avoiding shell interpolation."""
+        try:
+            res = subprocess.run(
+                argv,
+                cwd=self.worktree,
+                env=self._sandbox_env(),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            return f"STDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}\nEXIT:{res.returncode}"
+        except FileNotFoundError:
+            return f"Error: command not found: {argv[0]}"
+        except subprocess.TimeoutExpired:
+            return "Error: Command timed out after 60s."
+
     def run_bash(self, cmd: str) -> str:
         """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
         before = self._git_dirty_paths()
@@ -1063,14 +1135,60 @@ class AtomicTools:
 
     # -- Power tools (CLI wrappers) --
 
+    def _validate_ripgrep_flags(self, flags: str) -> list[str] | str:
+        """Parse and validate ripgrep flags. Returns parsed list or error string."""
+        if not flags:
+            return []
+        try:
+            tokens = shlex.split(flags)
+        except ValueError as e:
+            return f"Error: Invalid flags syntax: {e}"
+        shell_metacharacters = re.compile(r"[;|&<>$()`\n\\]")
+        result = []
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if shell_metacharacters.search(token):
+                return f"Error: Invalid flag contains shell metacharacters: {token}"
+            if not token.startswith("-"):
+                return f"Error: Invalid flag token: {token}"
+            if not _RIPGREP_ALLOWED_FLAG_RE.match(token):
+                return f"Error: Unknown or disallowed flag: {token}"
+            result.append(token)
+
+            base_flag = token
+            if token.startswith("--"):
+                base_flag = token[2:]
+            elif len(token) > 2:
+                if token[:2] in _RIPGREP_ARG_SHORT_FLAGS:
+                    base_flag = token[:2]
+                elif token[1] in _RIPGREP_SIMPLE_SHORT_FLAGS:
+                    for ch in token[1:]:
+                        if ch not in _RIPGREP_SIMPLE_SHORT_FLAGS:
+                            return f"Error: Unknown or disallowed flag: -{ch}"
+                    i += 1
+                    continue
+            if base_flag in _RIPGREP_ARG_SHORT_FLAGS or base_flag in _RIPGREP_ARG_LONG_FLAGS:
+                i += 1
+                if i >= len(tokens):
+                    return f"Error: Flag {token} requires an argument"
+                arg = tokens[i]
+                if shell_metacharacters.search(arg):
+                    return f"Error: Invalid flag argument contains shell metacharacters: {arg}"
+                result.append(arg)
+            i += 1
+        return result
+
     def ripgrep(self, pattern: str, path: str = ".", flags: str = "") -> str:
         """Fast regex search via rg. Supports flags like -i, -l, -C3, --type py."""
         target = self._check_path(path)
         if isinstance(target, str):
             return target
         rel = str(target.relative_to(self.worktree))
-        cmd = f"rg {flags} -- {shell_quote(pattern)} {shell_quote(rel)}"
-        result = self._execute_shell(cmd, enforce_policy=False)
+        validated = self._validate_ripgrep_flags(flags)
+        if isinstance(validated, str):
+            return validated
+        result = self._run_argv(["rg", *validated, "--", pattern, rel])
         if "EXIT:2" in result or "command not found" in result:
             return self.grep(pattern, path)  # fallback to Python grep
         return result
@@ -1083,29 +1201,49 @@ class AtomicTools:
         if not target.exists():
             return f"Error: {path} does not exist."
         rel = str(target.relative_to(self.worktree))
-        return self._execute_shell(
-            f"jq {shell_quote(expr)} {shell_quote(rel)}", enforce_policy=False
-        )
+        return self._run_argv(["jq", expr, rel])
 
     def tree(self, path: str = ".", max_depth: int = 3) -> str:
         """Show directory structure as a tree. Excludes hidden dirs and __pycache__."""
         target = self._check_path(path)
         if isinstance(target, str):
             return target
+        try:
+            depth = int(max_depth)
+            if depth < 0:
+                return "Error: max_depth must be a non-negative integer."
+        except (ValueError, TypeError):
+            return "Error: max_depth must be a non-negative integer."
         rel = str(target.relative_to(self.worktree))
         # Try system tree, fall back to find-based
-        result = self._execute_shell(
-            f"tree -L {max_depth} -I '__pycache__|.git|node_modules|.venv' "
-            f"--noreport {shell_quote(rel)}",
-            enforce_policy=False,
-        )
+        result = self._run_argv([
+            "tree",
+            "-L",
+            str(depth),
+            "-I",
+            "__pycache__|.git|node_modules|.venv",
+            "--noreport",
+            rel,
+        ])
         if "command not found" in result:
-            result = self._execute_shell(
-                f"find {shell_quote(rel)} -maxdepth {max_depth} "
-                f"-not -path '*/__pycache__/*' -not -path '*/.git/*' "
-                f"| head -100 | sort",
-                enforce_policy=False,
-            )
+            find_result = self._run_argv([
+                "find",
+                rel,
+                "-maxdepth",
+                str(depth),
+                "-not",
+                "-path",
+                "*/__pycache__/*",
+                "-not",
+                "-path",
+                "*/.git/*",
+            ])
+            if find_result.startswith("Error:") and "Command timed out" in find_result:
+                return find_result
+            stdout_match = re.search(r"STDOUT:\n(.*?)\nSTDERR:", find_result, re.DOTALL)
+            lines = stdout_match.group(1).strip().split("\n") if stdout_match else []
+            lines = sorted(line for line in lines if line.strip())[:100]
+            result = "\n".join(lines)
         return result
 
     def word_count(self, path: str) -> str:
@@ -1115,12 +1253,24 @@ class AtomicTools:
             return target
         rel = str(target.relative_to(self.worktree))
         if target.is_dir():
-            return self._execute_shell(
-                f"find {shell_quote(rel)} -name '*.py' -not -path '*/__pycache__/*' "
-                f"| xargs wc -l | tail -20",
-                enforce_policy=False,
+            files = sorted(
+                p for p in target.rglob("*.py") if "__pycache__" not in p.parts and p.is_file()
             )
-        return self._execute_shell(f"wc -l {shell_quote(rel)}", enforce_policy=False)
+            if not files:
+                return "0 total"
+            counts: list[str] = []
+            total = 0
+            for p in files:
+                try:
+                    with p.open("rb") as fh:
+                        count = sum(1 for _ in fh)
+                    total += count
+                    counts.append(f"{count:>8} {p.relative_to(self.worktree)}")
+                except OSError:
+                    continue
+            counts.append(f"{total:>8} total")
+            return "\n".join(counts[-20:])
+        return self._run_argv(["wc", "-l", rel])
 
     def head(self, path: str, n: int = 20) -> str:
         """Show first N lines of a file. Faster than read_file for quick peeks."""
