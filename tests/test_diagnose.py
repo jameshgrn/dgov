@@ -19,6 +19,10 @@ def check_stale_review_attention(*a, **k):
     return _diagnose_mod().check_stale_review_attention(*a, **k)
 
 
+def stale_review_attention_tasks(*a, **k):
+    return _diagnose_mod().stale_review_attention_tasks(*a, **k)
+
+
 pytestmark = pytest.mark.unit
 
 
@@ -164,3 +168,32 @@ class TestCheckStaleReviewAttention:
         findings = check_stale_review_attention(live_tasks, frozenset())
 
         assert findings == []
+
+    def test_stale_review_attention_tasks_returns_repair_targets(self) -> None:
+        live_tasks = [
+            {
+                "plan_name": "archived-plan",
+                "slug": "tasks/a",
+                "state": "reviewed_fail",
+            },
+            {
+                "plan_name": "active-plan",
+                "slug": "tasks/b",
+                "state": "reviewed_pass",
+            },
+            {
+                "plan_name": "archived-plan",
+                "slug": "tasks/c",
+                "state": "merged",
+            },
+        ]
+
+        targets = stale_review_attention_tasks(live_tasks, frozenset({"active-plan"}))
+
+        assert targets == [
+            {
+                "plan_name": "archived-plan",
+                "slug": "tasks/a",
+                "state": "reviewed_fail",
+            }
+        ]

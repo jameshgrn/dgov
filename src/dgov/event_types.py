@@ -86,6 +86,17 @@ class TaskAbandoned:
 
 
 @dataclass(frozen=True)
+class TaskClosed:
+    """Emitted when the governor closes a task as terminal lifecycle hygiene."""
+
+    event_type: Literal["task_closed"] = "task_closed"
+    pane: str = ""
+    plan_name: str = ""
+    task_slug: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class ReviewPass:
     """Emitted when structural review passes."""
 
@@ -375,6 +386,7 @@ DgovEvent = (
     | TaskDone
     | TaskFailed
     | TaskAbandoned
+    | TaskClosed
     | ReviewPass
     | ReviewFail
     | ReviewerVerdict
@@ -409,6 +421,7 @@ _EVENT_TYPE_MAP: dict[str, type[DgovEvent]] = {
     "task_done": TaskDone,
     "task_failed": TaskFailed,
     "task_abandoned": TaskAbandoned,
+    "task_closed": TaskClosed,
     "review_pass": ReviewPass,
     "review_fail": ReviewFail,
     "reviewer_verdict": ReviewerVerdict,
@@ -515,6 +528,7 @@ __all__ = [
     "ShutdownRequested",
     "StoredEvent",
     "TaskAbandoned",
+    "TaskClosed",
     "TaskDone",
     "TaskFailed",
     "TaskMergeFailed",

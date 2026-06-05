@@ -53,6 +53,11 @@ def test_state_from_event_classifies_non_timeout_failure_as_failed() -> None:
     assert state_from_event(event) is TaskState.FAILED
 
 
+def test_state_from_event_maps_task_closed_to_closed() -> None:
+    event = {"event": "task_closed", "reason": "stale_review_attention"}
+    assert state_from_event(event) is TaskState.CLOSED
+
+
 def test_tasks_from_events_scopes_each_plan_to_latest_run_start(tmp_path: Path) -> None:
     """latest_run_only must respect the latest run boundary per plan, not globally."""
     emit_event(str(tmp_path), "run_start", "run-a-1", plan_name="plan-a")

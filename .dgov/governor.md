@@ -201,8 +201,8 @@ mechanical signal must be checked by hand.
   review state is masquerading as current governor attention.
 - Class: Governance repair.
 - Next action: Treat as lifecycle hygiene. Restore and rerun the plan source, or
-  use a repair path that appends a terminal lifecycle event; default operator
-  status should hide inactive plan sources.
+  run `dgov diagnose --repair-stale-review-attention` to append terminal
+  lifecycle events; default operator status should hide inactive plan sources.
 - Do not: Edit `state.db` or mutable task rows by hand — event history is the
   source of truth.
 

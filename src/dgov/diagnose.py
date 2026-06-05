@@ -51,13 +51,7 @@ def check_stale_review_attention(
     active_plan_names: frozenset[str],
 ) -> list[DiagnosisFinding]:
     """Return a finding when reviewed tasks are live only because history leaked."""
-    stale_attention = [
-        task
-        for task in live_tasks
-        if task.get("state") in _ATTENTION_STATES
-        and task.get("plan_name")
-        and task.get("plan_name") not in active_plan_names
-    ]
+    stale_attention = stale_review_attention_tasks(live_tasks, active_plan_names)
     if not stale_attention:
         return []
 
@@ -75,11 +69,27 @@ def check_stale_review_attention(
                 f"{examples}{suffix}"
             ),
             next_action=(
-                "Treat as lifecycle hygiene: restore/rerun the plan source or append a "
-                "terminal lifecycle event through a repair path."
+                "Treat as lifecycle hygiene: restore/rerun the plan source or run "
+                "`dgov diagnose --repair-stale-review-attention` to append terminal "
+                "lifecycle events."
             ),
             do_not="Edit state.db or task rows by hand; event history is the source of truth.",
         )
+    ]
+
+
+def stale_review_attention_tasks(
+    live_tasks: list[dict],
+    active_plan_names: frozenset[str],
+) -> list[dict]:
+    """Return reviewed tasks whose plan source is no longer actionable."""
+    return [
+        task
+        for task in live_tasks
+        if task.get("state") in _ATTENTION_STATES
+        and task.get("plan_name")
+        and task.get("slug")
+        and task.get("plan_name") not in active_plan_names
     ]
 
 

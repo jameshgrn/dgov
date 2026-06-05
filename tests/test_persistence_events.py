@@ -63,6 +63,26 @@ class TestEmitEvent:
         assert events[0]["event"] == "run_start"
         assert events[0]["run_source"] == "workshop"
 
+    def test_emit_task_closed_and_read_back(self, tmp_path):
+        session_root = _session(tmp_path)
+
+        emit_event(
+            session_root,
+            event="task_closed",
+            pane="diagnose",
+            plan_name="archived-plan",
+            task_slug="tasks/a",
+            reason="stale_review_attention",
+        )
+
+        events = read_events(session_root)
+
+        assert events[0]["event"] == "task_closed"
+        assert events[0]["pane"] == "diagnose"
+        assert events[0]["plan_name"] == "archived-plan"
+        assert events[0]["task_slug"] == "tasks/a"
+        assert events[0]["reason"] == "stale_review_attention"
+
     def test_emit_invalid_event_raises_valueerror(self, tmp_path):
         """Emit with an invalid event name raises ValueError."""
         session_root = _session(tmp_path)
@@ -256,6 +276,7 @@ class TestValidEvents:
     def test_valid_events_contains_run_completed(self):
         """VALID_EVENTS should contain run_completed event."""
         assert "run_completed" in VALID_EVENTS
+        assert "task_closed" in VALID_EVENTS
 
     def test_valid_events_contains_semantic_settlement_events(self):
         """VALID_EVENTS contains the semantic settlement event family."""
