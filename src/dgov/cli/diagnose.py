@@ -11,8 +11,11 @@ from dgov.cli import cli, want_json
 from dgov.diagnose import (
     DiagnosisFinding,
     check_plan_claims_violation,
+    check_stale_review_attention,
 )
+from dgov.live_state import tasks_from_events
 from dgov.persistence.events import read_events
+from dgov.plan_sources import active_plan_source_names
 from dgov.project_root import resolve_project_root
 
 
@@ -30,6 +33,14 @@ def diagnose_cmd(root: str) -> None:
     findings: list[DiagnosisFinding] = []
     events = _load_events(session_root)
     findings.extend(_safe(check_plan_claims_violation, events=events))
+    live_tasks = _load_live_tasks(project_root)
+    findings.extend(
+        _safe(
+            check_stale_review_attention,
+            live_tasks=live_tasks,
+            active_plan_names=active_plan_source_names(project_root),
+        )
+    )
     _emit(findings)
 
 
@@ -38,6 +49,14 @@ def _load_events(session_root: Path) -> list[dict]:
         return list(read_events(str(session_root), limit=200))
     except Exception as exc:
         click.echo(f"warning: could not load events: {exc}", err=True)
+        return []
+
+
+def _load_live_tasks(project_root: Path) -> list[dict]:
+    try:
+        return list(tasks_from_events(str(project_root), latest_run_only=True))
+    except Exception as exc:
+        click.echo(f"warning: could not load live tasks: {exc}", err=True)
         return []
 
 

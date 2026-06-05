@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+_ATTENTION_STATES = frozenset({"reviewed_pass", "reviewed_fail"})
+
 
 @dataclass(frozen=True)
 class DiagnosisFinding:
@@ -44,6 +46,44 @@ def check_plan_claims_violation(events: list[dict]) -> list[DiagnosisFinding]:
     return findings
 
 
+def check_stale_review_attention(
+    live_tasks: list[dict],
+    active_plan_names: frozenset[str],
+) -> list[DiagnosisFinding]:
+    """Return a finding when reviewed tasks are live only because history leaked."""
+    stale_attention = [
+        task
+        for task in live_tasks
+        if task.get("state") in _ATTENTION_STATES
+        and task.get("plan_name")
+        and task.get("plan_name") not in active_plan_names
+    ]
+    if not stale_attention:
+        return []
+
+    examples = ", ".join(
+        f"{task.get('plan_name')}/{task.get('slug')} ({task.get('state')})"
+        for task in stale_attention[:3]
+    )
+    suffix = "" if len(stale_attention) <= 3 else f", +{len(stale_attention) - 3} more"
+    return [
+        DiagnosisFinding(
+            name="stale_review_attention",
+            intent_class="Governance repair",
+            evidence=(
+                f"{len(stale_attention)} reviewed task(s) lack an active plan source: "
+                f"{examples}{suffix}"
+            ),
+            next_action=(
+                "Treat as lifecycle hygiene: restore/rerun the plan source or append a "
+                "terminal lifecycle event through a repair path."
+            ),
+            do_not="Edit state.db or task rows by hand; event history is the source of truth.",
+        )
+    ]
+
+
 CHECKS = (check_plan_claims_violation,)
-"""Ordered registry. Each check returns `list[DiagnosisFinding]`. Keep names
-in sync with the Failure-to-task catalog in `.dgov/governor.md`."""
+"""Ordered registry for raw-event checks. Each check returns
+`list[DiagnosisFinding]`. Keep names in sync with the Failure-to-task catalog
+in `.dgov/governor.md`."""

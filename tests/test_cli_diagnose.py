@@ -100,6 +100,31 @@ def test_diagnose_reports_scope_violation(
     assert "p/t" in result.output
 
 
+def test_diagnose_reports_stale_review_attention(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    (tmp_path / ".dgov").mkdir()
+    monkeypatch.setattr("dgov.cli.diagnose.read_events", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "dgov.cli.diagnose.tasks_from_events",
+        lambda *a, **k: [
+            {
+                "plan_name": "archived-plan",
+                "slug": "tasks/a",
+                "state": "reviewed_fail",
+            }
+        ],
+    )
+    monkeypatch.setattr("dgov.cli.diagnose.active_plan_source_names", lambda *_a: frozenset())
+
+    result = runner.invoke(cli, ["diagnose", "--root", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "stale_review_attention" in result.output
+    assert "archived-plan/tasks/a" in result.output
+
+
 def test_diagnose_json_output(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

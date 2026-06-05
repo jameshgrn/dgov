@@ -13,6 +13,7 @@ import click
 from dgov import __version__
 from dgov.live_state import LIVE_STATES as _LIVE_STATES, tasks_from_events
 from dgov.persistence import prune_runtime_artifact_history
+from dgov.plan_sources import active_plan_source_names
 from dgov.project_root import resolve_project_root
 
 logging.basicConfig(
@@ -207,7 +208,9 @@ def _cmd_status(project_root: str, show_all: bool = False) -> None:
         _output({"status": "idle", "tasks": 0})
         return
 
-    status = _status_view(all_history, live_history, show_all)
+    active_sources = active_plan_source_names(project_root)
+    actionable_live = _actionable_live_tasks(live_history, active_sources)
+    status = _status_view(all_history, actionable_live, show_all)
     if want_json():
         click.echo(json.dumps(_status_payload(status), indent=2))
     else:
@@ -245,6 +248,18 @@ def _status_view(
         "state_counts": state_counts,
         "visible": visible,
     }
+
+
+def _actionable_live_tasks(
+    live_history: list[dict],
+    active_sources: frozenset[str],
+) -> list[dict]:
+    return [task for task in live_history if _has_actionable_plan_source(task, active_sources)]
+
+
+def _has_actionable_plan_source(task: dict, active_sources: frozenset[str]) -> bool:
+    plan_name = str(task.get("plan_name") or "")
+    return not plan_name or plan_name in active_sources
 
 
 def _status_payload(status: dict[str, object]) -> dict[str, object]:

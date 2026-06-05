@@ -132,6 +132,44 @@ def test_tasks_from_events_all_history_marks_unterminated_completed_run_stale(
     assert tasks == [{"slug": "task-a", "state": "stale", "plan_name": "plan-a"}]
 
 
+def test_tasks_from_events_all_history_marks_reviewed_completed_run_stale(
+    tmp_path: Path,
+) -> None:
+    """Reviewed attention is live only while the corresponding run is open."""
+    emit_event(str(tmp_path), "run_start", "run-a-1", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="task-a",
+    )
+    emit_event(str(tmp_path), "task_done", "pane-a", plan_name="plan-a", task_slug="task-a")
+    emit_event(str(tmp_path), "review_fail", "pane-a", plan_name="plan-a", task_slug="task-a")
+    emit_event(str(tmp_path), "run_completed", "run-a-1", plan_name="plan-a")
+
+    tasks = tasks_from_events(str(tmp_path), latest_run_only=False)
+
+    assert tasks == [{"slug": "task-a", "state": "stale", "plan_name": "plan-a"}]
+
+
+def test_tasks_from_events_latest_run_ignores_reviewed_completed_run(tmp_path: Path) -> None:
+    """Default live state should not keep reviewed tasks after run completion."""
+    emit_event(str(tmp_path), "run_start", "run-a-1", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="task-a",
+    )
+    emit_event(str(tmp_path), "task_done", "pane-a", plan_name="plan-a", task_slug="task-a")
+    emit_event(str(tmp_path), "review_pass", "pane-a", plan_name="plan-a", task_slug="task-a")
+    emit_event(str(tmp_path), "run_completed", "run-a-1", plan_name="plan-a")
+
+    assert tasks_from_events(str(tmp_path), latest_run_only=True) == []
+
+
 def test_tasks_from_events_all_history_marks_superseded_run_stale(tmp_path: Path) -> None:
     """A newer run boundary supersedes unterminated historical task state."""
     emit_event(str(tmp_path), "run_start", "run-a-1", plan_name="plan-a")
