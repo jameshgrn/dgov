@@ -1131,6 +1131,36 @@ def test_preflight_command_reports_policy_source_drift(
     assert "AGENTS.md differs from CLAUDE.md" in result.output
 
 
+def test_preflight_merge_preserves_settlement_facts() -> None:
+    from dgov.cli.preflight import _merge_preflight_results
+    from dgov.settlement import CommandExecutionFact, GateResult
+
+    fact = CommandExecutionFact(
+        gate="lint",
+        source="project.lint_cmd",
+        command="uv run ruff check src/dgov/cli/preflight.py",
+        outcome="completed",
+        duration_s=0.1,
+        exit_code=0,
+    )
+
+    result = _merge_preflight_results(GateResult(passed=True, facts=(fact,)), [])
+
+    assert result.passed is True
+    assert result.facts == (fact,)
+
+    failed = _merge_preflight_results(
+        GateResult(passed=False, error="lint failed", facts=(fact,)),
+        ["AGENTS.md differs from CLAUDE.md"],
+    )
+
+    assert failed.passed is False
+    assert failed.error is not None
+    assert "lint failed" in failed.error
+    assert "Policy source drift" in failed.error
+    assert failed.facts == (fact,)
+
+
 def test_init_refuses_overwrite(runner: CliRunner, tmp_path: Path) -> None:
     with runner.isolated_filesystem(temp_dir=tmp_path) as td:
         dgov_dir = Path(td, ".dgov")

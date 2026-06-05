@@ -1,0 +1,23 @@
+[tasks.review-execution-facts]
+summary = "Review settlement execution fact plumbing"
+role = "reviewer"
+depends_on = ["tasks/execution-facts.execution-facts"]
+files.read = [
+  "src/dgov/cli/preflight.py",
+  "src/dgov/settlement.py",
+  "tests/test_cli.py",
+  "tests/test_settlement.py",
+]
+prompt = '''
+Orient:
+- Review the landed diff for `execution-facts`.
+- This review is bounded to command execution fact plumbing and the focused
+  tests. Do not run broad verification or propose recipe/event-persistence work.
+
+Edit:
+- Do not edit files. Identify blocking correctness issues only.
+
+Verify:
+- Rely on the worker's targeted commands plus the landed diff. If you run any
+  command, keep it limited to `src/dgov/settlement.py` and `tests/test_settlement.py`.
+'''
