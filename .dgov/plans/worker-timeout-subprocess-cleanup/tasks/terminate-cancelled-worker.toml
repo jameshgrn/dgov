@@ -21,4 +21,5 @@ Verify:
 commit_message = "Terminate timed-out worker subprocesses"
 role = "worker"
 files = { edit = ["src/dgov/workers/headless.py", "tests/test_worker.py"], read = ["src/dgov/runner.py", "tests/test_runner.py"] }
+timeout_s = 300
 test_cmd = "uv run pytest -q tests/test_worker.py -k \"headless or worker_env or timeout or cancellation\""
