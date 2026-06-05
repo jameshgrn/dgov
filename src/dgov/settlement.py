@@ -723,6 +723,8 @@ def _transient_write_path(item: object) -> str | None:
     path = item_map.get("path")
     if not isinstance(path, str):
         return None
+    if item_map.get("mode") == "shell_attempt":
+        return None
     if (
         item_map.get("kind") in _WRITE_ACTIVITY_KINDS
         or item_map.get("mode") in _WRITE_ACTIVITY_MODES

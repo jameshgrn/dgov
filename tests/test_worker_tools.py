@@ -554,8 +554,49 @@ class TestRunBashPolicy:
         assert t._consume_activity() == [
             {
                 "kind": "run_bash",
+                "path": "",
+                "mode": "shell_attempt",
+                "command": "printf 'x = 1\\n' > scratch.py",
+            },
+            {
+                "kind": "run_bash",
                 "path": "scratch.py",
                 "mode": "shell",
+            },
+        ]
+
+    def test_records_shell_attempt_when_no_dirty_paths(self, worktree, worker_module):
+        _init_repo(worktree)
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+
+        result = t.run_bash("printf 'x = 1\\n' > scratch.py && rm scratch.py")
+
+        assert "EXIT:0" in result
+        assert t._consume_activity() == [
+            {
+                "kind": "run_bash",
+                "path": "",
+                "mode": "shell_attempt",
+                "command": "printf 'x = 1\\n' > scratch.py && rm scratch.py",
+            }
+        ]
+
+    def test_records_shell_attempt_for_tracked_mutate_and_restore(self, worktree, worker_module):
+        _init_repo(worktree)
+        (worktree / "tracked.txt").write_text("original\n")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=worktree, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=worktree, check=True)
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+
+        result = t.run_bash("printf 'modified\\n' > tracked.txt && git checkout -- tracked.txt")
+
+        assert "EXIT:0" in result
+        assert t._consume_activity() == [
+            {
+                "kind": "run_bash",
+                "path": "",
+                "mode": "shell_attempt",
+                "command": "printf 'modified\\n' > tracked.txt && git checkout -- tracked.txt",
             }
         ]
 

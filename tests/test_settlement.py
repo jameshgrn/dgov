@@ -834,6 +834,46 @@ class TestReviewSandbox:
         assert result.verdict == "scope_violation"
         assert "scratch.py" in (result.error or "")
 
+    def test_transient_run_bash_shell_attempt_does_not_fail_scope(self, tmp_path: Path):
+        """Command-only run_bash observability must not trigger a scope violation."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        _init_repo(worktree)
+        _add_tracked_file(worktree, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        emit_event(
+            str(session_root),
+            "worker_log",
+            "pane-1",
+            plan_name="plan",
+            task_slug="task-1",
+            log_type="result",
+            content={
+                "tool": "run_bash",
+                "status": "success",
+                "activity": [
+                    {
+                        "kind": "run_bash",
+                        "path": "",
+                        "mode": "shell_attempt",
+                        "command": "echo hello",
+                    },
+                    {"kind": "edit_file", "path": "claimed.py", "mode": "edit"},
+                ],
+            },
+        )
+
+        result = review_sandbox(
+            worktree,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+        )
+
+        assert result.passed
+
 
 # ---------------------------------------------------------------------------
 # autofix_sandbox

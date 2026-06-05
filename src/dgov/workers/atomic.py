@@ -401,6 +401,11 @@ class AtomicTools:
         for path in sorted(after - before):
             self._record_activity("run_bash", path, mode="shell")
 
+    def _record_run_bash_attempt(self, cmd: str) -> None:
+        max_length = 200
+        command = cmd if len(cmd) <= max_length else f"{cmd[:max_length]}..."
+        self._record_activity("run_bash", "", mode="shell_attempt", command=command)
+
     def _normalize_scope_path(self, path: str) -> str:
         return path.strip().lstrip("./").rstrip("/")
 
@@ -696,6 +701,7 @@ class AtomicTools:
     def run_bash(self, cmd: str) -> str:
         """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
         before = self._git_dirty_paths()
+        self._record_run_bash_attempt(cmd)
         result = self._execute_shell(cmd, enforce_policy=True)
         self._record_run_bash_activity(before, self._git_dirty_paths())
         return result
