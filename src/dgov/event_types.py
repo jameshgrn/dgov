@@ -345,6 +345,7 @@ class SettlementPhaseCompleted:
     status: str = ""
     duration_s: float = 0.0
     error: str | None = None
+    facts: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -477,6 +478,10 @@ def deserialize_event(row: dict[str, Any]) -> DgovEvent:
             continue
         if key in valid_fields:
             kwargs[key] = value
+
+    # JSON roundtrip turns tuple fields into lists; restore tuple shape where expected
+    if "facts" in kwargs and isinstance(kwargs["facts"], list):
+        kwargs["facts"] = tuple(kwargs["facts"])
 
     # Construct the event with pane from row
     pane = row.get("pane", "")

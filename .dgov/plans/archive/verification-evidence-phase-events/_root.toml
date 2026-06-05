@@ -1,0 +1,4 @@
+[plan]
+name = "verification-evidence-phase-events"
+summary = "Carry settlement verification command facts into phase events and plan review timing."
+sections = ["tasks"]

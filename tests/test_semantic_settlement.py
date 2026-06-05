@@ -1188,13 +1188,15 @@ class TestSettlementFlowSemanticRisk:
         """Patch settlement flow methods and return the mocked create_integration_candidate."""
         from unittest.mock import AsyncMock
 
+        from dgov.settlement_flow import IsolatedValidationResult
+
         create_candidate = AsyncMock()
         sf = runner._settlement_flow
         object.__setattr__(sf, "prepare_and_commit", AsyncMock(return_value=(None, True)))
         object.__setattr__(
             sf,
             "run_isolated_validation",
-            AsyncMock(return_value=(None, risk_record)),
+            AsyncMock(return_value=IsolatedValidationResult(error=None, risk_record=risk_record)),
         )
         object.__setattr__(sf, "create_integration_candidate_with_emit", create_candidate)
         return create_candidate

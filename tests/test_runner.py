@@ -1668,12 +1668,25 @@ class TestIntegrationCandidate:
         def _validate_with_candidate_fail(
             wt_path, base_commit, project_root, config=None, **_kwargs
         ):
-            from dgov.settlement import GateResult
+            from dgov.settlement import CommandExecutionFact, GateResult
 
             call_count["count"] += 1
             if call_count["count"] == 1:
                 return GateResult(passed=True)  # Isolated validation passes
-            return GateResult(passed=False, error="Candidate gate failed")
+            return GateResult(
+                passed=False,
+                error="Candidate gate failed",
+                facts=(
+                    CommandExecutionFact(
+                        gate="test",
+                        source="project.test_cmd",
+                        command="uv run pytest -q tests/test_candidate.py",
+                        outcome="completed",
+                        duration_s=1.25,
+                        exit_code=1,
+                    ),
+                ),
+            )
 
         with (
             _io_patches(validate=_validate_with_candidate_fail) as _,
@@ -1693,6 +1706,22 @@ class TestIntegrationCandidate:
                 if getattr(c.args[1], "event_type", None) == "integration_candidate_failed"
             ]
             assert len(failed_calls) == 1
+            completed_events = [
+                c.args[1]
+                for c in mock_emit.call_args_list
+                if getattr(c.args[1], "event_type", None) == "settlement_phase_completed"
+            ]
+            cv_event = next(e for e in completed_events if e.phase == "candidate_validation")
+            assert cv_event.facts == (
+                {
+                    "gate": "test",
+                    "source": "project.test_cmd",
+                    "command": "uv run pytest -q tests/test_candidate.py",
+                    "outcome": "completed",
+                    "duration_s": 1.25,
+                    "exit_code": 1,
+                },
+            )
 
     def test_researcher_task_skips_integration_candidate(self):
         """Read-only researcher tasks don't need integration candidate validation."""
@@ -2219,6 +2248,8 @@ class TestSettlementPhaseBoundaries:
         """_settle_and_merge returns early when run_isolated_validation returns error."""
         from unittest.mock import AsyncMock, MagicMock
 
+        from dgov.settlement_flow import IsolatedValidationResult
+
         with _io_patches():
             runner = _make_runner(_single_dag())
             action = MagicMock(task_slug="a", pane_slug="pane-1")
@@ -2226,7 +2257,9 @@ class TestSettlementPhaseBoundaries:
 
             sf = runner._settlement_flow
             sf.prepare_and_commit = AsyncMock(return_value=(None, True))  # type: ignore
-            sf.run_isolated_validation = AsyncMock(return_value=("validation failed", None))  # type: ignore
+            sf.run_isolated_validation = AsyncMock(
+                return_value=IsolatedValidationResult(error="validation failed", risk_record=None)
+            )  # type: ignore
             sf.create_integration_candidate_with_emit = AsyncMock()  # type: ignore
 
             async def _test():
@@ -2248,9 +2281,13 @@ class TestSettlementPhaseBoundaries:
             action = MagicMock(task_slug="a", pane_slug="pane-1")
             wt = _mock_create_worktree("/tmp", "a")
 
+            from dgov.settlement_flow import IsolatedValidationResult
+
             sf = runner._settlement_flow
             sf.prepare_and_commit = AsyncMock(return_value=(None, True))  # type: ignore
-            sf.run_isolated_validation = AsyncMock(return_value=(None, MagicMock()))  # type: ignore
+            sf.run_isolated_validation = AsyncMock(
+                return_value=IsolatedValidationResult(error=None, risk_record=MagicMock())
+            )  # type: ignore
             sf.create_integration_candidate_with_emit = AsyncMock(  # type: ignore
                 return_value=IntegrationCandidateResult(
                     passed=False, error="candidate creation failed"
@@ -2350,8 +2387,12 @@ class TestSettlementPhaseBoundaries:
             runner = _make_runner(_single_dag())
 
             # Make isolated validation fail
+            from dgov.settlement_flow import IsolatedValidationResult
+
             sf = runner._settlement_flow
-            sf.run_isolated_validation = AsyncMock(return_value=("lint failed", None))  # type: ignore
+            sf.run_isolated_validation = AsyncMock(
+                return_value=IsolatedValidationResult(error="lint failed", risk_record=None)
+            )  # type: ignore
 
             asyncio.run(runner.run())
 
@@ -2379,6 +2420,134 @@ class TestSettlementPhaseBoundaries:
 
             # No later phases should have started
             assert len(started_events) == 2
+
+    @pytest.mark.unit
+    def test_settlement_phase_completed_carries_facts(self):
+        """SettlementPhaseCompleted events should include facts from gate results."""
+        from unittest.mock import AsyncMock, patch
+
+        from dgov.settlement_flow import IsolatedValidationResult
+
+        with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
+            runner = _make_runner(_single_dag())
+
+            facts = (
+                {
+                    "gate": "lint",
+                    "source": "ruff",
+                    "command": "ruff check .",
+                    "outcome": "completed",
+                    "duration_s": 1.2,
+                    "exit_code": 0,
+                },
+            )
+            sf = runner._settlement_flow
+            sf.run_isolated_validation = AsyncMock(
+                return_value=IsolatedValidationResult(
+                    error="lint failed", risk_record=None, facts=facts
+                )
+            )  # type: ignore
+
+            asyncio.run(runner.run())
+
+            completed_events = [
+                c.args[1]
+                for c in mock_emit.call_args_list
+                if getattr(c.args[1], "event_type", None) == "settlement_phase_completed"
+            ]
+            iv_event = next(e for e in completed_events if e.phase == "isolated_validation")
+            assert iv_event.facts == facts
+
+    @pytest.mark.unit
+    def test_isolated_validation_pass_carries_facts(self):
+        """Passing isolated_validation should include facts on its completed event."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from dgov.settlement_flow import IsolatedValidationResult, RiskLevel
+
+        facts = (
+            {
+                "gate": "test",
+                "source": "task.test_cmd",
+                "command": "uv run pytest -q tests/test_pass.py",
+                "outcome": "completed",
+                "duration_s": 0.75,
+                "exit_code": 0,
+            },
+        )
+
+        with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
+            runner = _make_runner(_single_dag())
+            risk_record = MagicMock(risk_level=RiskLevel.NONE)
+            runner._settlement_flow.run_isolated_validation = AsyncMock(
+                return_value=IsolatedValidationResult(
+                    error=None, risk_record=risk_record, facts=facts
+                )
+            )  # type: ignore
+
+            action = MagicMock(task_slug="a", pane_slug="pane-1")
+            wt = _mock_create_worktree("/tmp", "a")
+            task = runner.dag.tasks["a"]
+            result = asyncio.run(runner._isolated_validation_phase(action, wt, task))
+
+            assert result.error is None
+            assert result.facts == facts
+            completed_events = [
+                c.args[1]
+                for c in mock_emit.call_args_list
+                if getattr(c.args[1], "event_type", None) == "settlement_phase_completed"
+            ]
+            iv_event = next(e for e in completed_events if e.phase == "isolated_validation")
+            assert iv_event.status == "passed"
+            assert iv_event.facts == facts
+
+    @pytest.mark.unit
+    def test_candidate_validation_pass_carries_facts(self):
+        """Passing candidate_validation should include facts on its completed event."""
+        from pathlib import Path
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from dgov.settlement_flow import CandidateValidationResult
+        from dgov.worktree import IntegrationCandidateResult
+
+        facts = (
+            {
+                "gate": "test",
+                "source": "project.test_cmd",
+                "command": "uv run pytest -q tests/test_candidate.py",
+                "outcome": "completed",
+                "duration_s": 1.5,
+                "exit_code": 0,
+            },
+        )
+
+        with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
+            runner = _make_runner(_single_dag())
+            runner._settlement_flow.validate_and_finalize_candidate = AsyncMock(
+                return_value=CandidateValidationResult(error=None, facts=facts)
+            )  # type: ignore
+
+            action = MagicMock(task_slug="a", pane_slug="pane-1")
+            task = runner.dag.tasks["a"]
+            candidate_result = IntegrationCandidateResult(
+                passed=True,
+                candidate_path=Path("/tmp/candidate"),
+                candidate_sha="candidate123",
+            )
+            result = asyncio.run(
+                runner._candidate_validation_phase(action, task, candidate_result)
+            )
+
+            assert result.error is None
+            assert result.facts == facts
+            completed_events = [
+                c.args[1]
+                for c in mock_emit.call_args_list
+                if getattr(c.args[1], "event_type", None) == "settlement_phase_completed"
+            ]
+            cv_event = next(e for e in completed_events if e.phase == "candidate_validation")
+            assert cv_event.status == "passed"
+            assert cv_event.facts == facts
 
 
 # ---------------------------------------------------------------------------

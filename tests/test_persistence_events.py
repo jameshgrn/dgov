@@ -806,6 +806,66 @@ class TestSettlementPhaseEvents:
         self._assert_started_event_matches_test_constants(deserialize_event(events[0]))
         self._assert_completed_event_matches_test_constants(deserialize_event(events[1]))
 
+    def test_settlement_phase_completed_facts_roundtrip(self, tmp_path):
+        """Facts payload on SettlementPhaseCompleted serializes and deserializes correctly."""
+        from dgov.event_types import SettlementPhaseCompleted, deserialize_event, serialize_event
+
+        session_root = _session(tmp_path)
+
+        facts = (
+            {
+                "gate": "lint",
+                "source": "ruff",
+                "command": "ruff check .",
+                "outcome": "completed",
+                "duration_s": 1.2,
+                "exit_code": 0,
+            },
+            {
+                "gate": "test",
+                "source": "pytest",
+                "command": "pytest",
+                "outcome": "timed_out",
+                "duration_s": 30.0,
+                "timeout_s": 30.0,
+            },
+        )
+        event = SettlementPhaseCompleted(
+            pane="test-pane",
+            plan_name="test-plan",
+            task_slug="task-123",
+            phase="isolated_validation",
+            status="passed",
+            duration_s=2.5,
+            facts=facts,
+        )
+
+        event_name, pane, kwargs = serialize_event(event)
+        emit_event(session_root, event=event_name, pane=pane, **kwargs)
+
+        events = read_events(session_root)
+        assert len(events) == 1
+        deserialized = deserialize_event(events[0])
+        assert isinstance(deserialized, SettlementPhaseCompleted)
+        assert deserialized.facts == facts
+
+    def test_settlement_phase_completed_old_event_without_facts_deserializes(self):
+        """Old settlement_phase_completed rows without facts should retain the default."""
+        from dgov.event_types import SettlementPhaseCompleted, deserialize_event
+
+        event = deserialize_event({
+            "event": "settlement_phase_completed",
+            "pane": "test-pane",
+            "plan_name": "test-plan",
+            "task_slug": "task-123",
+            "phase": "isolated_validation",
+            "status": "passed",
+            "duration_s": 1.0,
+        })
+
+        assert isinstance(event, SettlementPhaseCompleted)
+        assert event.facts == ()
+
 
 class TestEmitEventFailures:
     """Tests that emit_event fails fast for non-lock persistence errors."""

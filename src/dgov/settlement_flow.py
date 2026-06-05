@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +46,7 @@ from dgov.semantic_settlement import (
     parse_semantic_gate_verdict,
     summarize_evidence,
 )
-from dgov.settlement import autofix_sandbox, validate_sandbox
+from dgov.settlement import CommandExecutionFact, autofix_sandbox, validate_sandbox
 from dgov.types import Worktree
 from dgov.worktree import (
     IntegrationCandidateResult,
@@ -64,6 +65,45 @@ _RISK_LEVEL_RANK = {
     RiskLevel.HIGH: 3,
     RiskLevel.CRITICAL: 4,
 }
+
+
+@dataclass(frozen=True)
+class IsolatedValidationResult:
+    """Result of isolated validation: error, risk record, and serialized gate facts."""
+
+    error: str | None = None
+    risk_record: IntegrationRiskRecord | None = None
+    facts: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
+class CandidateValidationResult:
+    """Result of candidate validation: error and serialized gate facts."""
+
+    error: str | None = None
+    facts: tuple[dict[str, Any], ...] = ()
+
+
+def _serialize_command_facts(
+    facts: tuple[CommandExecutionFact, ...],
+) -> tuple[dict[str, Any], ...]:
+    """Serialize CommandExecutionFact dataclasses to plain dict payloads."""
+    result: list[dict[str, Any]] = []
+    for fact in facts:
+        payload: dict[str, Any] = {
+            "gate": fact.gate,
+            "source": fact.source,
+            "command": fact.command,
+            "outcome": fact.outcome,
+            "duration_s": fact.duration_s,
+        }
+        if fact.exit_code is not None:
+            payload["exit_code"] = fact.exit_code
+        if fact.timeout_s is not None:
+            payload["timeout_s"] = fact.timeout_s
+        result.append(payload)
+    return tuple(result)
+
 
 _SEMANTIC_GATE_SUBPROCESS = """
 import json
@@ -411,7 +451,7 @@ class SettlementFlow:
         wt: Worktree,
         emit_event_fn: Callable[[str, DgovEvent], None],
         validate_fn: Any = None,
-    ) -> tuple[str | None, IntegrationRiskRecord | None]:
+    ) -> IsolatedValidationResult:
         """Compute integration risk and run isolated validation gates."""
         if validate_fn is None:
             validate_fn = validate_sandbox
@@ -435,9 +475,18 @@ class SettlementFlow:
             self.project_config,
             task_test_cmd=task.test_cmd,
         )
+        facts = _serialize_command_facts(gate_result.facts)
         if not gate_result.passed:
-            return gate_result.error, risk_record
-        return None, risk_record
+            return IsolatedValidationResult(
+                error=gate_result.error,
+                risk_record=risk_record,
+                facts=facts,
+            )
+        return IsolatedValidationResult(
+            error=None,
+            risk_record=risk_record,
+            facts=facts,
+        )
 
     def _get_task_commit_sha(self, wt: Worktree) -> str | None:
         return self._git_rev_parse(wt.branch)
@@ -686,8 +735,9 @@ class SettlementFlow:
         remove_candidate_fn: Any,
         passed_emit_fn: Any,
         failed_emit_fn: Any,
-    ) -> str | None:
+    ) -> CandidateValidationResult:
         """Finalize a candidate validation gate result: cleanup on pass, reject on fail."""
+        facts = _serialize_command_facts(gate_result.facts)
         if gate_result.passed:
             await self.cleanup_passed_candidate(
                 action=action,
@@ -696,8 +746,8 @@ class SettlementFlow:
                 remove_candidate_fn=remove_candidate_fn,
                 passed_emit_fn=passed_emit_fn,
             )
-            return None
-        return await self._reject_failed_candidate_validation(
+            return CandidateValidationResult(error=None, facts=facts)
+        error = await self._reject_failed_candidate_validation(
             action=action,
             candidate_result=candidate_result,
             gate_error=gate_result.error,
@@ -705,6 +755,7 @@ class SettlementFlow:
             remove_candidate_fn=remove_candidate_fn,
             failed_emit_fn=failed_emit_fn,
         )
+        return CandidateValidationResult(error=error, facts=facts)
 
     async def validate_and_finalize_candidate(
         self,
@@ -718,7 +769,7 @@ class SettlementFlow:
         remove_candidate_fn: Any = None,
         failed_emit_fn: Any = None,
         passed_emit_fn: Any = None,
-    ) -> str | None:
+    ) -> CandidateValidationResult:
         """Validate the integrated candidate with the same gates as isolated validation."""
         validate_fn, failed_emit_fn, passed_emit_fn = self._resolve_validate_and_finalize_deps(
             validate_fn=validate_fn,
@@ -727,7 +778,7 @@ class SettlementFlow:
         )
 
         if candidate_result.candidate_path is None:
-            return None
+            return CandidateValidationResult(error=None, facts=())
 
         gate_result = await self._run_candidate_validation(
             candidate_path=candidate_result.candidate_path,
@@ -835,10 +886,12 @@ class SettlementFlow:
 
 
 __all__ = [
+    "CandidateValidationResult",
     "FailureClass",
     "IntegrationCandidateResult",
     "IntegrationCandidateVerdict",
     "IntegrationRiskRecord",
+    "IsolatedValidationResult",
     "RiskLevel",
     "SemanticGateVerdict",
     "SettlementFlow",
