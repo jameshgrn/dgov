@@ -7,6 +7,7 @@ the AtomicTools class against real temp directories. No network calls.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,7 @@ from dgov.tool_policy import ToolPolicy  # noqa: E402
 from dgov.worker import _build_system_prompt, run_worker  # noqa: E402
 from dgov.workers.atomic import AtomicTools, get_tool_spec  # noqa: E402
 from dgov.workers.config import AtomicConfig  # noqa: E402
+from dgov.workers.headless import _build_worker_env  # noqa: E402
 from dgov.workers.runtime import (  # noqa: E402
     _validate_plan,
     clip_tool_result,
@@ -276,6 +278,36 @@ require_uv_run = true
         require_wrapped_verify_tools=True,
         require_uv_run=True,
     )
+
+
+def test_build_worker_env_includes_resolved_uv_bin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text(
+        """
+[project]
+provider = "test"
+
+[providers.test]
+base_url = "https://provider.test/v1"
+api_key_env = "TEST_API_KEY"
+"""
+    )
+    tool_bin = tmp_path / "tools"
+    tool_bin.mkdir()
+    uv_path = tool_bin / "uv"
+    uv_path.write_text("#!/bin/sh\n")
+
+    monkeypatch.setattr(
+        "dgov.workers.headless.shutil.which",
+        lambda name: str(uv_path) if name == "uv" else None,
+    )
+
+    env = _build_worker_env(str(tmp_path), cast(Any, SimpleNamespace(provider="test")))
+
+    assert str(tool_bin) in env["PATH"].split(os.pathsep)
 
 
 def test_load_project_config_llm_defaults(tmp_path: Path) -> None:

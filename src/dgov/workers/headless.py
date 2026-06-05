@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -148,17 +149,35 @@ def _handle_worker_event(
     return None
 
 
+def _resolved_tool_bin_dirs(names: tuple[str, ...]) -> list[str]:
+    """Resolve required tool locations before sanitizing the worker env."""
+    dirs: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        resolved = shutil.which(name)
+        if resolved is None:
+            continue
+        parent = str(Path(resolved).resolve().parent)
+        if parent in seen:
+            continue
+        seen.add(parent)
+        dirs.append(parent)
+    return dirs
+
+
 def _build_worker_env(project_root: str, task: DagTaskSpec) -> dict[str, str]:
     """Build a minimal, explicit environment for the worker subprocess."""
     from dgov.config import load_project_config
 
     config = load_project_config(project_root)
     _, api_key_env = config.llm_runtime_settings(task.provider)
+    tool_bin_dirs = _resolved_tool_bin_dirs(("uv", "sg"))
 
     env: dict[str, str] = {
         "PATH": os.pathsep.join(
             dict.fromkeys((
                 str(Path(sys.executable).parent),
+                *tool_bin_dirs,
                 "/opt/homebrew/bin",
                 "/usr/local/bin",
                 "/usr/bin",
