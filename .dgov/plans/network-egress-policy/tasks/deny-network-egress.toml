@@ -1,0 +1,27 @@
+[tasks.deny-network-egress]
+summary = "Add worker shell network-egress policy"
+prompt = """
+Orient:
+- Read `src/dgov/tool_policy.py`, `src/dgov/workers/atomic.py`, `src/dgov/config.py`, `.dgov/project.toml`, and `README.md`.
+- Read `tests/test_worker_tools.py`, `tests/test_config.py`, and `tests/test_worker.py` for tool-policy parsing and worker-policy coverage.
+- This is policy hardening, not OS sandboxing. It should reduce obvious egress but must not claim hard zero-ambient-authority.
+
+Edit:
+1. Add a `deny_network_egress` field to `ToolPolicy` with a default that preserves backward compatibility for external projects.
+2. When enabled, reject obvious network tools in `run_bash`: `curl`, `wget`, `nc`, `netcat`, `ssh`, `scp`, `sftp`, `rsync`, `telnet`, `ftp`, and network-shaped `git` commands such as clone/fetch/pull/ls-remote/push against URLs.
+3. Reject obvious Python network escape forms under `run_bash`, including `python -c`, `python3 -c`, and `uv run python -c`, unless a later design gives them a constrained offline runner.
+4. Enable the policy in this repo's `.dgov/project.toml` and update docs/init template if default new-project policy should include it. If the compatibility tradeoff is not obvious, make this repo opt-in only and document it in README.
+5. Do not represent this as an OS-level sandbox; keep error messages precise: policy rejected likely network egress.
+
+Verify:
+- Add tests for direct network tools, `uv run python -c`, and URL-shaped git egress.
+- Add config parsing/roundtrip tests for `deny_network_egress`.
+- `uv run pytest -q tests/test_worker_tools.py tests/test_config.py tests/test_worker.py -k "network or tool_policy or run_bash"`
+- `uv run ruff check src/dgov/tool_policy.py src/dgov/workers/atomic.py src/dgov/config.py tests/test_worker_tools.py tests/test_config.py tests/test_worker.py`
+- `uv run ruff format --check src/dgov/tool_policy.py src/dgov/workers/atomic.py src/dgov/config.py tests/test_worker_tools.py tests/test_config.py tests/test_worker.py`
+- `uv run ty check src/dgov/tool_policy.py src/dgov/workers/atomic.py src/dgov/config.py`
+"""
+commit_message = "Add worker network egress policy"
+role = "worker"
+files = { edit = ["src/dgov/tool_policy.py", "src/dgov/workers/atomic.py", "src/dgov/config.py", ".dgov/project.toml", "README.md", "tests/test_worker_tools.py", "tests/test_config.py", "tests/test_worker.py"], read = ["src/dgov/cli/init.py"] }
+test_cmd = "uv run pytest -q tests/test_worker_tools.py tests/test_config.py tests/test_worker.py -k \"network or tool_policy or run_bash\""

@@ -1,0 +1,28 @@
+[tasks.harden-power-tools]
+summary = "Harden worker power-tool wrappers against shell injection"
+prompt = """
+Orient:
+- Read `src/dgov/workers/atomic.py`, especially `_execute_shell`, `ripgrep`, `jq`, `tree`, and `word_count`.
+- Read `src/dgov/workers/runtime.py` to confirm tool-call JSON arguments are passed directly into `AtomicTools` methods.
+- Read `tests/test_worker_tools.py` for existing worker-tool coverage.
+- Ledger bug #256: worker tool shell wrappers bypass `run_bash` policy with `enforce_policy=False`; worker-controlled fields such as `ripgrep` flags can inject shell commands and egress despite `tool_policy` restrictions.
+
+Edit:
+1. Remove command-injection surfaces from worker-controlled shell wrappers. Prefer argv-based `subprocess.run([...], cwd=self.worktree, env=self._sandbox_env(), ...)` helpers over shell strings.
+2. For `ripgrep`, parse or validate `flags` before passing them to argv. Permit common search flags only; reject shell syntax, command separators, redirection, command substitution, and unknown high-risk flags. Keep fallback to Python grep when `rg` is unavailable.
+3. For `jq`, `tree`, and `word_count`, avoid shell interpolation for worker-controlled arguments. If a pipeline is unavoidable, keep worker-controlled values out of the shell string or validate them narrowly first.
+4. Do not broadly enforce `run_bash` policy on project-declared verification wrappers (`run_tests`, `lint_check`, `lint_fix`, `format_file`, `type_check`) in this slice. Those are intentional project-config authority and need separate template validation if hardened.
+5. Keep existing file-tool `_check_path` behavior intact.
+
+Verify:
+- Add tests in `tests/test_worker_tools.py` proving `ripgrep(flags="; touch pwned")`, shell redirection, command substitution, and `tree(max_depth="1; touch pwned")` do not execute.
+- Add a positive test for ordinary safe `ripgrep` flags still working.
+- `uv run pytest -q tests/test_worker_tools.py -k "ripgrep or jq or tree or word_count or shell"`
+- `uv run ruff check src/dgov/workers/atomic.py tests/test_worker_tools.py`
+- `uv run ruff format --check src/dgov/workers/atomic.py tests/test_worker_tools.py`
+- `uv run ty check src/dgov/workers/atomic.py`
+"""
+commit_message = "Harden worker shell wrappers"
+role = "worker"
+files = { edit = ["src/dgov/workers/atomic.py", "tests/test_worker_tools.py"], read = ["src/dgov/workers/runtime.py"] }
+test_cmd = "uv run pytest -q tests/test_worker_tools.py -k \"ripgrep or jq or tree or word_count or shell\""

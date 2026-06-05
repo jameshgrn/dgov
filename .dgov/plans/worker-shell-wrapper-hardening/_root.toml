@@ -1,0 +1,4 @@
+[plan]
+name = "worker-shell-wrapper-hardening"
+summary = "Remove worker-controlled shell injection surfaces from AtomicTools power-tool wrappers."
+sections = ["tasks"]
