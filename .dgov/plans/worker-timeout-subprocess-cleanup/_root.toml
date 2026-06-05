@@ -1,0 +1,4 @@
+[plan]
+name = "worker-timeout-subprocess-cleanup"
+summary = "Terminate headless worker subprocesses when governor timeouts cancel their coroutine."
+sections = ["tasks"]

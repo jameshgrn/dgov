@@ -1,0 +1,24 @@
+[tasks.terminate-cancelled-worker]
+summary = "Terminate worker subprocess on cancellation"
+prompt = """
+Orient:
+- Read `src/dgov/workers/headless.py` and the timeout path in `src/dgov/runner.py`.
+- Read `tests/test_worker.py` and `tests/test_runner.py` around worker env, timeout, and cleanup coverage.
+- Ledger bug #260: a timed-out worker process remained alive after retry started, leaving two worker processes with authority over the same task worktree.
+
+Edit:
+1. Add cancellation cleanup to `run_headless_worker`: if the coroutine is cancelled after launching the subprocess, terminate the child process and wait for it before re-raising cancellation.
+2. Use a bounded graceful terminate-then-kill sequence so cleanup cannot hang indefinitely.
+3. Preserve existing startup failure reporting. Do not swallow `asyncio.CancelledError` as a normal worker failure.
+4. Add regression coverage with a fake subprocess proving cancellation calls terminate/wait and does not report a normal exit.
+
+Verify:
+- `uv run pytest -q tests/test_worker.py -k "headless or worker_env or timeout or cancellation"`
+- `uv run ruff check src/dgov/workers/headless.py tests/test_worker.py`
+- `uv run ruff format --check src/dgov/workers/headless.py tests/test_worker.py`
+- `uv run ty check src/dgov/workers/headless.py tests/test_worker.py`
+"""
+commit_message = "Terminate timed-out worker subprocesses"
+role = "worker"
+files = { edit = ["src/dgov/workers/headless.py", "tests/test_worker.py"], read = ["src/dgov/runner.py", "tests/test_runner.py"] }
+test_cmd = "uv run pytest -q tests/test_worker.py -k \"headless or worker_env or timeout or cancellation\""
