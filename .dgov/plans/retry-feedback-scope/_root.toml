@@ -1,0 +1,4 @@
+[plan]
+name = "retry-feedback-scope"
+summary = "Keep settlement retry prompts focused on candidate-local failures."
+sections = ["tasks"]

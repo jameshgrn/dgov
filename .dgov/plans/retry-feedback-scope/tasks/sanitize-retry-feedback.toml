@@ -1,0 +1,25 @@
+[tasks.sanitize-retry-feedback]
+summary = "Sanitize non-candidate retry feedback"
+prompt = """
+Orient:
+- Read `src/dgov/prompt_builder.py`, `src/dgov/sentrux_gate.py`, and `src/dgov/runner.py` around `settlement_retry_prompt` and settlement retry dispatch.
+- Read `tests/test_prompt_builder.py`.
+- Ledger bug #262: retry prompts can include stale Sentrux/branch-verification offenders from prior accepted commits, causing workers to chase unrelated files outside task claims.
+
+Edit:
+1. Keep plan status/review evidence unchanged, but filter the text inserted into `PromptBuilder.settlement_retry_prompt`.
+2. When the settlement error contains a `PRE-EXISTING Sentrux offenders:` section, omit that section from the retry prompt and replace it with a short note telling the worker to fix only NEW Sentrux offenders.
+3. When the settlement error contains branch-verification output, omit that tail from the retry prompt and replace it with a short note that branch verification is run-level evidence, not candidate-local settlement evidence.
+4. Preserve ordinary test, scope, and semantic-gate evidence unchanged.
+
+Verify:
+- `uv run pytest -q tests/test_prompt_builder.py -k "settlement_retry"`
+- `uv run ruff check src/dgov/prompt_builder.py tests/test_prompt_builder.py`
+- `uv run ruff format --check src/dgov/prompt_builder.py tests/test_prompt_builder.py`
+- `uv run ty check src/dgov/prompt_builder.py tests/test_prompt_builder.py`
+"""
+commit_message = "Sanitize settlement retry feedback"
+role = "worker"
+files = { edit = ["src/dgov/prompt_builder.py", "tests/test_prompt_builder.py"], read = ["src/dgov/sentrux_gate.py", "src/dgov/runner.py"] }
+timeout_s = 300
+test_cmd = "uv run pytest -q tests/test_prompt_builder.py -k \"settlement_retry\""
