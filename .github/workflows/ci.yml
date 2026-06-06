@@ -68,4 +68,13 @@ jobs:
 
       - run: uv sync --group dev --locked
 
+      - name: Install worker search tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+          npm install --global @ast-grep/cli
+          rg --version
+          sg --version
+
       - run: uv run pytest -q -m unit
