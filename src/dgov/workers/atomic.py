@@ -983,7 +983,7 @@ class AtomicTools:
             flags += f" -g '!{test_dir}/**'"
 
         # Try ripgrep first for speed and ignore-file respect
-        result = self.ripgrep(symbol, flags=flags)
+        result = self._ripgrep(symbol, flags=flags, fallback=False)
         if "command not found" in result:
             return self._grep_references(symbol, exclude_tests=exclude_tests)
         if "EXIT:0" in result:
@@ -1325,6 +1325,16 @@ class AtomicTools:
 
     def ripgrep(self, pattern: str, path: str = ".", flags: str = "") -> str:
         """Fast regex search via rg. Supports flags like -i, -l, -C3, --type py."""
+        return self._ripgrep(pattern, path=path, flags=flags, fallback=True)
+
+    def _ripgrep(
+        self,
+        pattern: str,
+        path: str = ".",
+        flags: str = "",
+        *,
+        fallback: bool,
+    ) -> str:
         target = self._check_path(path)
         if isinstance(target, str):
             return target
@@ -1333,7 +1343,7 @@ class AtomicTools:
         if isinstance(validated, str):
             return validated
         result = self._run_argv(["rg", *validated, "--", pattern, rel])
-        if "EXIT:2" in result or "command not found" in result:
+        if fallback and ("EXIT:2" in result or "command not found" in result):
             return self.grep(pattern, path)  # fallback to Python grep
         return result
 

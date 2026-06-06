@@ -165,6 +165,19 @@ class TestFindReferences:
         assert "src/bar.py" in result
         assert "tests/test_foo.py" not in result
 
+    def test_find_references_excludes_tests_when_rg_is_missing(self, tools, monkeypatch):
+        def fake_run_argv(argv):
+            assert argv[0] == "rg"
+            return "Error: command not found: rg"
+
+        monkeypatch.setattr(tools, "_run_argv", fake_run_argv)
+
+        result = tools.find_references("hello", exclude_tests=True)
+
+        assert "src/foo.py" in result
+        assert "src/bar.py" in result
+        assert "tests/test_foo.py" not in result
+
     def test_no_references(self, tools):
         result = tools.find_references("nonexistent_symbol")
         assert "No matches found" in result
