@@ -124,6 +124,7 @@ def test_researcher_tool_spec_excludes_write_and_shell_tools() -> None:
     assert "revert_file" not in names
     assert "lint_fix" not in names
     assert "format_file" not in names
+    assert "scope_status" not in names
     assert "read_file" in names
     assert "run_tests" in names
     assert "verify_recipe" in names

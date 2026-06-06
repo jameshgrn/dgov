@@ -1593,6 +1593,7 @@ _RESEARCHER_EXCLUDED_TOOLS = frozenset({
     "revert_file",
     "lint_fix",
     "format_file",
+    "scope_status",
 })
 
 _PLANNER_EXCLUDED_TOOLS = frozenset(_RESEARCHER_EXCLUDED_TOOLS)

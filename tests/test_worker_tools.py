@@ -1017,6 +1017,7 @@ class TestToolSpec:
         assert "revert_file" not in spec_names
         assert "lint_fix" not in spec_names
         assert "format_file" not in spec_names
+        assert "scope_status" not in spec_names
         assert "read_file" in spec_names
         assert "run_tests" in spec_names
         assert "verify_recipe" in spec_names
