@@ -330,7 +330,7 @@ def _run_cmd_with_fact(
     cmd_template: str,
     files: list[str],
     cwd: Path,
-    timeout: int = 120,
+    timeout: float = 120,
 ) -> tuple[subprocess.CompletedProcess[str] | None, CommandExecutionFact]:
     """Run a command and record an execution fact."""
     file_args = " ".join(shlex.quote(f) for f in files)
@@ -1392,7 +1392,7 @@ def _build_test_cmd(config: ProjectConfig, changed_files: list[str], worktree_pa
 def _run_test_gate(
     test_cmd: str,
     worktree_path: Path,
-    timeout: int = 120,
+    timeout: float = 120,
     source: str = "test_cmd",
 ) -> tuple[GateResult | None, CommandExecutionFact]:
     """Run tests. Return failure GateResult and fact on non-zero exit, None and fact on pass."""

@@ -15,7 +15,8 @@ import pytest
 
 import dgov  # noqa: F401 — primes sys.modules to avoid rogue root __init__.py
 
-_SRC = Path(__file__).resolve().parent.parent / "src" / "dgov"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SRC = _REPO_ROOT / "src" / "dgov"
 pytestmark = pytest.mark.unit
 
 
@@ -40,6 +41,45 @@ def _dgov_from_import_from(node: ast.ImportFrom) -> set[str]:
     if node.module is None or not node.module.startswith("dgov"):
         return set()
     return {node.module}
+
+
+class TestLacustrinePillarVisibility:
+    """Lacustrine pillar framing must stay visible in architectural boundary files."""
+
+    def test_lacustrine_pillar_headers_remain_visible(self):
+        expectations = {
+            _SRC / "runner.py": (
+                "Follows Lacustrine Pillars:",
+                "Pillar #1: Separation of Powers - Runner orchestrates; Worker implements.",
+                "Pillar #9: Hot-Path - Zero-latency async signaling, no polling or pipes.",
+                "Pillar #10: Fail-Closed - Graceful shutdown leaves no dangling state.",
+            ),
+            _SRC / "worktree.py": (
+                "Follows Lacustrine Pillars:",
+                "Pillar #2: The Atomic Attempt (isolated checkout)",
+                "Pillar #3: Snapshot Isolation (independent git state)",
+                "Pillar #10: Fail-Closed (cleanup on failure)",
+            ),
+        }
+        missing = {}
+        for path, markers in expectations.items():
+            source = path.read_text()
+            missing_markers = [marker for marker in markers if marker not in source]
+            if missing_markers:
+                missing[str(path.relative_to(_REPO_ROOT))] = missing_markers
+        assert not missing, f"Lacustrine pillar markers missing: {missing}"
+
+    def test_boundary_test_docstring_names_lacustrine_pillars(self):
+        source = (_REPO_ROOT / "tests" / "test_boundaries.py").read_text()
+        module_docstring = ast.get_docstring(ast.parse(source)) or ""
+        markers = (
+            "These are the dgov Lacustrine Pillars encoded as assertions:",
+            "Kernel is pure (no I/O imports)",
+            "Worker is isolated (no dgov imports)",
+            "Settlement is pure (no orchestration imports)",
+        )
+        missing = [marker for marker in markers if marker not in module_docstring]
+        assert not missing, f"Boundary-test Lacustrine markers missing: {missing}"
 
 
 class TestKernelPurity:
