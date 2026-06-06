@@ -245,7 +245,9 @@ class TestListDir:
     def test_lists_root(self, tools):
         result = tools.list_dir(".")
         assert "src/" in result
+        assert "src/  (" not in result
         assert "tests/" in result
+        assert "tests/  (" not in result
         assert "README.md" in result
 
     def test_lists_subdirectory(self, tools):
@@ -264,6 +266,13 @@ class TestListDir:
     def test_path_traversal_blocked(self, tools):
         result = tools.list_dir("../../etc")
         assert "Error" in result
+
+    @pytest.mark.parametrize("path", [".git", "./.git/worktrees", "src/__pycache__"])
+    def test_internal_paths_get_actionable_error(self, tools, path):
+        result = tools.list_dir(path)
+        assert result.startswith("Error:")
+        assert "internal" in result
+        assert "tree" in result
 
 
 # -- SOP compound tools --
@@ -456,6 +465,18 @@ class TestRunBashPolicy:
         result = t.run_bash(command)
         assert result.startswith("Error:")
         assert expected_hint in result
+
+    def test_rejects_dgov_verify_run_with_recipe_hint(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                require_wrapped_verify_tools=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash("uv run dgov verify run rating")
+        assert result.startswith("Error:")
+        assert "verify_recipe()" in result
 
     def test_rejects_uv_run_python_module_pytest_when_wrappers_required(
         self, worktree, worker_module
@@ -760,6 +781,88 @@ class TestTypeCheck:
         assert "not configured" in result.lower()
 
 
+class TestVerifyRecipeTool:
+    def test_runs_configured_recipe(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(verify_commands={"rating": "printf 'recipe ok\\n'"})
+        t = worker_module.AtomicTools(worktree, config)
+
+        result = t.verify_recipe("rating")
+
+        assert "recipe ok" in result
+        assert "EXIT:0" in result
+
+    def test_lists_available_recipes_for_unknown_name(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(verify_commands={"lint": "true", "types": "true"})
+        t = worker_module.AtomicTools(worktree, config)
+
+        result = t.verify_recipe("missing")
+
+        assert result.startswith("Error:")
+        assert "Available recipes: lint, types" in result
+
+    def test_reports_when_recipes_are_unconfigured(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+
+        result = t.verify_recipe("rating")
+
+        assert result.startswith("Error:")
+        assert "no project verify recipes" in result
+
+
+class TestProcessTimeoutCleanup:
+    def test_execute_shell_timeout_kills_process_group(self, worktree, worker_module, monkeypatch):
+        calls = {}
+
+        class FakePopen:
+            pid = 1234
+            returncode = None
+
+            def __init__(self, argv, **kwargs):
+                calls["argv"] = argv
+                calls["start_new_session"] = kwargs.get("start_new_session")
+
+            def communicate(self, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired("slow", timeout)
+                self.returncode = -9
+                return "", ""
+
+            def kill(self):
+                calls["fallback_kill"] = True
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setattr("dgov.workers.atomic.os.getpgid", lambda pid: 4321)
+        monkeypatch.setattr(
+            "dgov.workers.atomic.os.killpg",
+            lambda pgid, sig: calls.update({"killed": (pgid, sig)}),
+        )
+        config = worker_module.AtomicConfig(tool_timeout_s=0.01)
+        t = worker_module.AtomicTools(worktree, config)
+
+        result = t._execute_shell("slow-command", enforce_policy=False)
+
+        assert result == "Error: Command timed out after 0.01s."
+        assert calls["start_new_session"] is True
+        assert calls["killed"][0] == 4321
+
+    def test_process_group_fallback_ignores_raced_exit(self, worktree, worker_module, monkeypatch):
+        class FakePopen:
+            pid = 1234
+
+            def kill(self):
+                raise ProcessLookupError
+
+        monkeypatch.setattr("dgov.workers.atomic.os.getpgid", lambda pid: 4321)
+
+        def _raise_os_error(pgid, sig):
+            raise OSError
+
+        monkeypatch.setattr("dgov.workers.atomic.os.killpg", _raise_os_error)
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+
+        t._kill_process_group(FakePopen())
+
+
 class TestScopeStatus:
     def test_reports_clean_in_scope_changes(self, worktree, worker_module):
         _init_repo(worktree)
@@ -916,6 +1019,7 @@ class TestToolSpec:
         assert "format_file" not in spec_names
         assert "read_file" in spec_names
         assert "run_tests" in spec_names
+        assert "verify_recipe" in spec_names
         assert "done" in spec_names
 
 

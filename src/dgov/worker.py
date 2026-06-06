@@ -63,6 +63,8 @@ def _project_section(config: AtomicConfig) -> str:
     )
     if config.test_markers:
         section += f"- Test markers: {', '.join(config.test_markers)}\n"
+    if config.verify_commands:
+        section += "- Verify recipes: " + ", ".join(sorted(config.verify_commands)) + "\n"
     if config.conventions:
         section += "\nCONVENTIONS:\n"
         for key, val in config.conventions.items():
@@ -109,6 +111,7 @@ WORKFLOW — follow this order:
    If you make a mistake, use revert_file(path) to start over from HEAD.
 3. VERIFY: check_syntax immediately after editing (instant).
    lint_fix to auto-clean trivial issues (unused imports/vars).
+   If the task names a project verify recipe, call verify_recipe(name).
    search_tests_for to find relevant tests, then run_tests only on in-scope test files.
 4. FINISH: scope_status to catch settlement scope failures early.
    git_diff to review all your changes.

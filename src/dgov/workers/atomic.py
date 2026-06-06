@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -232,7 +233,12 @@ def _wrapped_verify_tool(tokens: list[str]) -> str | None:
     _, core = _unwrap_shell_command(tokens)
     if not core:
         return None
-    return _pytest_verify_tool(core) or _ruff_verify_tool(core) or _ty_verify_tool(core)
+    return (
+        _pytest_verify_tool(core)
+        or _ruff_verify_tool(core)
+        or _ty_verify_tool(core)
+        or _dgov_verify_tool(core)
+    )
 
 
 def _pytest_verify_tool(core: list[str]) -> str | None:
@@ -261,6 +267,17 @@ def _ty_verify_tool(core: list[str]) -> str | None:
     return None
 
 
+def _dgov_verify_tool(core: list[str]) -> str | None:
+    if len(core) >= 3 and core[:3] == ["dgov", "verify", "run"]:
+        return "dgov_verify_run"
+    if len(core) >= 5 and core[:4] in (
+        ["python", "-m", "dgov", "verify"],
+        ["python3", "-m", "dgov", "verify"],
+    ):
+        return "dgov_verify_run" if core[4] == "run" else None
+    return None
+
+
 def _python_module_command(core: list[str], module: str) -> bool:
     return core[:3] in (["python", "-m", module], ["python3", "-m", module])
 
@@ -275,6 +292,7 @@ _VERIFY_TOOL_REJECTION_MESSAGES = {
     "ruff_check": "Error: run_bash policy requires lint_check() for 'ruff check'.",
     "ruff_format": "Error: run_bash policy requires format_file() for 'ruff format'.",
     "ty_check": "Error: run_bash policy requires type_check() for 'ty check'.",
+    "dgov_verify_run": "Error: run_bash policy requires verify_recipe() for 'dgov verify run'.",
 }
 
 
@@ -721,35 +739,46 @@ class AtomicTools:
             policy_error = self._reject_shell_command(cmd)
             if policy_error is not None:
                 return policy_error
-        try:
-            res = subprocess.run(
-                ["/bin/sh", "-c", f"cd {shell_quote(str(self.worktree))} && {cmd}"],
-                cwd=self.worktree,
-                env=self._sandbox_env(),
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            return f"STDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}\nEXIT:{res.returncode}"
-        except subprocess.TimeoutExpired:
-            return "Error: Command timed out after 60s."
+        return self._run_process(
+            ["/bin/sh", "-c", f"cd {shell_quote(str(self.worktree))} && {cmd}"],
+            timeout_s=self.config.tool_timeout_s,
+        )
 
     def _run_argv(self, argv: list[str]) -> str:
         """Run a subprocess with argv list, avoiding shell interpolation."""
+        return self._run_process(argv, timeout_s=self.config.tool_timeout_s)
+
+    def _run_process(self, argv: list[str], *, timeout_s: float) -> str:
         try:
-            res = subprocess.run(
+            proc = subprocess.Popen(
                 argv,
                 cwd=self.worktree,
                 env=self._sandbox_env(),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=60,
+                start_new_session=True,
             )
-            return f"STDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}\nEXIT:{res.returncode}"
         except FileNotFoundError:
             return f"Error: command not found: {argv[0]}"
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            return "Error: Command timed out after 60s."
+            self._kill_process_group(proc)
+            proc.communicate()
+            return f"Error: Command timed out after {timeout_s:g}s."
+        return f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}\nEXIT:{proc.returncode}"
+
+    def _kill_process_group(self, proc: subprocess.Popen[str]) -> None:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except OSError:
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                return
 
     def run_bash(self, cmd: str) -> str:
         """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
@@ -826,6 +855,11 @@ class AtomicTools:
 
     def list_dir(self, path: str = ".") -> str:
         """List directory contents with type indicators (/ for dirs, sizes for files)."""
+        if self._list_dir_reject_internal_path(path):
+            return (
+                "Error: invalid list_dir() target. .git and __pycache__ are internal "
+                "or generated paths; use tree, glob, git_diff, or recent_changes instead."
+            )
         target = self._check_path(path)
         if isinstance(target, str):
             return target
@@ -845,6 +879,15 @@ class AtomicTools:
                 size = item.stat().st_size
                 entries.append(f"{rel}  ({size} bytes)")
         return "\n".join(entries) if entries else "(empty directory)"
+
+    def _list_dir_reject_internal_path(self, path: str) -> bool:
+        normalized = path.strip().replace("\\", "/")
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+        normalized = normalized.strip("/")
+        if not normalized:
+            return False
+        return any(part in {".git", "__pycache__"} for part in Path(normalized).parts)
 
     def git_diff(self) -> str:
         """Show uncommitted changes in the worktree."""
@@ -1524,6 +1567,23 @@ class AtomicTools:
             return "Type checking not configured for this project."
         return self._execute_shell(self.config.type_check_cmd, enforce_policy=False)
 
+    def verify_recipe(self, name: str) -> str:
+        """Run one named project verify recipe from .dgov/project.toml."""
+        recipes = self.config.verify_commands
+        recipe_name = name.strip()
+        if not recipes:
+            return (
+                "Error: verify_recipe() is unavailable because no project verify recipes "
+                "are configured."
+            )
+        if not recipe_name:
+            return "Error: verify_recipe() requires a recipe name."
+        command = recipes.get(recipe_name)
+        if command is None:
+            available = ", ".join(sorted(recipes))
+            return f"Error: unknown verify recipe {recipe_name!r}. Available recipes: {available}."
+        return self._execute_shell(command, enforce_policy=False)
+
 
 _RESEARCHER_EXCLUDED_TOOLS = frozenset({
     "write_file",
@@ -1812,7 +1872,10 @@ _WORKER_TOOL_SPECS: tuple[dict[str, Any], ...] = (
         "type": "function",
         "function": {
             "name": "list_dir",
-            "description": "List directory contents with sizes.",
+            "description": (
+                "List directory contents with sizes. Use source/test/project directories; "
+                "do not inspect .git or __pycache__."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2213,6 +2276,26 @@ _WORKER_TOOL_SPECS: tuple[dict[str, Any], ...] = (
                 "type": "object",
                 "properties": {},
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_recipe",
+            "description": (
+                "Run a named project verify recipe declared in .dgov/project.toml. "
+                "Use this when the task names a recipe such as lint, types, or rating."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Verify recipe name from .dgov/project.toml",
+                    },
+                },
+                "required": ["name"],
             },
         },
     },

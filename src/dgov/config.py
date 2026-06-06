@@ -176,6 +176,8 @@ class ProjectConfig(AtomicConfig):
         ]
         if self.type_check_cmd:
             lines.append(f"Type check command: {self.type_check_cmd}")
+        if self.verify_commands:
+            lines.append(f"Verify recipes: {', '.join(sorted(self.verify_commands))}")
         if self.test_markers:
             lines.append(f"Test markers: {', '.join(self.test_markers)}")
         lines.append(f"Worker iteration budget: {self.worker_iteration_budget}")
@@ -311,6 +313,7 @@ def _optional_project_string(proj: Mapping[str, Any], key: str) -> str:
 
 def _worker_config_fields(raw: Mapping[str, Any], proj: Mapping[str, Any]) -> dict[str, Any]:
     provider = selected_provider_from_project_toml(raw)
+    verify_recipes = load_verify_recipes(raw)
     return {
         "language": proj.get("language", ProjectConfig.language),
         "src_dir": proj.get("src_dir", ProjectConfig.src_dir),
@@ -323,6 +326,8 @@ def _worker_config_fields(raw: Mapping[str, Any], proj: Mapping[str, Any]) -> di
         "format_cmd": proj.get("format_cmd", ProjectConfig.format_cmd),
         "lint_fix_cmd": proj.get("lint_fix_cmd", ProjectConfig.lint_fix_cmd),
         "type_check_cmd": proj.get("type_check_cmd") or None,
+        "verify_commands": {name: recipe.command for name, recipe in verify_recipes.items()},
+        "tool_timeout_s": proj.get("tool_timeout_s", ProjectConfig.tool_timeout_s),
         "test_markers": _tuple_if_list(proj.get("test_markers", ())),
         "worker_iteration_budget": proj.get("worker_iteration_budget", 50),
         "worker_iteration_warn_at": proj.get("worker_iteration_warn_at", 40),

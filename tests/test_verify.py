@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -210,6 +212,61 @@ class TestRunVerifyRecipe:
         assert r.log_path is not None
         assert "timed out" in r.summary or "timed out" in Path(r.log_path).read_text()
 
+    def test_timeout_kills_process_group(self, tmp_path, monkeypatch):
+        from dgov import verify
+
+        calls = {}
+
+        class FakePopen:
+            pid = 1234
+            returncode = None
+
+            def __init__(self, command, **kwargs):
+                calls["command"] = command
+                calls["start_new_session"] = kwargs.get("start_new_session")
+
+            def communicate(self, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired("slow", timeout)
+                self.returncode = -9
+                return "", ""
+
+            def kill(self):
+                calls["fallback_kill"] = True
+
+        monkeypatch.setattr(verify.subprocess, "Popen", FakePopen)
+        monkeypatch.setattr(verify.os, "getpgid", lambda pid: 4321)
+        monkeypatch.setattr(
+            verify.os,
+            "killpg",
+            lambda pgid, sig: calls.update({"killed": (pgid, sig)}),
+        )
+        recipe = VerifyRecipe(name="slow", command="slow-command")
+
+        result = run_verify_recipe(tmp_path, recipe, timeout=0.01)
+
+        assert result.status == "fail"
+        assert calls["start_new_session"] is True
+        assert calls["killed"][0] == 4321
+
+    def test_timeout_fallback_ignores_raced_exit(self, monkeypatch):
+        from dgov import verify
+
+        class FakePopen:
+            pid = 1234
+
+            def kill(self):
+                raise ProcessLookupError
+
+        monkeypatch.setattr(verify.os, "getpgid", lambda pid: 4321)
+
+        def _raise_os_error(pgid, sig):
+            raise OSError
+
+        monkeypatch.setattr(verify.os, "killpg", _raise_os_error)
+
+        verify._kill_process_group(cast(subprocess.Popen[str], FakePopen()))
+
     def test_summary_singular_warning(self, tmp_path):
         script = self._write_script(tmp_path, "print('warning: only one')")
         recipe = VerifyRecipe(name="single", command=f"{sys.executable} {script}")
@@ -290,6 +347,7 @@ class TestProjectConfigVerifyRecipes:
         assert "lint" in pc.verify_recipes
         assert pc.verify_recipes["lint"].command == "ruff check src/"
         assert pc.verify_recipes["test"].log_name == "test.log"
+        assert pc.verify_commands == {"lint": "ruff check src/", "test": "pytest -q"}
 
     def test_defaults_empty(self, tmp_path):
         from dgov.config import load_project_config

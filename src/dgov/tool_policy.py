@@ -28,7 +28,8 @@ class ToolPolicy:
             lines.append("run_bash is restricted; prefer dedicated worker tools.")
         if self.require_wrapped_verify_tools:
             lines.append(
-                "Use run_tests/lint_check/lint_fix/format_file/type_check, not raw shell."
+                "Use run_tests/lint_check/lint_fix/format_file/type_check/verify_recipe, "
+                "not raw shell."
             )
         if self.require_uv_run:
             lines.append("Python shell commands must use 'uv run'.")
