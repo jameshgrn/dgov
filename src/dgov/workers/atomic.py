@@ -985,7 +985,7 @@ class AtomicTools:
         # Try ripgrep first for speed and ignore-file respect
         result = self.ripgrep(symbol, flags=flags)
         if "command not found" in result:
-            return self.grep(rf"\b{re.escape(symbol)}\b")
+            return self._grep_references(symbol, exclude_tests=exclude_tests)
         if "EXIT:0" in result:
             # Extract just the matches from STDOUT: ... EXIT:0 format
             m = re.search(r"STDOUT:\n(.*?)\nSTDERR:", result, re.DOTALL)
@@ -1000,11 +1000,12 @@ class AtomicTools:
         target = self._check_path(path)
         if isinstance(target, str):
             return target
-        if shutil.which("sg") is None:
+        sg = self._ast_grep_executable()
+        if sg is None:
             return "Error: ast-grep ('sg') not found in PATH."
 
         rel = str(target.relative_to(self.worktree))
-        cmd = ["sg", "run", "--color", "never", "--heading", "never", "--pattern", pattern]
+        cmd = [sg, "run", "--color", "never", "--heading", "never", "--pattern", pattern]
         ast_lang = lang or self._infer_ast_grep_lang(target)
         if ast_lang:
             cmd.extend(["--lang", ast_lang])
@@ -1013,12 +1014,45 @@ class AtomicTools:
         result = self._run_ast_grep(cmd)
         return result if isinstance(result, str) else self._format_ast_grep_result(result)
 
+    def _grep_references(self, symbol: str, *, exclude_tests: bool) -> str:
+        result = self.grep(rf"\b{re.escape(symbol)}\b")
+        if not exclude_tests or result.startswith("Error:") or result == "No matches found.":
+            return result
+        test_dir = self.config.test_dir.strip().strip("/") or "tests"
+        lines = [
+            line
+            for line in result.splitlines()
+            if not self._match_line_is_under_dir(line, test_dir)
+        ]
+        return "\n".join(lines) if lines else f"No matches found for '{symbol}'."
+
+    def _match_line_is_under_dir(self, line: str, dirname: str) -> bool:
+        path = line.split(":", 1)[0].removeprefix("./")
+        return path == dirname or path.startswith(f"{dirname}/")
+
     def _infer_ast_grep_lang(self, target: Path) -> str:
         if target.is_file() and target.suffix == ".py":
             return "python"
         if target.is_dir() and any(target.rglob("*.py")):
             return "python"
         return ""
+
+    def _ast_grep_executable(self) -> str | None:
+        sg = shutil.which("sg")
+        if sg is None:
+            return None
+        try:
+            result = subprocess.run(
+                [sg, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        output = f"{result.stdout}\n{result.stderr}".lower()
+        return sg if "ast-grep" in output else None
 
     def _run_ast_grep(self, cmd: list[str]) -> subprocess.CompletedProcess[str] | str:
         try:

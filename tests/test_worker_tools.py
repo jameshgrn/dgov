@@ -158,6 +158,13 @@ class TestFindReferences:
         assert "src/bar.py" in result
         assert "tests/test_foo.py" not in result
 
+    def test_grep_fallback_excludes_tests(self, tools):
+        result = tools._grep_references("hello", exclude_tests=True)
+
+        assert "src/foo.py" in result
+        assert "src/bar.py" in result
+        assert "tests/test_foo.py" not in result
+
     def test_no_references(self, tools):
         result = tools.find_references("nonexistent_symbol")
         assert "No matches found" in result
@@ -165,10 +172,14 @@ class TestFindReferences:
 
 class TestAstGrep:
     def test_finds_structural_matches(self, tools):
+        if tools._ast_grep_executable() is None:
+            pytest.skip("ast-grep is not installed")
         result = tools.ast_grep("def $A(): $$$", "src")
         assert "src/foo.py:1:def hello():" in result
 
     def test_no_matches(self, tools):
+        if tools._ast_grep_executable() is None:
+            pytest.skip("ast-grep is not installed")
         result = tools.ast_grep("class $A: $$$", "src")
         assert result == "No matches found."
 
