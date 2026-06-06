@@ -979,8 +979,8 @@ class AtomicTools:
         """Find lexical occurrences of a symbol across the codebase."""
         flags = "-w"  # word boundary
         if exclude_tests:
-            # Escape ! for shell if needed, but ripgrep handles it in quotes
-            flags += f" -g '!{self.config.test_dir}*'"
+            test_dir = self.config.test_dir.strip().strip("/") or "tests"
+            flags += f" -g '!{test_dir}/**'"
 
         # Try ripgrep first for speed and ignore-file respect
         result = self.ripgrep(symbol, flags=flags)
@@ -1005,12 +1005,20 @@ class AtomicTools:
 
         rel = str(target.relative_to(self.worktree))
         cmd = ["sg", "run", "--color", "never", "--heading", "never", "--pattern", pattern]
-        if lang:
-            cmd.extend(["--lang", lang])
+        ast_lang = lang or self._infer_ast_grep_lang(target)
+        if ast_lang:
+            cmd.extend(["--lang", ast_lang])
         cmd.append(rel)
 
         result = self._run_ast_grep(cmd)
         return result if isinstance(result, str) else self._format_ast_grep_result(result)
+
+    def _infer_ast_grep_lang(self, target: Path) -> str:
+        if target.is_file() and target.suffix == ".py":
+            return "python"
+        if target.is_dir() and any(target.rglob("*.py")):
+            return "python"
+        return ""
 
     def _run_ast_grep(self, cmd: list[str]) -> subprocess.CompletedProcess[str] | str:
         try:
