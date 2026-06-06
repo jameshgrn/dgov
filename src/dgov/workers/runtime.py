@@ -298,7 +298,11 @@ def diff_stat_for_error(worktree: Path) -> str:
         return f"Unavailable: {exc}"
 
 
-def task_scope_section(task_scope: Mapping[str, object] | None) -> str:
+def task_scope_section(
+    task_scope: Mapping[str, object] | None,
+    *,
+    include_scope_status_instruction: bool = True,
+) -> str:
     if not task_scope:
         return ""
 
@@ -344,9 +348,12 @@ def task_scope_section(task_scope: Mapping[str, object] | None) -> str:
         "- Every other path is out of scope, even if it looks related.",
         "- If a path claimed under files.create already exists in this worktree, treat it as"
         " an in-scope existing file and edit it in place rather than widening scope.",
-        "- Before done, run scope_status to preview modified and transient file scope.",
-        "- Before finishing, verify that unclaimed files stayed unchanged.",
     ])
+    if include_scope_status_instruction:
+        lines.append(
+            "- Before done, run scope_status to preview modified and transient file scope."
+        )
+    lines.append("- Before finishing, verify that unclaimed files stayed unchanged.")
     return "\n".join(lines)
 
 

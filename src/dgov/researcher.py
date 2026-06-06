@@ -176,7 +176,7 @@ THE DGOV WAY:
 """,
         _rules_context(worktree),
         _project_section(config),
-        task_scope_section(task_scope),
+        task_scope_section(task_scope, include_scope_status_instruction=False),
         f"\nREPO MAP:\n{repo_map}",
         _research_contract_section(config),
         "Strictly use tools. Call 'done' when complete.",

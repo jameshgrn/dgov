@@ -85,6 +85,7 @@ def test_researcher_prompt_defaults_to_read_first(tmp_path: Path) -> None:
     assert "default mode is read-only analysis" in prompt
     assert "read-only by construction" in prompt
     assert "Editing tools are intentionally unavailable" in prompt
+    assert "scope_status" not in prompt
 
 
 def test_researcher_prompt_requires_executive_summary(tmp_path: Path) -> None:
