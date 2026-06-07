@@ -236,6 +236,7 @@ def test_status_hides_history_by_default(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _make_compiled_plan(tmp_path, "plan-b", {"active-task": "active task"})
     emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
     emit_event(
         str(tmp_path),
@@ -394,6 +395,7 @@ def test_status_shows_reviewed_failure_as_live(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _make_compiled_plan(tmp_path, "plan-a", {"failed-review-task": "failed review"})
     emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
     emit_event(
         str(tmp_path),
@@ -430,6 +432,7 @@ def test_status_all_shows_reviewed_failure(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _make_compiled_plan(tmp_path, "plan-a", {"failed-review-task": "failed review"})
     emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
     emit_event(
         str(tmp_path),
@@ -461,11 +464,86 @@ def test_status_all_shows_reviewed_failure(
     assert "failed-review-task" in result.output
 
 
+def test_status_hides_reviewed_failure_without_active_plan_source(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-failed-review",
+        plan_name="plan-a",
+        task_slug="failed-review-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "task_done",
+        "pane-failed-review",
+        plan_name="plan-a",
+        task_slug="failed-review-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "review_fail",
+        "pane-failed-review",
+        plan_name="plan-a",
+        task_slug="failed-review-task",
+    )
+
+    result = runner.invoke(cli, ["status"])
+
+    assert result.exit_code == 0
+    assert "status: idle" in result.output
+    assert "failed-review-task" not in result.output
+    assert "use --all to show history" in result.output
+
+
+def test_status_hides_reviewed_failure_from_archived_plan_source(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    archive_dir = tmp_path / ".dgov" / "plans" / "archive" / "plan-a"
+    archive_dir.mkdir(parents=True)
+    (archive_dir / "_root.toml").write_text(
+        '[plan]\nname = "plan-a"\nsummary = "old"\nsections = ["tasks"]\n'
+    )
+    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-failed-review",
+        plan_name="plan-a",
+        task_slug="failed-review-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "task_done",
+        "pane-failed-review",
+        plan_name="plan-a",
+        task_slug="failed-review-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "review_fail",
+        "pane-failed-review",
+        plan_name="plan-a",
+        task_slug="failed-review-task",
+    )
+
+    result = runner.invoke(cli, ["status"])
+
+    assert result.exit_code == 0
+    assert "status: idle" in result.output
+    assert "failed-review-task" not in result.output
+
+
 def test_status_shows_settling_task_after_review_pass(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A task in settlement phase should remain visible as settling after review_pass."""
     monkeypatch.chdir(tmp_path)
+    _make_compiled_plan(tmp_path, "plan-a", {"settling-task": "settling task"})
     emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
     emit_event(
         str(tmp_path),
@@ -510,6 +588,11 @@ def test_status_json_includes_phase_and_state_counts(
 ) -> None:
     """JSON status output should include phase and state_counts."""
     monkeypatch.chdir(tmp_path)
+    _make_compiled_plan(
+        tmp_path,
+        "plan-a",
+        {"active-task": "active task", "settling-task": "settling task"},
+    )
     _emit_active_and_settling_sequence(tmp_path, plan_name="plan-a")
 
     result = runner.invoke(cli, ["--json", "status"])
@@ -1046,6 +1129,36 @@ def test_preflight_command_reports_policy_source_drift(
     assert result.exit_code == 1
     assert "Policy source drift:" in result.output
     assert "AGENTS.md differs from CLAUDE.md" in result.output
+
+
+def test_preflight_merge_preserves_settlement_facts() -> None:
+    from dgov.cli.preflight import _merge_preflight_results
+    from dgov.settlement import CommandExecutionFact, GateResult
+
+    fact = CommandExecutionFact(
+        gate="lint",
+        source="project.lint_cmd",
+        command="uv run ruff check src/dgov/cli/preflight.py",
+        outcome="completed",
+        duration_s=0.1,
+        exit_code=0,
+    )
+
+    result = _merge_preflight_results(GateResult(passed=True, facts=(fact,)), [])
+
+    assert result.passed is True
+    assert result.facts == (fact,)
+
+    failed = _merge_preflight_results(
+        GateResult(passed=False, error="lint failed", facts=(fact,)),
+        ["AGENTS.md differs from CLAUDE.md"],
+    )
+
+    assert failed.passed is False
+    assert failed.error is not None
+    assert "lint failed" in failed.error
+    assert "Policy source drift" in failed.error
+    assert failed.facts == (fact,)
 
 
 def test_init_refuses_overwrite(runner: CliRunner, tmp_path: Path) -> None:

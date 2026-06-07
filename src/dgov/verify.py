@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import time
 from collections.abc import Mapping
@@ -143,21 +145,35 @@ def _execute_verify_command(
     timeout: float,
 ) -> tuple[int, str]:
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             recipe.command,
             shell=True,
             cwd=str(root),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            start_new_session=True,
         )
-        return proc.returncode, proc.stdout + proc.stderr
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return proc.returncode, stdout + stderr
+    except subprocess.TimeoutExpired:
+        _kill_process_group(proc)
+        stdout, stderr = proc.communicate()
         return -1, stdout + stderr + f"\n[verify] timed out after {timeout}s\n"
     except OSError as exc:
         return -1, f"\n[verify] failed to execute: {exc}\n"
+
+
+def _kill_process_group(proc: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except OSError:
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            return
 
 
 def _run_single(

@@ -1690,12 +1690,15 @@ def _render_unit_events(unit) -> None:
 
 
 def _phase_timing_dict(timing) -> dict:
-    return {
+    data = {
         "phase": timing.phase,
         "duration_s": timing.duration_s,
         "status": timing.status,
         "error": timing.error,
     }
+    if timing.facts:
+        data["facts"] = list(timing.facts)
+    return data
 
 
 def _diff_stat_dict(diff_stat) -> dict | None:

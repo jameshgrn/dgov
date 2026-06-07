@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,74 @@ def shell_quote(s: str) -> str:
 
     return shlex.quote(s)
 
+
+_RIPGREP_SIMPLE_SHORT_FLAGS = frozenset("iIlwvVnNFxoUcsz0hHpuSq")
+_RIPGREP_ARG_SHORT_FLAGS = frozenset({"-C", "-A", "-B", "-t", "-g", "-d", "-E", "-m"})
+_RIPGREP_ARG_LONG_FLAGS = frozenset({
+    "type",
+    "glob",
+    "iglob",
+    "include",
+    "exclude",
+    "exclude-dir",
+    "engine",
+    "ignore-file",
+    "max-depth",
+    "max-count",
+    "max-columns",
+    "max-columns-preview",
+    "max-filesize",
+    "before-context",
+    "after-context",
+    "context",
+    "sort",
+    "threads",
+    "pre",
+    "field-match-separator",
+    "path-separator",
+    "color",
+    "colors",
+    "encoding",
+    "regex",
+    "pcre2-version",
+    "pre-glob",
+})
+_RIPGREP_ALLOWED_FLAG_RE = re.compile(
+    r"^(?:"
+    r"-[iIlwvVnNFxoUcsz0hHpuSq]+|"
+    r"-[CABtgdEm][0-9]*|"
+    r"-[0-9]+|"
+    r"--(?:"
+    r"ignore-case|files-with-matches|files-without-match|word-regexp|invert-match|"
+    r"line-number|no-line-number|fixed-strings|case-sensitive|smart-case|hidden|"
+    r"no-hidden|binary|no-binary|text|no-text|count|heading|no-heading|pretty|"
+    r"no-pretty|trim|no-trim|vimgrep|no-messages|no-ignore|no-ignore-vcs|"
+    r"no-ignore-parent|no-ignore-dot|no-global-ignore-file|json|no-json|sort-files|"
+    r"no-sort-files|follow|no-follow|one-file-system|no-one-file-system|"
+    r"search-zip|no-search-zip|stats|no-stats|unrestricted|column|no-column|"
+    r"byte-offset|no-byte-offset|with-filename|no-filename|multiline|multiline-dotall|"
+    r"line-regexp|no-line-regexp|pcre2|no-pcre2|no-regex|regex|engine|max-columns|"
+    r"max-columns-preview|max-filesize|max-count|max-depth|before-context|"
+    r"after-context|context|glob|iglob|include|exclude|exclude-dir|type|ignore-file|"
+    r"pre|field-match-separator|path-separator|sort|threads|line-buffered|"
+    r"no-line-buffered|color|colors|encoding|pcre2-version|pre-glob|no-pre-glob|"
+    r"null|no-null|null-data|print0"
+    r"))$"
+)
+
+_NETWORK_TOOLS = frozenset({
+    "curl",
+    "wget",
+    "nc",
+    "netcat",
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "telnet",
+    "ftp",
+})
+_GIT_NETWORK_SUBCOMMANDS = frozenset({"clone", "fetch", "pull", "push", "ls-remote"})
 
 _UV_RUN_OPTIONS_WITH_VALUE = frozenset({
     "-C",
@@ -164,7 +233,12 @@ def _wrapped_verify_tool(tokens: list[str]) -> str | None:
     _, core = _unwrap_shell_command(tokens)
     if not core:
         return None
-    return _pytest_verify_tool(core) or _ruff_verify_tool(core) or _ty_verify_tool(core)
+    return (
+        _pytest_verify_tool(core)
+        or _ruff_verify_tool(core)
+        or _ty_verify_tool(core)
+        or _dgov_verify_tool(core)
+    )
 
 
 def _pytest_verify_tool(core: list[str]) -> str | None:
@@ -193,8 +267,23 @@ def _ty_verify_tool(core: list[str]) -> str | None:
     return None
 
 
+def _dgov_verify_tool(core: list[str]) -> str | None:
+    if len(core) >= 3 and core[:3] == ["dgov", "verify", "run"]:
+        return "dgov_verify_run"
+    if len(core) >= 5 and core[:4] in (
+        ["python", "-m", "dgov", "verify"],
+        ["python3", "-m", "dgov", "verify"],
+    ):
+        return "dgov_verify_run" if core[4] == "run" else None
+    return None
+
+
 def _python_module_command(core: list[str], module: str) -> bool:
     return core[:3] in (["python", "-m", module], ["python3", "-m", module])
+
+
+def _network_egress_error(detail: str) -> str:
+    return f"Error: run_bash policy rejected likely network egress. {detail}"
 
 
 _VERIFY_TOOL_REJECTION_MESSAGES = {
@@ -203,6 +292,7 @@ _VERIFY_TOOL_REJECTION_MESSAGES = {
     "ruff_check": "Error: run_bash policy requires lint_check() for 'ruff check'.",
     "ruff_format": "Error: run_bash policy requires format_file() for 'ruff format'.",
     "ty_check": "Error: run_bash policy requires type_check() for 'ty check'.",
+    "dgov_verify_run": "Error: run_bash policy requires verify_recipe() for 'dgov verify run'.",
 }
 
 
@@ -346,6 +436,11 @@ class AtomicTools:
         for path in sorted(after - before):
             self._record_activity("run_bash", path, mode="shell")
 
+    def _record_run_bash_attempt(self, cmd: str) -> None:
+        max_length = 200
+        command = cmd if len(cmd) <= max_length else f"{cmd[:max_length]}..."
+        self._record_activity("run_bash", "", mode="shell_attempt", command=command)
+
     def _normalize_scope_path(self, path: str) -> str:
         return path.strip().lstrip("./").rstrip("/")
 
@@ -445,9 +540,45 @@ class AtomicTools:
             if verify_error is not None:
                 return verify_error
 
+        if policy.deny_network_egress:
+            network_error = self._reject_network_egress(tokens)
+            if network_error is not None:
+                return network_error
+
         if policy.require_uv_run and self._requires_uv_run(tool, uv_wrapped):
             return self._uv_run_required_error(tool)
 
+        return None
+
+    def _reject_network_egress(self, tokens: list[str]) -> str | None:
+        """Reject obvious network tools and remote-style git commands."""
+        _, core = _unwrap_shell_command(tokens)
+        if not core:
+            return None
+        return (
+            self._reject_network_tool(core[0])
+            or self._reject_python_inline_code(core)
+            or self._reject_git_network_operation(core)
+        )
+
+    def _reject_network_tool(self, tool: str) -> str | None:
+        if tool not in _NETWORK_TOOLS:
+            return None
+        return _network_egress_error(f"Denied tool: {tool!r}.")
+
+    def _reject_python_inline_code(self, core: list[str]) -> str | None:
+        if core[0] not in {"python", "python3"} or "-c" not in core:
+            return None
+        return _network_egress_error("Python inline code (-c) is not allowed.")
+
+    def _reject_git_network_operation(self, core: list[str]) -> str | None:
+        if len(core) < 2 or core[0] != "git":
+            return None
+        subcommand = core[1]
+        if subcommand in _GIT_NETWORK_SUBCOMMANDS:
+            return _network_egress_error(f"Git {subcommand} is not allowed.")
+        if subcommand == "remote" and len(core) >= 3 and core[2] in {"add", "set-url"}:
+            return _network_egress_error("Git remote URL manipulation is not allowed.")
         return None
 
     def _reject_denied_shell_prefix(self, cmd: str, normalized: str) -> str | None:
@@ -608,22 +739,51 @@ class AtomicTools:
             policy_error = self._reject_shell_command(cmd)
             if policy_error is not None:
                 return policy_error
+        return self._run_process(
+            ["/bin/sh", "-c", f"cd {shell_quote(str(self.worktree))} && {cmd}"],
+            timeout_s=self.config.tool_timeout_s,
+        )
+
+    def _run_argv(self, argv: list[str]) -> str:
+        """Run a subprocess with argv list, avoiding shell interpolation."""
+        return self._run_process(argv, timeout_s=self.config.tool_timeout_s)
+
+    def _run_process(self, argv: list[str], *, timeout_s: float) -> str:
         try:
-            res = subprocess.run(
-                ["/bin/sh", "-c", f"cd {shell_quote(str(self.worktree))} && {cmd}"],
+            proc = subprocess.Popen(
+                argv,
                 cwd=self.worktree,
                 env=self._sandbox_env(),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=60,
+                start_new_session=True,
             )
-            return f"STDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}\nEXIT:{res.returncode}"
+        except FileNotFoundError:
+            return f"Error: command not found: {argv[0]}"
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            return "Error: Command timed out after 60s."
+            self._kill_process_group(proc)
+            proc.communicate()
+            return f"Error: Command timed out after {timeout_s:g}s."
+        return f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}\nEXIT:{proc.returncode}"
+
+    def _kill_process_group(self, proc: subprocess.Popen[str]) -> None:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except OSError:
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                return
 
     def run_bash(self, cmd: str) -> str:
         """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
         before = self._git_dirty_paths()
+        self._record_run_bash_attempt(cmd)
         result = self._execute_shell(cmd, enforce_policy=True)
         self._record_run_bash_activity(before, self._git_dirty_paths())
         return result
@@ -695,6 +855,11 @@ class AtomicTools:
 
     def list_dir(self, path: str = ".") -> str:
         """List directory contents with type indicators (/ for dirs, sizes for files)."""
+        if self._list_dir_reject_internal_path(path):
+            return (
+                "Error: invalid list_dir() target. .git and __pycache__ are internal "
+                "or generated paths; use tree, glob, git_diff, or recent_changes instead."
+            )
         target = self._check_path(path)
         if isinstance(target, str):
             return target
@@ -714,6 +879,15 @@ class AtomicTools:
                 size = item.stat().st_size
                 entries.append(f"{rel}  ({size} bytes)")
         return "\n".join(entries) if entries else "(empty directory)"
+
+    def _list_dir_reject_internal_path(self, path: str) -> bool:
+        normalized = path.strip().replace("\\", "/")
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+        normalized = normalized.strip("/")
+        if not normalized:
+            return False
+        return any(part in {".git", "__pycache__"} for part in Path(normalized).parts)
 
     def git_diff(self) -> str:
         """Show uncommitted changes in the worktree."""
@@ -805,13 +979,13 @@ class AtomicTools:
         """Find lexical occurrences of a symbol across the codebase."""
         flags = "-w"  # word boundary
         if exclude_tests:
-            # Escape ! for shell if needed, but ripgrep handles it in quotes
-            flags += f" -g '!{self.config.test_dir}*'"
+            test_dir = self.config.test_dir.strip().strip("/") or "tests"
+            flags += f" -g '!{test_dir}/**'"
 
         # Try ripgrep first for speed and ignore-file respect
-        result = self.ripgrep(symbol, flags=flags)
+        result = self._ripgrep(symbol, flags=flags, fallback=False)
         if "command not found" in result:
-            return self.grep(rf"\b{re.escape(symbol)}\b")
+            return self._grep_references(symbol, exclude_tests=exclude_tests)
         if "EXIT:0" in result:
             # Extract just the matches from STDOUT: ... EXIT:0 format
             m = re.search(r"STDOUT:\n(.*?)\nSTDERR:", result, re.DOTALL)
@@ -826,17 +1000,59 @@ class AtomicTools:
         target = self._check_path(path)
         if isinstance(target, str):
             return target
-        if shutil.which("sg") is None:
+        sg = self._ast_grep_executable()
+        if sg is None:
             return "Error: ast-grep ('sg') not found in PATH."
 
         rel = str(target.relative_to(self.worktree))
-        cmd = ["sg", "run", "--color", "never", "--heading", "never", "--pattern", pattern]
-        if lang:
-            cmd.extend(["--lang", lang])
+        cmd = [sg, "run", "--color", "never", "--heading", "never", "--pattern", pattern]
+        ast_lang = lang or self._infer_ast_grep_lang(target)
+        if ast_lang:
+            cmd.extend(["--lang", ast_lang])
         cmd.append(rel)
 
         result = self._run_ast_grep(cmd)
         return result if isinstance(result, str) else self._format_ast_grep_result(result)
+
+    def _grep_references(self, symbol: str, *, exclude_tests: bool) -> str:
+        result = self.grep(rf"\b{re.escape(symbol)}\b")
+        if not exclude_tests or result.startswith("Error:") or result == "No matches found.":
+            return result
+        test_dir = self.config.test_dir.strip().strip("/") or "tests"
+        lines = [
+            line
+            for line in result.splitlines()
+            if not self._match_line_is_under_dir(line, test_dir)
+        ]
+        return "\n".join(lines) if lines else f"No matches found for '{symbol}'."
+
+    def _match_line_is_under_dir(self, line: str, dirname: str) -> bool:
+        path = line.split(":", 1)[0].removeprefix("./")
+        return path == dirname or path.startswith(f"{dirname}/")
+
+    def _infer_ast_grep_lang(self, target: Path) -> str:
+        if target.is_file() and target.suffix == ".py":
+            return "python"
+        if target.is_dir() and any(target.rglob("*.py")):
+            return "python"
+        return ""
+
+    def _ast_grep_executable(self) -> str | None:
+        sg = shutil.which("sg")
+        if sg is None:
+            return None
+        try:
+            result = subprocess.run(
+                [sg, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        output = f"{result.stdout}\n{result.stderr}".lower()
+        return sg if "ast-grep" in output else None
 
     def _run_ast_grep(self, cmd: list[str]) -> subprocess.CompletedProcess[str] | str:
         try:
@@ -1063,15 +1279,71 @@ class AtomicTools:
 
     # -- Power tools (CLI wrappers) --
 
+    def _validate_ripgrep_flags(self, flags: str) -> list[str] | str:
+        """Parse and validate ripgrep flags. Returns parsed list or error string."""
+        if not flags:
+            return []
+        try:
+            tokens = shlex.split(flags)
+        except ValueError as e:
+            return f"Error: Invalid flags syntax: {e}"
+        shell_metacharacters = re.compile(r"[;|&<>$()`\n\\]")
+        result = []
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if shell_metacharacters.search(token):
+                return f"Error: Invalid flag contains shell metacharacters: {token}"
+            if not token.startswith("-"):
+                return f"Error: Invalid flag token: {token}"
+            if not _RIPGREP_ALLOWED_FLAG_RE.match(token):
+                return f"Error: Unknown or disallowed flag: {token}"
+            result.append(token)
+
+            base_flag = token
+            if token.startswith("--"):
+                base_flag = token[2:]
+            elif len(token) > 2:
+                if token[:2] in _RIPGREP_ARG_SHORT_FLAGS:
+                    base_flag = token[:2]
+                elif token[1] in _RIPGREP_SIMPLE_SHORT_FLAGS:
+                    for ch in token[1:]:
+                        if ch not in _RIPGREP_SIMPLE_SHORT_FLAGS:
+                            return f"Error: Unknown or disallowed flag: -{ch}"
+                    i += 1
+                    continue
+            if base_flag in _RIPGREP_ARG_SHORT_FLAGS or base_flag in _RIPGREP_ARG_LONG_FLAGS:
+                i += 1
+                if i >= len(tokens):
+                    return f"Error: Flag {token} requires an argument"
+                arg = tokens[i]
+                if shell_metacharacters.search(arg):
+                    return f"Error: Invalid flag argument contains shell metacharacters: {arg}"
+                result.append(arg)
+            i += 1
+        return result
+
     def ripgrep(self, pattern: str, path: str = ".", flags: str = "") -> str:
         """Fast regex search via rg. Supports flags like -i, -l, -C3, --type py."""
+        return self._ripgrep(pattern, path=path, flags=flags, fallback=True)
+
+    def _ripgrep(
+        self,
+        pattern: str,
+        path: str = ".",
+        flags: str = "",
+        *,
+        fallback: bool,
+    ) -> str:
         target = self._check_path(path)
         if isinstance(target, str):
             return target
         rel = str(target.relative_to(self.worktree))
-        cmd = f"rg {flags} -- {shell_quote(pattern)} {shell_quote(rel)}"
-        result = self._execute_shell(cmd, enforce_policy=False)
-        if "EXIT:2" in result or "command not found" in result:
+        validated = self._validate_ripgrep_flags(flags)
+        if isinstance(validated, str):
+            return validated
+        result = self._run_argv(["rg", *validated, "--", pattern, rel])
+        if fallback and ("EXIT:2" in result or "command not found" in result):
             return self.grep(pattern, path)  # fallback to Python grep
         return result
 
@@ -1083,29 +1355,49 @@ class AtomicTools:
         if not target.exists():
             return f"Error: {path} does not exist."
         rel = str(target.relative_to(self.worktree))
-        return self._execute_shell(
-            f"jq {shell_quote(expr)} {shell_quote(rel)}", enforce_policy=False
-        )
+        return self._run_argv(["jq", expr, rel])
 
     def tree(self, path: str = ".", max_depth: int = 3) -> str:
         """Show directory structure as a tree. Excludes hidden dirs and __pycache__."""
         target = self._check_path(path)
         if isinstance(target, str):
             return target
+        try:
+            depth = int(max_depth)
+            if depth < 0:
+                return "Error: max_depth must be a non-negative integer."
+        except (ValueError, TypeError):
+            return "Error: max_depth must be a non-negative integer."
         rel = str(target.relative_to(self.worktree))
         # Try system tree, fall back to find-based
-        result = self._execute_shell(
-            f"tree -L {max_depth} -I '__pycache__|.git|node_modules|.venv' "
-            f"--noreport {shell_quote(rel)}",
-            enforce_policy=False,
-        )
+        result = self._run_argv([
+            "tree",
+            "-L",
+            str(depth),
+            "-I",
+            "__pycache__|.git|node_modules|.venv",
+            "--noreport",
+            rel,
+        ])
         if "command not found" in result:
-            result = self._execute_shell(
-                f"find {shell_quote(rel)} -maxdepth {max_depth} "
-                f"-not -path '*/__pycache__/*' -not -path '*/.git/*' "
-                f"| head -100 | sort",
-                enforce_policy=False,
-            )
+            find_result = self._run_argv([
+                "find",
+                rel,
+                "-maxdepth",
+                str(depth),
+                "-not",
+                "-path",
+                "*/__pycache__/*",
+                "-not",
+                "-path",
+                "*/.git/*",
+            ])
+            if find_result.startswith("Error:") and "Command timed out" in find_result:
+                return find_result
+            stdout_match = re.search(r"STDOUT:\n(.*?)\nSTDERR:", find_result, re.DOTALL)
+            lines = stdout_match.group(1).strip().split("\n") if stdout_match else []
+            lines = sorted(line for line in lines if line.strip())[:100]
+            result = "\n".join(lines)
         return result
 
     def word_count(self, path: str) -> str:
@@ -1115,12 +1407,24 @@ class AtomicTools:
             return target
         rel = str(target.relative_to(self.worktree))
         if target.is_dir():
-            return self._execute_shell(
-                f"find {shell_quote(rel)} -name '*.py' -not -path '*/__pycache__/*' "
-                f"| xargs wc -l | tail -20",
-                enforce_policy=False,
+            files = sorted(
+                p for p in target.rglob("*.py") if "__pycache__" not in p.parts and p.is_file()
             )
-        return self._execute_shell(f"wc -l {shell_quote(rel)}", enforce_policy=False)
+            if not files:
+                return "0 total"
+            counts: list[str] = []
+            total = 0
+            for p in files:
+                try:
+                    with p.open("rb") as fh:
+                        count = sum(1 for _ in fh)
+                    total += count
+                    counts.append(f"{count:>8} {p.relative_to(self.worktree)}")
+                except OSError:
+                    continue
+            counts.append(f"{total:>8} total")
+            return "\n".join(counts[-20:])
+        return self._run_argv(["wc", "-l", rel])
 
     def head(self, path: str, n: int = 20) -> str:
         """Show first N lines of a file. Faster than read_file for quick peeks."""
@@ -1315,6 +1619,23 @@ class AtomicTools:
             return "Type checking not configured for this project."
         return self._execute_shell(self.config.type_check_cmd, enforce_policy=False)
 
+    def verify_recipe(self, name: str) -> str:
+        """Run one named project verify recipe from .dgov/project.toml."""
+        recipes = self.config.verify_commands
+        recipe_name = name.strip()
+        if not recipes:
+            return (
+                "Error: verify_recipe() is unavailable because no project verify recipes "
+                "are configured."
+            )
+        if not recipe_name:
+            return "Error: verify_recipe() requires a recipe name."
+        command = recipes.get(recipe_name)
+        if command is None:
+            available = ", ".join(sorted(recipes))
+            return f"Error: unknown verify recipe {recipe_name!r}. Available recipes: {available}."
+        return self._execute_shell(command, enforce_policy=False)
+
 
 _RESEARCHER_EXCLUDED_TOOLS = frozenset({
     "write_file",
@@ -1324,6 +1645,7 @@ _RESEARCHER_EXCLUDED_TOOLS = frozenset({
     "revert_file",
     "lint_fix",
     "format_file",
+    "scope_status",
 })
 
 _PLANNER_EXCLUDED_TOOLS = frozenset(_RESEARCHER_EXCLUDED_TOOLS)
@@ -1603,7 +1925,10 @@ _WORKER_TOOL_SPECS: tuple[dict[str, Any], ...] = (
         "type": "function",
         "function": {
             "name": "list_dir",
-            "description": "List directory contents with sizes.",
+            "description": (
+                "List directory contents with sizes. Use source/test/project directories; "
+                "do not inspect .git or __pycache__."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2004,6 +2329,26 @@ _WORKER_TOOL_SPECS: tuple[dict[str, Any], ...] = (
                 "type": "object",
                 "properties": {},
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_recipe",
+            "description": (
+                "Run a named project verify recipe declared in .dgov/project.toml. "
+                "Use this when the task names a recipe such as lint, types, or rating."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Verify recipe name from .dgov/project.toml",
+                    },
+                },
+                "required": ["name"],
             },
         },
     },

@@ -1763,6 +1763,41 @@ class TestSettlementPhaseTracking:
             ),
         )
 
+    def test_settlement_phase_completed_captures_facts(self):
+        """Facts from settlement_phase_completed should roll up into SettlementPhaseTiming."""
+        facts = (
+            {
+                "gate": "lint",
+                "source": "ruff",
+                "command": "ruff check .",
+                "outcome": "completed",
+                "duration_s": 1.2,
+                "exit_code": 0,
+            },
+        )
+        events = [
+            _lifecycle(
+                1,
+                "settlement_phase_completed",
+                "t",
+                "plan",
+                phase="isolated_validation",
+                status="passed",
+                duration_s=3.5,
+                facts=facts,
+            ),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["phase_timings"] == (
+            SettlementPhaseTiming(
+                phase="isolated_validation",
+                duration_s=3.5,
+                status="passed",
+                error=None,
+                facts=facts,
+            ),
+        )
+
     def test_settlement_phase_cleared_on_terminal_event(self):
         """Phase should be cleared on terminal events (merge_completed, task_merge_failed)."""
         events = [

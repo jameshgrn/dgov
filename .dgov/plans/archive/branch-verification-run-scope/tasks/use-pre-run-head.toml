@@ -1,0 +1,25 @@
+[tasks.use-pre-run-head]
+summary = "Use pre-run HEAD for branch verification baseline"
+prompt = """
+Orient:
+- Read `src/dgov/cli/run.py`, `src/dgov/cli/run_checks.py`, and the type-check baseline path in `src/dgov/settlement.py`.
+- Read branch-verification-related tests in `tests/test_cli_run_strict.py`.
+- Ledger bug #267: post-run branch verification compares the whole long-lived feature branch against its merge base and fails clean task runs on pre-existing branch diagnostics.
+
+Edit:
+1. Thread the pre-run HEAD captured in `_execute_plan_with_gates` into `_branch_verification_gate`.
+2. Let `run_checks.branch_verification_gate` accept an explicit base ref and use it instead of recomputing the feature-branch merge base when supplied.
+3. Preserve the existing merge-base fallback for direct callers that do not pass a base ref.
+4. Add focused tests proving run execution passes pre-run HEAD into branch verification and that the run-check helper still falls back to merge-base behavior when no base ref is supplied.
+
+Verify:
+- `uv run pytest -q tests/test_cli_run_strict.py -k "branch_verification or branch_changed_source_files"`
+- `uv run ruff check src/dgov/cli/run.py src/dgov/cli/run_checks.py tests/test_cli_run_strict.py`
+- `uv run ruff format --check src/dgov/cli/run.py src/dgov/cli/run_checks.py tests/test_cli_run_strict.py`
+- `uv run ty check src/dgov/cli/run.py src/dgov/cli/run_checks.py tests/test_cli_run_strict.py`
+"""
+commit_message = "Scope branch verification to current run"
+role = "worker"
+files = { edit = ["src/dgov/cli/run.py", "src/dgov/cli/run_checks.py", "tests/test_cli_run_strict.py"], read = ["src/dgov/settlement.py"] }
+timeout_s = 300
+test_cmd = "uv run pytest -q tests/test_cli_run_strict.py -k \"branch_verification or branch_changed_source_files\""

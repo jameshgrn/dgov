@@ -1,0 +1,46 @@
+[tasks.execution-facts]
+summary = "Retain settlement gate command execution facts"
+commit_message = "Track settlement verification execution facts"
+iteration_budget = 30
+test_cmd = "uv run pytest -q tests/test_settlement.py -k 'test_gate or execution'"
+files.edit = [
+  "src/dgov/cli/preflight.py",
+  "src/dgov/settlement.py",
+  "tests/test_cli.py",
+  "tests/test_settlement.py",
+]
+prompt = '''
+Orient:
+- Read `src/dgov/settlement.py`, especially `GateResult`, `_run_test_gate`,
+  `_run_lint_gate`, `_run_format_gate`, `_run_type_check_cmd`,
+  `_run_coverage_gate`, `_run_setup_cmd`, `_run_sentrux_gate`, and
+  `_run_acceptance_gate_sequence`.
+- Read focused `GateResult` and validation tests in `tests/test_settlement.py`.
+- This task is the first slice of verification evidence work: retain objective
+  command execution facts from settlement gates. Do not add behavior-claim
+  declarations, recipe schema, event persistence, or parser logic.
+
+Edit:
+1. Add a small frozen command-execution result model in `src/dgov/settlement.py`
+   that records command source/gate, command, completed-or-timeout outcome,
+   duration, and the outcome-specific exit code or timeout value.
+2. Extend `GateResult` so failed and successful validation results can carry a
+   tuple of those execution facts without allowing invalid `passed/error` states.
+3. Thread execution facts through the settlement gates that already run shell
+   commands. Preserve existing public behavior and failure messages.
+4. Preserve facts through `dgov preflight` result merging in
+   `src/dgov/cli/preflight.py`.
+5. Add focused tests in `tests/test_settlement.py` and `tests/test_cli.py` proving:
+   - a passing test gate records the exact command and exit code;
+   - a failing test gate includes the command execution fact on the failure;
+   - a validation result aggregates facts from more than one passing command
+     when lint/type/test gates run.
+   - preflight result merging preserves settlement facts.
+
+Verify:
+- `uv run pytest -q tests/test_settlement.py -k "test_gate or execution"`
+- `uv run pytest -q tests/test_cli.py -k "preflight"`
+- `uv run ruff check src/dgov/cli/preflight.py src/dgov/settlement.py tests/test_cli.py tests/test_settlement.py`
+- `uv run ruff format --check src/dgov/cli/preflight.py src/dgov/settlement.py tests/test_cli.py tests/test_settlement.py`
+- `uv run ty check src/dgov/cli/preflight.py src/dgov/settlement.py`
+'''

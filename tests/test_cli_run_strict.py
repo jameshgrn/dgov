@@ -7,6 +7,7 @@ import subprocess
 from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import click
@@ -249,6 +250,81 @@ def test_branch_changed_source_files_decodes_unicode_path(tmp_path: Path) -> Non
         (".py",),
         git_stdout=_git_stdout,
     ) == [name]
+
+
+def test_execute_plan_with_gates_passes_pre_run_head_to_branch_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.cli.run import _execute_plan_with_gates
+    from dgov.config import ProjectConfig
+
+    pre_run_head = _init_committed_repo(tmp_path)
+    captured: dict[str, str | None] = {}
+
+    def _capture_branch_gate(project_root: str, config: object, base_ref: str | None):
+        captured["project_root"] = project_root
+        captured["base_ref"] = base_ref
+        return {
+            "status": "clean",
+            "base": base_ref or "",
+            "head": base_ref or "",
+            "changed_files": 0,
+        }
+
+    monkeypatch.setattr(
+        "dgov.cli.run.EventDagRunner",
+        _fake_event_runner({"a": "merged"}, task_durations={"a": 0.1}),
+    )
+    monkeypatch.setattr(
+        "dgov.cli.run._sentrux_compare",
+        lambda *_args, **_kwargs: {"degradation": False, "quality_before": 100},
+    )
+    monkeypatch.setattr("dgov.cli.run._branch_verification_gate_from_base", _capture_branch_gate)
+
+    _execute_plan_with_gates(
+        dag=cast(Any, _compiled_test_dag(tmp_path)),
+        project_root=str(tmp_path),
+        pc=ProjectConfig(),
+        baseline_quality=100,
+        stream=False,
+        restart=False,
+        continue_failed=False,
+    )
+
+    assert captured == {"project_root": str(tmp_path), "base_ref": pre_run_head}
+
+
+def test_branch_verification_gate_from_base_uses_explicit_base_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.cli.run import _git_stdout
+    from dgov.cli.run_checks import branch_verification_gate, branch_verification_gate_from_base
+    from dgov.config import ProjectConfig
+
+    merge_base = _init_committed_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=tmp_path, check=True)
+    (tmp_path / "feature.py").write_text("x = 1\n")
+    _commit_all(tmp_path, "add feature")
+    pre_run_head = _git_head(tmp_path)
+    (tmp_path / "feature.py").write_text("x = 2\n")
+    _commit_all(tmp_path, "change feature")
+
+    monkeypatch.setattr(
+        "dgov.settlement.validate_sandbox",
+        lambda *args, **kwargs: SimpleNamespace(passed=True),
+    )
+
+    explicit = branch_verification_gate_from_base(
+        str(tmp_path),
+        ProjectConfig(),
+        pre_run_head,
+        git_stdout=_git_stdout,
+    )
+    fallback = branch_verification_gate(str(tmp_path), ProjectConfig(), git_stdout=_git_stdout)
+
+    assert explicit["base"] == pre_run_head
+    assert explicit["changed_files"] == 1
+    assert fallback["base"] == merge_base
 
 
 def _fake_event_runner(
@@ -1232,8 +1308,11 @@ def test_run_returns_nonzero_on_branch_verification_failure(
         },
     )
     monkeypatch.setattr(
-        "dgov.cli.run._branch_verification_gate",
-        _mock_branch_verification_failure,
+        "dgov.cli.run._branch_verification_gate_from_base",
+        lambda project_root, config, _base_ref: _mock_branch_verification_failure(
+            project_root,
+            config,
+        ),
     )
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
     monkeypatch.chdir(tmp_path)

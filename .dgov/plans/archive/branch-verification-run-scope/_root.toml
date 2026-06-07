@@ -1,0 +1,4 @@
+[plan]
+name = "branch-verification-run-scope"
+summary = "Scope post-run branch verification to diagnostics introduced by the current run."
+sections = ["tasks"]

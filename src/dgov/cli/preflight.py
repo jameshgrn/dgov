@@ -17,8 +17,12 @@ def _merge_preflight_results(settlement_result: GateResult, policy_drift: list[s
     if not settlement_result.passed:
         errors.append(settlement_result.error or "Settlement preflight failed")
     if errors:
-        return GateResult(passed=False, error="\n\n".join(errors))
-    return GateResult(passed=True)
+        return GateResult(
+            passed=False,
+            error="\n\n".join(errors),
+            facts=settlement_result.facts,
+        )
+    return GateResult(passed=True, facts=settlement_result.facts)
 
 
 @cli.command(name="preflight")

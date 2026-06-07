@@ -86,6 +86,17 @@ class TaskAbandoned:
 
 
 @dataclass(frozen=True)
+class TaskClosed:
+    """Emitted when the governor closes a task as terminal lifecycle hygiene."""
+
+    event_type: Literal["task_closed"] = "task_closed"
+    pane: str = ""
+    plan_name: str = ""
+    task_slug: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class ReviewPass:
     """Emitted when structural review passes."""
 
@@ -345,6 +356,7 @@ class SettlementPhaseCompleted:
     status: str = ""
     duration_s: float = 0.0
     error: str | None = None
+    facts: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -374,6 +386,7 @@ DgovEvent = (
     | TaskDone
     | TaskFailed
     | TaskAbandoned
+    | TaskClosed
     | ReviewPass
     | ReviewFail
     | ReviewerVerdict
@@ -408,6 +421,7 @@ _EVENT_TYPE_MAP: dict[str, type[DgovEvent]] = {
     "task_done": TaskDone,
     "task_failed": TaskFailed,
     "task_abandoned": TaskAbandoned,
+    "task_closed": TaskClosed,
     "review_pass": ReviewPass,
     "review_fail": ReviewFail,
     "reviewer_verdict": ReviewerVerdict,
@@ -478,6 +492,10 @@ def deserialize_event(row: dict[str, Any]) -> DgovEvent:
         if key in valid_fields:
             kwargs[key] = value
 
+    # JSON roundtrip turns tuple fields into lists; restore tuple shape where expected
+    if "facts" in kwargs and isinstance(kwargs["facts"], list):
+        kwargs["facts"] = tuple(kwargs["facts"])
+
     # Construct the event with pane from row
     pane = row.get("pane", "")
     return event_class(pane=pane, **kwargs)
@@ -510,6 +528,7 @@ __all__ = [
     "ShutdownRequested",
     "StoredEvent",
     "TaskAbandoned",
+    "TaskClosed",
     "TaskDone",
     "TaskFailed",
     "TaskMergeFailed",

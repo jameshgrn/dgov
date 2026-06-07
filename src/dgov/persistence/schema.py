@@ -165,6 +165,7 @@ VALID_EVENTS = frozenset({
     "task_done",
     "task_failed",
     "task_abandoned",
+    "task_closed",
     "shutdown_requested",
     # DAG lifecycle
     "dag_task_dispatched",

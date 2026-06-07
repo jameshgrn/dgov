@@ -202,12 +202,52 @@ def branch_verification_gate(
     *,
     git_stdout: GitStdout,
 ) -> dict[str, object]:
-    from dgov.settlement import validate_sandbox
-
     context = _branch_verification_context(project_root, config, git_stdout=git_stdout)
     if isinstance(context, dict):
         return context
-    pc, base_ref, result, changed_files = context
+    return _branch_verification_gate_for_context(
+        project_root,
+        config=context[0],
+        base_ref=context[1],
+        result=context[2],
+        changed_files=context[3],
+    )
+
+
+def branch_verification_gate_from_base(
+    project_root: str,
+    config: object,
+    base_ref: str | None,
+    *,
+    git_stdout: GitStdout,
+) -> dict[str, object]:
+    context = _explicit_branch_verification_context(
+        project_root,
+        config,
+        base_ref,
+        git_stdout=git_stdout,
+    )
+    if isinstance(context, dict):
+        return context
+    return _branch_verification_gate_for_context(
+        project_root,
+        config=context[0],
+        base_ref=context[1],
+        result=context[2],
+        changed_files=context[3],
+    )
+
+
+def _branch_verification_gate_for_context(
+    project_root: str,
+    *,
+    config: ProjectConfig,
+    base_ref: str,
+    result: dict[str, object],
+    changed_files: list[str],
+) -> dict[str, object]:
+    from dgov.settlement import validate_sandbox
+
     if not changed_files:
         return result
 
@@ -216,7 +256,7 @@ def branch_verification_gate(
             Path(project_root),
             base_ref,
             project_root,
-            config=pc,
+            config=config,
             type_baseline_path=baseline_path,
         )
 
@@ -227,6 +267,23 @@ def branch_verification_gate(
         "status": "failed",
         "error": gate.error or "Branch verification failed",
     }
+
+
+def _explicit_branch_verification_context(
+    project_root: str,
+    config: object,
+    base_ref: str | None,
+    *,
+    git_stdout: GitStdout,
+) -> tuple[ProjectConfig, str, dict[str, object], list[str]] | dict[str, object]:
+    if not base_ref:
+        return {"status": "skipped", "reason": "no pre-run HEAD captured"}
+    return _branch_verification_context_for_base(
+        project_root,
+        config,
+        base_ref,
+        git_stdout=git_stdout,
+    )
 
 
 def _scan_sentrux_baseline_or_error(
@@ -274,6 +331,23 @@ def _branch_verification_context(
     base_ref = _branch_verification_base(project_root, git_stdout=git_stdout)
     if not base_ref:
         return {"status": "skipped", "reason": "no merge base found"}
+    return _branch_verification_context_for_base(
+        project_root,
+        config,
+        base_ref,
+        git_stdout=git_stdout,
+    )
+
+
+def _branch_verification_context_for_base(
+    project_root: str,
+    config: object,
+    base_ref: str,
+    *,
+    git_stdout: GitStdout,
+) -> tuple[ProjectConfig, str, dict[str, object], list[str]] | dict[str, object]:
+    if not isinstance(config, ProjectConfig):
+        return {"status": "skipped", "reason": "invalid project config"}
     changed_files = _branch_changed_source_files(
         project_root,
         base_ref,

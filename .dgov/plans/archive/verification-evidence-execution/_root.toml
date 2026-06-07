@@ -1,0 +1,4 @@
+[plan]
+name = "verification-evidence-execution"
+summary = "Retain command execution facts from settlement verification gates."
+sections = ["tasks", "review"]

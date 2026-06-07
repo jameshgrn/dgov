@@ -676,6 +676,56 @@ def test_review_json_includes_settlement_phase_timings(
             "error": None,
         }
     ]
+    assert "facts" not in data["units"][0]["phase_timings"][0]
+
+
+def test_review_json_includes_non_empty_settlement_phase_facts(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.plan_review import PlanReview, SettlementPhaseTiming, UnitReview
+
+    facts = (
+        {
+            "gate": "test",
+            "source": "task.test_cmd",
+            "command": "uv run pytest -q tests/test_x.py",
+            "outcome": "completed",
+            "duration_s": 2.25,
+            "exit_code": 0,
+        },
+    )
+    unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="deployed",
+        phase_timings=(
+            SettlementPhaseTiming("candidate_validation", 2.25, "passed", facts=facts),
+        ),
+    )
+    review = PlanReview(
+        plan_name="p",
+        source_dir=None,
+        last_run_ts=None,
+        last_run_duration_s=None,
+        units=[unit],
+    )
+    plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+    _patched_load_review(monkeypatch, review=review)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["--json", "plan", "review", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["units"][0]["phase_timings"] == [
+        {
+            "phase": "candidate_validation",
+            "duration_s": 2.25,
+            "status": "passed",
+            "error": None,
+            "facts": list(facts),
+        }
+    ]
 
 
 def test_review_only_nonexistent_errors_out(

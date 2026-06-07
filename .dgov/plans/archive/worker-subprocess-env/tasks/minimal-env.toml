@@ -1,0 +1,29 @@
+[tasks.minimal-env]
+summary = "Sanitize headless worker subprocess environment"
+prompt = """
+Orient:
+- Read `src/dgov/workers/headless.py`, `src/dgov/worker.py`, `src/dgov/researcher.py`, and `src/dgov/planner.py`.
+- Read `src/dgov/config.py` for provider selection and API-key env names.
+- Read `tests/test_headless.py` for current subprocess-launch coverage.
+- Ledger bug #257: headless worker subprocess inherits parent environment because `create_subprocess_exec` is launched without explicit `env`; `AtomicTools` sanitizes child shell env but the worker/provider process still sees ambient variables.
+
+Edit:
+1. Add an explicit environment builder for headless role subprocesses.
+2. Preserve only the authority required for the role to run: minimal `PATH`, locale, Python/runtime essentials if truly required, `DGOV_RUN_SOURCE` if needed, and the selected provider API-key env var when present.
+3. Do not pass arbitrary parent env vars into the worker/researcher/planner subprocess.
+4. Keep provider failure behavior unchanged: if the selected API-key env var is absent, the worker should still emit the existing actionable error.
+5. Avoid duplicating project-config parsing in a way that can drift from `_config_json_for_task`.
+
+Verify:
+- Add tests in `tests/test_headless.py` asserting `_launch_worker_subprocess` receives an explicit `env`.
+- Add a test that an unrelated parent env var is omitted while the selected provider API-key env var is preserved.
+- Add/adjust provider-selection tests for task-level provider override if needed.
+- `uv run pytest -q tests/test_headless.py -k "env or provider or config"`
+- `uv run ruff check src/dgov/workers/headless.py tests/test_headless.py`
+- `uv run ruff format --check src/dgov/workers/headless.py tests/test_headless.py`
+- `uv run ty check src/dgov/workers/headless.py`
+"""
+commit_message = "Sanitize worker subprocess environment"
+role = "worker"
+files = { edit = ["src/dgov/workers/headless.py", "tests/test_headless.py"], read = ["src/dgov/worker.py", "src/dgov/researcher.py", "src/dgov/planner.py", "src/dgov/config.py"] }
+test_cmd = "uv run pytest -q tests/test_headless.py -k \"env or provider or config\""

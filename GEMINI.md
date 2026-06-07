@@ -61,3 +61,6 @@ treat this pack as stale.
 6. Monitor with `uv run dgov watch`.
 7. Use `uv run dgov plan status <dir>` and targeted verification before
    closing work.
+
+## Ecosystem topography
+See /Users/jakegearon/projects/watershed/TOPOGRAPHY.md for how this project relates to the others in the watershed ecosystem.

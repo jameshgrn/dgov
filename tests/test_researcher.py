@@ -85,6 +85,7 @@ def test_researcher_prompt_defaults_to_read_first(tmp_path: Path) -> None:
     assert "default mode is read-only analysis" in prompt
     assert "read-only by construction" in prompt
     assert "Editing tools are intentionally unavailable" in prompt
+    assert "scope_status" not in prompt
 
 
 def test_researcher_prompt_requires_executive_summary(tmp_path: Path) -> None:
@@ -100,6 +101,7 @@ def test_researcher_prompt_requires_executive_summary(tmp_path: Path) -> None:
 def test_researcher_prompt_discourages_redundant_verify_loops(tmp_path: Path) -> None:
     prompt = _build_system_prompt(tmp_path, AtomicConfig())
 
+    assert "verify_recipe(name)" in prompt
     assert "Do NOT rerun the same command" in prompt
     assert "Re-run the same verify command repeatedly" in prompt
 
@@ -123,8 +125,10 @@ def test_researcher_tool_spec_excludes_write_and_shell_tools() -> None:
     assert "revert_file" not in names
     assert "lint_fix" not in names
     assert "format_file" not in names
+    assert "scope_status" not in names
     assert "read_file" in names
     assert "run_tests" in names
+    assert "verify_recipe" in names
     assert "done" in names
 
 

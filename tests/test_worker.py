@@ -6,7 +6,9 @@ the AtomicTools class against real temp directories. No network calls.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +25,7 @@ from dgov.tool_policy import ToolPolicy  # noqa: E402
 from dgov.worker import _build_system_prompt, run_worker  # noqa: E402
 from dgov.workers.atomic import AtomicTools, get_tool_spec  # noqa: E402
 from dgov.workers.config import AtomicConfig  # noqa: E402
+from dgov.workers.headless import _build_worker_env, run_headless_worker  # noqa: E402
 from dgov.workers.runtime import (  # noqa: E402
     _validate_plan,
     clip_tool_result,
@@ -218,6 +221,44 @@ def test_head_missing(tools: AtomicTools) -> None:
     assert result.startswith("Error:")
 
 
+# -- run_bash network egress --
+
+
+def test_run_bash_rejects_curl_when_deny_network_egress(tools: AtomicTools) -> None:
+    tools.config = AtomicConfig(
+        tool_policy=ToolPolicy(restrict_run_bash=True, deny_network_egress=True)
+    )
+    result = tools.run_bash("curl https://example.com")
+    assert result.startswith("Error:")
+    assert "network egress" in result
+
+
+def test_run_bash_rejects_python_inline_code_when_deny_network_egress(tools: AtomicTools) -> None:
+    tools.config = AtomicConfig(
+        tool_policy=ToolPolicy(restrict_run_bash=True, deny_network_egress=True)
+    )
+    result = tools.run_bash("python -c 'print(1)'")
+    assert result.startswith("Error:")
+    assert "network egress" in result
+
+
+def test_run_bash_rejects_git_clone_when_deny_network_egress(tools: AtomicTools) -> None:
+    tools.config = AtomicConfig(
+        tool_policy=ToolPolicy(restrict_run_bash=True, deny_network_egress=True)
+    )
+    result = tools.run_bash("git clone https://github.com/example/repo.git")
+    assert result.startswith("Error:")
+    assert "network egress" in result
+
+
+def test_run_bash_allows_local_git_when_deny_network_egress(tools: AtomicTools) -> None:
+    tools.config = AtomicConfig(
+        tool_policy=ToolPolicy(restrict_run_bash=True, deny_network_egress=True)
+    )
+    result = tools.run_bash("git status")
+    assert not result.startswith("Error: run_bash policy rejected likely network egress")
+
+
 # -- _load_project_config --
 
 
@@ -276,6 +317,194 @@ require_uv_run = true
         require_wrapped_verify_tools=True,
         require_uv_run=True,
     )
+
+
+def test_build_worker_env_includes_resolved_uv_bin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text(
+        """
+[project]
+provider = "test"
+
+[providers.test]
+base_url = "https://provider.test/v1"
+api_key_env = "TEST_API_KEY"
+"""
+    )
+    tool_bin = tmp_path / "tools"
+    tool_bin.mkdir()
+    uv_path = tool_bin / "uv"
+    uv_path.write_text("#!/bin/sh\n")
+
+    monkeypatch.setattr(
+        "dgov.workers.headless.shutil.which",
+        lambda name: str(uv_path) if name == "uv" else None,
+    )
+
+    env = _build_worker_env(str(tmp_path), cast(Any, SimpleNamespace(provider="test")))
+
+    assert str(tool_bin) in env["PATH"].split(os.pathsep)
+
+
+class _BlockingStdout:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def readline(self) -> bytes:
+        self.started.set()
+        await self.release.wait()
+        return b""
+
+
+class _FakeWorkerProcess:
+    def __init__(self, *, exit_on_terminate: bool = True) -> None:
+        self.stdout = _BlockingStdout()
+        self.returncode: int | None = None
+        self.exit_on_terminate = exit_on_terminate
+        self.terminated = False
+        self.killed = False
+        self._exited = asyncio.Event()
+
+    def terminate(self) -> None:
+        self.terminated = True
+        if self.exit_on_terminate:
+            self.returncode = -15
+            self._exited.set()
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+        self._exited.set()
+
+    async def wait(self) -> int:
+        await self._exited.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+
+def _headless_task() -> Any:
+    return SimpleNamespace(
+        role="worker",
+        prompt="test",
+        agent="test-agent",
+        provider="test",
+        iteration_budget=None,
+    )
+
+
+def _write_provider_config(path: Path) -> None:
+    dgov_dir = path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text(
+        """
+[project]
+provider = "test"
+
+[providers.test]
+base_url = "https://provider.test/v1"
+api_key_env = "TEST_API_KEY"
+"""
+    )
+
+
+def test_headless_worker_cancellation_terminates_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> None:
+        _write_provider_config(tmp_path)
+        fake = _FakeWorkerProcess()
+        exits: list[tuple[str, str, int, str, int, int]] = []
+
+        async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> Any:
+            return fake
+
+        monkeypatch.setattr(
+            "dgov.workers.headless.asyncio.create_subprocess_exec",
+            _fake_create_subprocess_exec,
+        )
+
+        task = asyncio.create_task(
+            run_headless_worker(
+                str(tmp_path),
+                "plan",
+                "task",
+                "pane",
+                tmp_path,
+                _headless_task(),
+                {},
+                lambda *args: exits.append(cast(tuple[str, str, int, str, int, int], args)),
+            )
+        )
+        await fake.stdout.started.wait()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert fake.terminated is True
+        assert fake.killed is False
+        assert exits == []
+
+    asyncio.run(_run())
+
+
+def test_headless_worker_cancellation_kills_stubborn_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> None:
+        _write_provider_config(tmp_path)
+        fake = _FakeWorkerProcess(exit_on_terminate=False)
+
+        async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> Any:
+            return fake
+
+        monkeypatch.setattr(
+            "dgov.workers.headless.asyncio.create_subprocess_exec",
+            _fake_create_subprocess_exec,
+        )
+        monkeypatch.setattr("dgov.workers.headless._WORKER_TERMINATE_GRACE_S", 0.01)
+
+        task = asyncio.create_task(
+            run_headless_worker(
+                str(tmp_path),
+                "plan",
+                "task",
+                "pane",
+                tmp_path,
+                _headless_task(),
+                {},
+                lambda *args: None,
+            )
+        )
+        await fake.stdout.started.wait()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert fake.terminated is True
+        assert fake.killed is True
+
+    asyncio.run(_run())
+
+
+def test_load_project_config_tool_policy_deny_network_egress(tmp_path: Path) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text(
+        """
+[project]
+
+[tool_policy]
+deny_network_egress = true
+"""
+    )
+    config = load_project_config(tmp_path)
+    assert config.tool_policy.deny_network_egress is True
 
 
 def test_load_project_config_llm_defaults(tmp_path: Path) -> None:

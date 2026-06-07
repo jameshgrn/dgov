@@ -17,6 +17,49 @@ from dgov.typecheck_diagnostics import count_diagnostics
 logger = logging.getLogger(__name__)
 
 _REVIEW_APPLIES_TO = frozenset({"review", "reviewer"})
+_PREEXISTING_SENTRUX_MARKER = ("pre-existing sentrux offenders:",)
+_BRANCH_VERIFICATION_MARKERS = (
+    "branch verification:",
+    "branch_verification:",
+    "branch status:",
+)
+_PREEXISTING_SENTRUX_RETRY_NOTE = (
+    "PRE-EXISTING Sentrux offenders omitted from retry feedback; fix only NEW Sentrux offenders."
+)
+_BRANCH_VERIFICATION_RETRY_NOTE = (
+    "Branch verification output omitted from retry feedback; "
+    "it is run-level evidence, not candidate-local settlement evidence."
+)
+
+
+def _drop_retry_feedback_tail(
+    text: str,
+    *,
+    markers: tuple[str, ...],
+    replacement: str,
+) -> str:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().lower().startswith(markers):
+            kept = lines[:index]
+            if kept and kept[-1].strip():
+                kept.append("")
+            kept.append(replacement)
+            return "\n".join(kept).strip()
+    return text
+
+
+def _candidate_local_retry_evidence(settlement_error: str) -> str:
+    evidence = _drop_retry_feedback_tail(
+        settlement_error,
+        markers=_PREEXISTING_SENTRUX_MARKER,
+        replacement=_PREEXISTING_SENTRUX_RETRY_NOTE,
+    )
+    return _drop_retry_feedback_tail(
+        evidence,
+        markers=_BRANCH_VERIFICATION_MARKERS,
+        replacement=_BRANCH_VERIFICATION_RETRY_NOTE,
+    )
 
 
 def build_baseline_diag_note(config: object, session_root: str) -> str:
@@ -252,10 +295,11 @@ class PromptBuilder:
     @staticmethod
     def settlement_retry_prompt(task: DagTaskSpec, settlement_error: str) -> str:
         """Build retry prompt after settlement rejection."""
+        retry_evidence = _candidate_local_retry_evidence(settlement_error)
         return (
             "Your previous attempt was REJECTED by settlement. "
             "Fix the issue and call done.\n\n"
-            f"SETTLEMENT VERDICT AND EVIDENCE:\n{settlement_error}\n\n"
+            f"SETTLEMENT VERDICT AND EVIDENCE:\n{retry_evidence}\n\n"
             f"ORIGINAL TASK:\n{task.prompt or ''}\n\n"
             "The worktree has your changes (uncommitted). "
             "Use git_diff to see them, fix the problem, then rerun the failing "

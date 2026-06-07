@@ -93,7 +93,9 @@ from dgov.runner_support import (
 )
 from dgov.settlement import ReviewResult, review_sandbox
 from dgov.settlement_flow import (
+    CandidateValidationResult,
     IntegrationRiskRecord,
+    IsolatedValidationResult,
     RiskLevel,
     SettlementFlow,
 )
@@ -2091,6 +2093,7 @@ class EventDagRunner:
         status: str,
         duration_s: float,
         error: str | None = None,
+        facts: tuple[dict[str, Any], ...] = (),
     ) -> None:
         """Emit settlement_phase_completed event."""
         emit_event(
@@ -2103,6 +2106,7 @@ class EventDagRunner:
                 status=status,
                 duration_s=duration_s,
                 error=error,
+                facts=facts,
             ),
         )
 
@@ -2122,21 +2126,23 @@ class EventDagRunner:
         if error or was_settlement is False:
             return error, was_settlement
 
-        error, risk_record = await self._isolated_validation_phase(action, wt, task)
-        if error or risk_record is None:
-            return error, True
+        iv_result = await self._isolated_validation_phase(action, wt, task)
+        if iv_result.error or iv_result.risk_record is None:
+            return iv_result.error, True
 
         error, candidate_result = await self._integration_candidate_phase(action, wt)
         if error or candidate_result is None:
             return error, True
 
-        error = await self._semantic_gate_phase(action, wt, candidate_result, risk_record)
+        error = await self._semantic_gate_phase(
+            action, wt, candidate_result, iv_result.risk_record
+        )
         if error:
             return error, True
 
-        error = await self._candidate_validation_phase(action, task, candidate_result)
-        if error:
-            return error, True
+        cv_result = await self._candidate_validation_phase(action, task, candidate_result)
+        if cv_result.error:
+            return cv_result.error, True
 
         await self._final_merge_phase(action, wt)
         return None, False
@@ -2171,26 +2177,38 @@ class EventDagRunner:
         action: MergeTask,
         wt: Worktree,
         task: DagTaskSpec,
-    ) -> tuple[str | None, IntegrationRiskRecord | None]:
+    ) -> IsolatedValidationResult:
         phase = "isolated_validation"
         start_ts = time.monotonic()
         self._emit_settlement_phase_started(action, phase)
-        error, risk_record = await self._settlement_flow.run_isolated_validation(
+        result = await self._settlement_flow.run_isolated_validation(
             task=task,
             action=action,
             wt=wt,
             emit_event_fn=emit_event,
         )
         duration = time.monotonic() - start_ts
+        error = result.error
+        risk_record = result.risk_record
         if error or risk_record is None:
-            self._emit_settlement_phase_completed(action, phase, "failed", duration, error)
-            return error, risk_record
+            self._emit_settlement_phase_completed(
+                action, phase, "failed", duration, error, facts=result.facts
+            )
+            return result
         if risk_record.risk_level == RiskLevel.CRITICAL:
             crit_error = f"Integration risk CRITICAL: {_summarize_evidence(risk_record)}"
-            self._emit_settlement_phase_completed(action, phase, "failed", duration, crit_error)
-            return crit_error, risk_record
-        self._emit_settlement_phase_completed(action, phase, "passed", duration)
-        return None, risk_record
+            self._emit_settlement_phase_completed(
+                action, phase, "failed", duration, crit_error, facts=result.facts
+            )
+            return IsolatedValidationResult(
+                error=crit_error,
+                risk_record=risk_record,
+                facts=result.facts,
+            )
+        self._emit_settlement_phase_completed(
+            action, phase, "passed", duration, facts=result.facts
+        )
+        return result
 
     async def _integration_candidate_phase(
         self,
@@ -2240,11 +2258,11 @@ class EventDagRunner:
         action: MergeTask,
         task: DagTaskSpec,
         candidate_result: Any,
-    ) -> str | None:
+    ) -> CandidateValidationResult:
         phase = "candidate_validation"
         start_ts = time.monotonic()
         self._emit_settlement_phase_started(action, phase)
-        error = await self._settlement_flow.validate_and_finalize_candidate(
+        result = await self._settlement_flow.validate_and_finalize_candidate(
             action=action,
             candidate_result=candidate_result,
             project_config=self.project_config,
@@ -2252,9 +2270,11 @@ class EventDagRunner:
             emit_event_fn=emit_event,
         )
         duration = time.monotonic() - start_ts
-        status = "failed" if error else "passed"
-        self._emit_settlement_phase_completed(action, phase, status, duration, error)
-        return error
+        status = "failed" if result.error else "passed"
+        self._emit_settlement_phase_completed(
+            action, phase, status, duration, result.error, facts=result.facts
+        )
+        return result
 
     async def _final_merge_phase(self, action: MergeTask, wt: Worktree) -> None:
         phase = "final_merge"

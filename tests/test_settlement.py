@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -833,6 +834,46 @@ class TestReviewSandbox:
         assert result.verdict == "scope_violation"
         assert "scratch.py" in (result.error or "")
 
+    def test_transient_run_bash_shell_attempt_does_not_fail_scope(self, tmp_path: Path):
+        """Command-only run_bash observability must not trigger a scope violation."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        _init_repo(worktree)
+        _add_tracked_file(worktree, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        emit_event(
+            str(session_root),
+            "worker_log",
+            "pane-1",
+            plan_name="plan",
+            task_slug="task-1",
+            log_type="result",
+            content={
+                "tool": "run_bash",
+                "status": "success",
+                "activity": [
+                    {
+                        "kind": "run_bash",
+                        "path": "",
+                        "mode": "shell_attempt",
+                        "command": "echo hello",
+                    },
+                    {"kind": "edit_file", "path": "claimed.py", "mode": "edit"},
+                ],
+            },
+        )
+
+        result = review_sandbox(
+            worktree,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+        )
+
+        assert result.passed
+
 
 # ---------------------------------------------------------------------------
 # autofix_sandbox
@@ -1062,7 +1103,7 @@ class TestValidateSandbox:
         script.write_text(f"#!/bin/sh\ncat <<'JSON'\n{json.dumps(diagnostics)}\nJSON\nexit 1\n")
         script.chmod(0o755)
 
-        result = _scoped_lint_check(
+        result, _fact = _scoped_lint_check(
             tmp_path,
             ["bad.py"],
             base,
@@ -1512,6 +1553,209 @@ def test_run_sentrux_gate_refreshes_worktree_baseline(tmp_path: Path, monkeypatc
 
     result = _run_sentrux_gate(worktree_path, str(tmp_path), timeout=1)
     assert result.passed is True
+
+
+# ---------------------------------------------------------------------------
+# Execution facts
+# ---------------------------------------------------------------------------
+
+
+class TestExecutionFacts:
+    """Prove that settlement gates record objective command execution facts."""
+
+    @pytest.mark.unit
+    def test_passing_test_gate_records_command_and_exit_code(self, tmp_path: Path):
+        """A passing test gate should record the exact command and exit code 0."""
+        from dgov.settlement import CommandExecutionFact, _run_test_gate
+
+        test_cmd = f"cd {shlex.quote(str(tmp_path))} && echo 'ok'"
+        result, fact = _run_test_gate(test_cmd, tmp_path, timeout=5)
+        assert result is None
+        assert fact is not None
+        assert isinstance(fact, CommandExecutionFact)
+        assert fact.gate == "test"
+        assert fact.source == "test_cmd"
+        assert fact.command == test_cmd
+        assert fact.outcome == "completed"
+        assert fact.exit_code == 0
+        assert fact.duration_s >= 0.0
+
+    @pytest.mark.unit
+    def test_failing_test_gate_includes_execution_fact(self, tmp_path: Path):
+        """A failing test gate should include a command execution fact on the failure."""
+        from dgov.settlement import CommandExecutionFact, _run_test_gate
+
+        test_cmd = "exit 42"
+        result, fact = _run_test_gate(test_cmd, tmp_path, timeout=5)
+        assert result is not None
+        assert result.passed is False
+        assert result.error is not None
+        assert len(result.facts) == 1
+        fact = result.facts[0]
+        assert isinstance(fact, CommandExecutionFact)
+        assert fact.gate == "test"
+        assert fact.source == "test_cmd"
+        assert fact.command == test_cmd
+        assert fact.outcome == "completed"
+        assert fact.exit_code == 42
+        assert fact.duration_s >= 0.0
+
+    @pytest.mark.unit
+    def test_validation_result_aggregates_facts_from_multiple_passing_commands(
+        self, tmp_path: Path
+    ):
+        """When lint/type/test gates all pass, the final result aggregates their facts."""
+        from dgov.settlement import (
+            CommandExecutionFact,
+            GateResult,
+            _run_acceptance_gates,
+        )
+
+        (tmp_path / "ok.py").write_text("x = 1\n")
+        py = shlex.quote(sys.executable)
+        pass_cmd = f"{py} -c 'import sys; sys.exit(0)'"
+
+        config = ProjectConfig(
+            lint_cmd=pass_cmd,
+            format_check_cmd=pass_cmd,
+            type_check_cmd=pass_cmd,
+            test_cmd=pass_cmd,
+            settlement_timeout=5,
+        )
+
+        result = _run_acceptance_gates(tmp_path, ["ok.py"], str(tmp_path), config)
+        assert isinstance(result, GateResult)
+        assert result.passed is True
+        assert len(result.facts) == 5
+        gates = {f.gate for f in result.facts}
+        assert "lint" in gates
+        assert "format" in gates
+        assert "type_check" in gates
+        assert "test" in gates
+        sources = {f.source for f in result.facts}
+        assert "project.lint_cmd" in sources
+        assert "project.format_check_cmd" in sources
+        assert "project.type_check_cmd:baseline" in sources
+        assert "project.type_check_cmd:worktree" in sources
+        assert "project.test_cmd" in sources
+        for fact in result.facts:
+            assert isinstance(fact, CommandExecutionFact)
+            assert fact.outcome == "completed"
+            assert fact.exit_code == 0
+            assert fact.duration_s >= 0.0
+
+    @pytest.mark.unit
+    def test_timed_out_test_gate_records_timeout_fact(self, tmp_path: Path):
+        """A timed-out test command should record a timeout fact without an exit code."""
+        from dgov.settlement import _run_test_gate
+
+        result, fact = _run_test_gate("sleep 1", tmp_path, timeout=0.01)
+
+        assert result is not None
+        assert result.passed is False
+        assert result.facts == (fact,)
+        assert fact.gate == "test"
+        assert fact.outcome == "timed_out"
+        assert fact.exit_code is None
+        assert fact.timeout_s == 0.01
+
+    @pytest.mark.unit
+    def test_setup_execution_fact_is_recorded(self, tmp_path: Path):
+        """A setup command should append its execution fact to the provided sink."""
+        from dgov.settlement import _run_setup_cmd
+
+        facts = []
+        result = _run_setup_cmd("echo setup", tmp_path, timeout=5, facts=facts)
+
+        assert result is None
+        assert len(facts) == 1
+        assert facts[0].gate == "setup"
+        assert facts[0].source == "project.setup_cmd"
+        assert facts[0].outcome == "completed"
+        assert facts[0].exit_code == 0
+
+    @pytest.mark.unit
+    def test_coverage_execution_fact_is_recorded(self, tmp_path: Path):
+        """A coverage measurement command should append its execution fact."""
+        from dgov.settlement import _run_coverage_gate
+
+        coverage_dir = tmp_path / ".coverage-baseline"
+        coverage_dir.mkdir()
+        coverage_payload = {
+            "files": {
+                "tests/test_ok.py": {
+                    "summary": {
+                        "percent_covered": 100,
+                    }
+                }
+            }
+        }
+        (coverage_dir / "coverage.json").write_text(json.dumps(coverage_payload))
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_ok.py").write_text("def test_ok():\n    assert True\n")
+        script = tmp_path / "write_cov.py"
+        script.write_text(
+            "import json, pathlib, sys\n"
+            f"pathlib.Path(sys.argv[1]).write_text({json.dumps(json.dumps(coverage_payload))})\n"
+        )
+
+        py = shlex.quote(sys.executable)
+        config = ProjectConfig(
+            coverage_cmd=f"{py} {shlex.quote(str(script))} {{output}}",
+            test_cmd="",
+        )
+        facts = []
+
+        result = _run_coverage_gate(
+            tmp_path,
+            ["tests/test_ok.py"],
+            str(tmp_path),
+            config,
+            facts=facts,
+        )
+
+        assert result is None
+        assert len(facts) == 1
+        assert facts[0].gate == "coverage"
+        assert facts[0].source == "project.coverage_cmd"
+        assert facts[0].outcome == "completed"
+        assert facts[0].exit_code == 0
+
+    @pytest.mark.unit
+    def test_sentrux_execution_fact_is_recorded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A sentrux gate command should append its argv execution fact."""
+        from dgov.settlement import _run_sentrux_gate
+
+        sx_dir = tmp_path / ".sentrux"
+        sx_dir.mkdir()
+        (sx_dir / "baseline.json").write_text('{"total_import_edges": 1}')
+        monkeypatch.setattr("dgov.settlement.shutil.which", lambda cmd: "/bin/sentrux")
+
+        def _mock_run(args, **kwargs):
+            assert args == ["sentrux", "gate", "."]
+            return subprocess.CompletedProcess(args, 0, stdout="ok\n", stderr="")
+
+        monkeypatch.setattr("dgov.settlement.subprocess.run", _mock_run)
+        facts = []
+
+        result = _run_sentrux_gate(
+            tmp_path,
+            str(tmp_path),
+            5,
+            config=ProjectConfig(),
+            facts=facts,
+        )
+
+        assert result.passed is True
+        assert len(facts) == 1
+        assert facts[0].gate == "sentrux"
+        assert facts[0].source == "sentrux.gate"
+        assert facts[0].command == "sentrux gate ."
+        assert facts[0].outcome == "completed"
+        assert facts[0].exit_code == 0
 
 
 # ---------------------------------------------------------------------------

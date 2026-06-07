@@ -1,0 +1,23 @@
+[tasks.phase-events]
+summary = "Persist settlement command facts in phase completion events"
+prompt = """
+Orient:
+- Read `src/dgov/settlement.py`, `src/dgov/settlement_flow.py`, `src/dgov/runner.py`, `src/dgov/event_types.py`, and `src/dgov/plan_review.py`.
+- The prior slice added `GateResult.facts`; this task only propagates those existing facts through settlement phase events and plan review timing.
+
+Edit:
+1. Add explicit settlement-flow result objects that carry `error`, existing risk data, and serialized command facts from `GateResult.facts`.
+2. Add a `facts` payload to `SettlementPhaseCompleted` events and thread it through runner settlement phase emission.
+3. Store the phase facts in `SettlementPhaseTiming` so plan review and JSON output can surface them later.
+4. Add focused tests for emitted facts, event persistence, plan-review aggregation, and JSON rendering.
+
+Verify:
+- `uv run pytest -q tests/test_runner.py tests/test_plan_review.py tests/test_persistence_events.py tests/test_semantic_settlement.py tests/test_cli_plan_review.py -k "settlement_phase or isolated_validation or candidate_validation or phase_timings"`
+- `uv run ruff check src/dgov/event_types.py src/dgov/settlement_flow.py src/dgov/runner.py src/dgov/plan_review.py src/dgov/cli/plan.py tests/test_runner.py tests/test_plan_review.py tests/test_persistence_events.py tests/test_semantic_settlement.py tests/test_cli_plan_review.py`
+- `uv run ruff format --check src/dgov/event_types.py src/dgov/settlement_flow.py src/dgov/runner.py src/dgov/plan_review.py src/dgov/cli/plan.py tests/test_runner.py tests/test_plan_review.py tests/test_persistence_events.py tests/test_semantic_settlement.py tests/test_cli_plan_review.py`
+- `uv run ty check src/dgov/event_types.py src/dgov/settlement_flow.py src/dgov/runner.py src/dgov/plan_review.py src/dgov/cli/plan.py`
+"""
+commit_message = "Record settlement verification facts in phase events"
+role = "worker"
+files = { edit = ["src/dgov/event_types.py", "src/dgov/settlement_flow.py", "src/dgov/runner.py", "src/dgov/plan_review.py", "src/dgov/cli/plan.py", "tests/test_runner.py", "tests/test_plan_review.py", "tests/test_persistence_events.py", "tests/test_semantic_settlement.py", "tests/test_cli_plan_review.py"], read = ["src/dgov/settlement.py"] }
+test_cmd = "uv run pytest -q tests/test_runner.py tests/test_plan_review.py tests/test_persistence_events.py tests/test_semantic_settlement.py tests/test_cli_plan_review.py -k \"settlement_phase or isolated_validation or candidate_validation or phase_timings\""

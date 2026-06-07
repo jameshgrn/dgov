@@ -128,6 +128,7 @@ class TestWorkerPayload:
             worker_iteration_warn_at=60,
             worker_tree_max_lines=0,
             line_length=120,
+            verify_commands={"rating": "uv run pytest tests/test_rating.py -q"},
             test_markers=("unit",),
             conventions={"imports": "absolute"},
             tool_policy=ToolPolicy(require_uv_run=True),
@@ -142,6 +143,7 @@ class TestWorkerPayload:
         assert round_tripped.llm_provider == "fireworks"
         assert round_tripped.type_check_cmd == "uv run ty check"
         assert round_tripped.line_length == 120
+        assert round_tripped.verify_commands == {"rating": "uv run pytest tests/test_rating.py -q"}
         assert round_tripped.test_markers == ("unit",)
         assert round_tripped.conventions == {"imports": "absolute"}
         assert round_tripped.tool_policy.require_uv_run is True
@@ -159,6 +161,16 @@ class TestWorkerPayload:
         assert atomic.llm_provider == "test-provider"
         assert atomic.type_check_cmd == "uv run ty check"
         assert atomic.line_length == 120
+
+    def test_to_atomic_config_preserves_verify_commands(self):
+        pc = _project_with_provider(
+            "test-provider",
+            verify_commands={"lint": "uv run ruff check src/dgov"},
+        )
+
+        atomic = pc.to_atomic_config()
+
+        assert atomic.verify_commands == {"lint": "uv run ruff check src/dgov"}
 
     def test_to_worker_payload_can_select_named_provider(self):
         pc = ProjectConfig(
@@ -400,6 +412,40 @@ deny_shell_commands = ["pip", "python -m pip"]
         assert pc.tool_policy.require_uv_run is True
         assert pc.tool_policy.deny_shell_file_mutations is True
         assert pc.tool_policy.deny_shell_commands == ("pip", "python -m pip")
+
+    def test_tool_policy_loaded_with_deny_network_egress(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            """
+[project]
+
+[tool_policy]
+deny_network_egress = true
+"""
+        )
+        pc = load_project_config(tmp_path)
+        assert pc.tool_policy.deny_network_egress is True
+
+    def test_tool_policy_roundtrip_deny_network_egress(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            """
+[project]
+provider = "test"
+
+[providers.test]
+base_url = "https://test.example.com/v1"
+api_key_env = "TEST_KEY"
+
+[tool_policy]
+deny_network_egress = true
+"""
+        )
+        pc = load_project_config(tmp_path)
+        round_tripped = ProjectConfig.from_worker_payload(pc.to_worker_payload())
+        assert round_tripped.tool_policy.deny_network_egress is True
 
 
 class TestScopeIgnoreFiles:

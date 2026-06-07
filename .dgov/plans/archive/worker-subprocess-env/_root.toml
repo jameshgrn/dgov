@@ -1,0 +1,4 @@
+[plan]
+name = "worker-subprocess-env"
+summary = "Launch headless worker subprocesses with an explicit minimal environment."
+sections = ["tasks"]

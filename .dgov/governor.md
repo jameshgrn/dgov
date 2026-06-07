@@ -195,6 +195,17 @@ mechanical signal must be checked by hand.
 - Next action: Lower-bound plan-scoped event reads on `max(id WHERE event='run_start' AND plan_name=X)`; pane-scope transient activity; rewrite events (not just `tasks`) on manual repair.
 - Do not: Truncate events as a workaround — the run-window lower bound is the invariant.
 
+**stale_review_attention**
+- Evidence: `dgov status` or `dgov diagnose` finds `reviewed_pass` or
+  `reviewed_fail` tasks whose plan source is archived or missing, so historical
+  review state is masquerading as current governor attention.
+- Class: Governance repair.
+- Next action: Treat as lifecycle hygiene. Restore and rerun the plan source, or
+  run `dgov diagnose --repair-stale-review-attention` to append terminal
+  lifecycle events; default operator status should hide inactive plan sources.
+- Do not: Edit `state.db` or mutable task rows by hand — event history is the
+  source of truth.
+
 **verify_recipe_missing**
 - Evidence: The same toolchain command appears in multiple task prompts, or a
   worker fails because setup/lint/test invocation is ambiguous or repo-local.

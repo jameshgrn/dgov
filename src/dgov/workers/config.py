@@ -43,6 +43,8 @@ class AtomicConfig:
     format_cmd: str = "python -m ruff format {file}"
     lint_fix_cmd: str = "python -m ruff check --fix --unsafe-fixes {file}"
     type_check_cmd: str | None = None
+    verify_commands: dict[str, str] = field(default_factory=dict)
+    tool_timeout_s: float = 60.0
     worker_iteration_budget: int = 50
     worker_iteration_warn_at: int = 40
     worker_tree_max_lines: int = 80
@@ -63,6 +65,18 @@ def _coerce_conventions(v: object) -> dict[str, str]:
     if not isinstance(v, dict):
         return {}
     return {str(key): str(value) for key, value in v.items()}
+
+
+def _coerce_verify_commands(v: object) -> dict[str, str]:
+    if not isinstance(v, dict):
+        return {}
+    commands: dict[str, str] = {}
+    for name, command in v.items():
+        recipe_name = str(name).strip()
+        recipe_command = str(command).strip()
+        if recipe_name and recipe_command:
+            commands[recipe_name] = recipe_command
+    return commands
 
 
 def _coerce_tool_policy(v: object) -> ToolPolicy:
@@ -165,6 +179,7 @@ def selected_provider_from_project_toml(raw: Mapping[str, Any]) -> ProviderConfi
 _PAYLOAD_COERCERS: dict[str, Callable[[object], object]] = {
     "test_markers": _coerce_markers,
     "conventions": _coerce_conventions,
+    "verify_commands": _coerce_verify_commands,
     "tool_policy": _coerce_tool_policy,
 }
 
@@ -173,6 +188,7 @@ _PAYLOAD_COERCERS: dict[str, Callable[[object], object]] = {
 _PAYLOAD_SERIALIZERS: dict[str, Callable[[object], object]] = {
     "test_markers": lambda v: list(v) if v else [],
     "conventions": lambda v: dict(v) if v else {},
+    "verify_commands": lambda v: dict(v) if v else {},
     "tool_policy": lambda v: v.as_jsonable() if isinstance(v, ToolPolicy) else {},
 }
 
@@ -208,4 +224,23 @@ def worker_payload_from_project_toml(raw: dict[str, Any]) -> dict[str, object]:
     flat["llm_api_key_env"] = provider.api_key_env
     flat["conventions"] = _table(raw, "conventions")
     flat["tool_policy"] = _table(raw, "tool_policy")
+    flat["verify_commands"] = _verify_commands_from_project_toml(raw)
     return atomic_config_to_payload(atomic_config_from_payload(flat))
+
+
+def _verify_commands_from_project_toml(raw: Mapping[str, Any]) -> dict[str, str]:
+    verify = raw.get("verify", {})
+    if not isinstance(verify, dict):
+        raise ValueError(".dgov/project.toml [verify] must be a table")
+    commands: dict[str, str] = {}
+    for name, section in verify.items():
+        if not isinstance(section, dict):
+            raise ValueError(f"verify recipe {name!r}: section must be a table")
+        command = section.get("command")
+        if command is None:
+            continue
+        if not isinstance(command, str):
+            raise ValueError(f"verify recipe {name!r}: 'command' must be a string")
+        if command.strip():
+            commands[str(name)] = command.strip()
+    return commands

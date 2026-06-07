@@ -53,6 +53,8 @@ def _project_section(config: Any) -> str:
     )
     if config.test_markers:
         section += f"- Test markers: {', '.join(config.test_markers)}\n"
+    if config.verify_commands:
+        section += "- Verify recipes: " + ", ".join(sorted(config.verify_commands)) + "\n"
     if config.conventions:
         section += "\nCONVENTIONS:\n"
         for key, val in config.conventions.items():
@@ -101,6 +103,7 @@ WORKFLOW:
 2. INVESTIGATE: read the smallest useful slices of files, compare behaviors,
    and check git history if needed. Once the answer is stable, stop investigating.
 3. VERIFY: run targeted read-only commands or narrow tests only when they add evidence.
+   If the task names a project verify recipe, call verify_recipe(name).
    Do NOT rerun the same command unless the first result was inconclusive or something changed.
 4. FINISH: call `done` with a governor-facing executive summary:
    - Write a single short paragraph only. Target <=120 words.
@@ -173,7 +176,7 @@ THE DGOV WAY:
 """,
         _rules_context(worktree),
         _project_section(config),
-        task_scope_section(task_scope),
+        task_scope_section(task_scope, include_scope_status_instruction=False),
         f"\nREPO MAP:\n{repo_map}",
         _research_contract_section(config),
         "Strictly use tools. Call 'done' when complete.",

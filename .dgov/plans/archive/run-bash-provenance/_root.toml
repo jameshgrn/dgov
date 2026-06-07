@@ -1,0 +1,4 @@
+[plan]
+name = "run-bash-provenance"
+summary = "Record shell command provenance even when before/after dirty-path snapshots are clean."
+sections = ["tasks"]

@@ -147,6 +147,7 @@ Export the matching env var before `dgov run`.
 restrict_run_bash = true
 deny_shell_commands = ["pip", "python -m pip", "pip3", "python -m venv", "uv venv"]
 deny_shell_file_mutations = true
+deny_network_egress = true
 require_wrapped_verify_tools = true
 require_uv_run = true
 ```

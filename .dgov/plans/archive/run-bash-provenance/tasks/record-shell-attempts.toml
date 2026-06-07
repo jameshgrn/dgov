@@ -1,0 +1,26 @@
+[tasks.record-shell-attempts]
+summary = "Make run_bash provenance visible for mutate-and-restore attempts"
+prompt = """
+Orient:
+- Read `src/dgov/workers/atomic.py`, especially `run_bash`, `_record_run_bash_activity`, `_consume_activity`, and worker event emission in `src/dgov/workers/runtime.py`.
+- Read `src/dgov/settlement.py` transient-scope checks and `tests/test_settlement.py` transient run_bash coverage.
+- Read `tests/test_worker_tools.py` for current activity-log tests.
+- Ledger bug #226: `run_bash` provenance records before/after git-dirty paths, but a single shell command can mutate and restore an unclaimed or reserved path before the after-snapshot observes it.
+
+Edit:
+1. Record a shell-attempt activity entry for every `run_bash` invocation, even when no dirty paths are detected.
+2. Preserve existing path-specific activity entries for files that become dirty after the command.
+3. Include command provenance in the event payload without leaking large outputs. Store the command string or a bounded/truncated command field; do not store stdout/stderr.
+4. Update settlement transient-scope handling only if needed so command-only run_bash activity is visible but does not falsely fail every benign shell read. The goal is observability first; path-specific scope enforcement should remain path-based.
+5. Add a clear test for mutate-and-restore: a command writes an unclaimed tracked or untracked path and restores/removes it before `run_bash` returns. The activity log should still include the shell attempt.
+
+Verify:
+- `uv run pytest -q tests/test_worker_tools.py tests/test_settlement.py -k "run_bash or transient"`
+- `uv run ruff check src/dgov/workers/atomic.py src/dgov/workers/runtime.py src/dgov/settlement.py tests/test_worker_tools.py tests/test_settlement.py`
+- `uv run ruff format --check src/dgov/workers/atomic.py src/dgov/workers/runtime.py src/dgov/settlement.py tests/test_worker_tools.py tests/test_settlement.py`
+- `uv run ty check src/dgov/workers/atomic.py src/dgov/workers/runtime.py src/dgov/settlement.py`
+"""
+commit_message = "Record run_bash shell attempts"
+role = "worker"
+files = { edit = ["src/dgov/workers/atomic.py", "src/dgov/workers/runtime.py", "src/dgov/settlement.py", "tests/test_worker_tools.py", "tests/test_settlement.py"] }
+test_cmd = "uv run pytest -q tests/test_worker_tools.py tests/test_settlement.py -k \"run_bash or transient\""

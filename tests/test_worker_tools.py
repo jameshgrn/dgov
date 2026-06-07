@@ -7,6 +7,8 @@ import pytest
 from dgov.persistence.events import emit_event
 from dgov.tool_policy import ToolPolicy
 
+pytestmark = pytest.mark.unit
+
 
 # We mirror the old combined worker module for tool tests.
 @pytest.fixture(scope="module")
@@ -156,6 +158,26 @@ class TestFindReferences:
         assert "src/bar.py" in result
         assert "tests/test_foo.py" not in result
 
+    def test_grep_fallback_excludes_tests(self, tools):
+        result = tools._grep_references("hello", exclude_tests=True)
+
+        assert "src/foo.py" in result
+        assert "src/bar.py" in result
+        assert "tests/test_foo.py" not in result
+
+    def test_find_references_excludes_tests_when_rg_is_missing(self, tools, monkeypatch):
+        def fake_run_argv(argv):
+            assert argv[0] == "rg"
+            return "Error: command not found: rg"
+
+        monkeypatch.setattr(tools, "_run_argv", fake_run_argv)
+
+        result = tools.find_references("hello", exclude_tests=True)
+
+        assert "src/foo.py" in result
+        assert "src/bar.py" in result
+        assert "tests/test_foo.py" not in result
+
     def test_no_references(self, tools):
         result = tools.find_references("nonexistent_symbol")
         assert "No matches found" in result
@@ -163,10 +185,14 @@ class TestFindReferences:
 
 class TestAstGrep:
     def test_finds_structural_matches(self, tools):
+        if tools._ast_grep_executable() is None:
+            pytest.skip("ast-grep is not installed")
         result = tools.ast_grep("def $A(): $$$", "src")
         assert "src/foo.py:1:def hello():" in result
 
     def test_no_matches(self, tools):
+        if tools._ast_grep_executable() is None:
+            pytest.skip("ast-grep is not installed")
         result = tools.ast_grep("class $A: $$$", "src")
         assert result == "No matches found."
 
@@ -243,7 +269,9 @@ class TestListDir:
     def test_lists_root(self, tools):
         result = tools.list_dir(".")
         assert "src/" in result
+        assert "src/  (" not in result
         assert "tests/" in result
+        assert "tests/  (" not in result
         assert "README.md" in result
 
     def test_lists_subdirectory(self, tools):
@@ -262,6 +290,13 @@ class TestListDir:
     def test_path_traversal_blocked(self, tools):
         result = tools.list_dir("../../etc")
         assert "Error" in result
+
+    @pytest.mark.parametrize("path", [".git", "./.git/worktrees", "src/__pycache__"])
+    def test_internal_paths_get_actionable_error(self, tools, path):
+        result = tools.list_dir(path)
+        assert result.startswith("Error:")
+        assert "internal" in result
+        assert "tree" in result
 
 
 # -- SOP compound tools --
@@ -455,6 +490,18 @@ class TestRunBashPolicy:
         assert result.startswith("Error:")
         assert expected_hint in result
 
+    def test_rejects_dgov_verify_run_with_recipe_hint(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                require_wrapped_verify_tools=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash("uv run dgov verify run rating")
+        assert result.startswith("Error:")
+        assert "verify_recipe()" in result
+
     def test_rejects_uv_run_python_module_pytest_when_wrappers_required(
         self, worktree, worker_module
     ):
@@ -552,8 +599,49 @@ class TestRunBashPolicy:
         assert t._consume_activity() == [
             {
                 "kind": "run_bash",
+                "path": "",
+                "mode": "shell_attempt",
+                "command": "printf 'x = 1\\n' > scratch.py",
+            },
+            {
+                "kind": "run_bash",
                 "path": "scratch.py",
                 "mode": "shell",
+            },
+        ]
+
+    def test_records_shell_attempt_when_no_dirty_paths(self, worktree, worker_module):
+        _init_repo(worktree)
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+
+        result = t.run_bash("printf 'x = 1\\n' > scratch.py && rm scratch.py")
+
+        assert "EXIT:0" in result
+        assert t._consume_activity() == [
+            {
+                "kind": "run_bash",
+                "path": "",
+                "mode": "shell_attempt",
+                "command": "printf 'x = 1\\n' > scratch.py && rm scratch.py",
+            }
+        ]
+
+    def test_records_shell_attempt_for_tracked_mutate_and_restore(self, worktree, worker_module):
+        _init_repo(worktree)
+        (worktree / "tracked.txt").write_text("original\n")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=worktree, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=worktree, check=True)
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+
+        result = t.run_bash("printf 'modified\\n' > tracked.txt && git checkout -- tracked.txt")
+
+        assert "EXIT:0" in result
+        assert t._consume_activity() == [
+            {
+                "kind": "run_bash",
+                "path": "",
+                "mode": "shell_attempt",
+                "command": "printf 'modified\\n' > tracked.txt && git checkout -- tracked.txt",
             }
         ]
 
@@ -579,6 +667,103 @@ class TestRunBashPolicy:
 
         assert str(tool) in result
         assert "EXIT:0" in result
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "curl https://example.com",
+            "wget https://example.com",
+            "nc example.com 80",
+            "netcat example.com 80",
+            "ssh user@example.com",
+            "scp file.txt user@example.com:file.txt",
+            "sftp user@example.com",
+            "rsync -avz file.txt user@example.com:file.txt",
+            "telnet example.com 80",
+            "ftp example.com",
+        ],
+    )
+    def test_rejects_network_tools_when_egress_denied(self, worktree, worker_module, command):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                deny_network_egress=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash(command)
+        assert result.startswith("Error:")
+        assert "network egress" in result
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "python -c 'print(1)'",
+            "python3 -c 'print(1)'",
+            "uv run python -c 'print(1)'",
+            "uv run python3 -c 'print(1)'",
+        ],
+    )
+    def test_rejects_python_inline_code_when_egress_denied(self, worktree, worker_module, command):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                deny_network_egress=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash(command)
+        assert result.startswith("Error:")
+        assert "network egress" in result
+        assert "Python inline code" in result
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git clone https://github.com/example/repo.git",
+            "git fetch origin",
+            "git pull origin main",
+            "git push origin main",
+            "git ls-remote https://github.com/example/repo.git",
+            "git remote add origin https://github.com/example/repo.git",
+            "git remote set-url origin https://github.com/example/repo.git",
+        ],
+    )
+    def test_rejects_git_url_egress_when_egress_denied(self, worktree, worker_module, command):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                deny_network_egress=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash(command)
+        assert result.startswith("Error:")
+        assert "network egress" in result
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git status",
+            "git diff",
+            "git log --oneline",
+            "git checkout -- file.txt",
+            "git add file.txt",
+            "git commit -m 'test'",
+            "git branch",
+            "git stash",
+        ],
+    )
+    def test_allows_local_git_commands_when_egress_denied(self, worktree, worker_module, command):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                deny_network_egress=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash(command)
+        assert not result.startswith("Error: run_bash policy rejected likely network egress")
 
 
 class TestLintCheck:
@@ -618,6 +803,88 @@ class TestTypeCheck:
         t = worker_module.AtomicTools(worktree, config)
         result = t.type_check()
         assert "not configured" in result.lower()
+
+
+class TestVerifyRecipeTool:
+    def test_runs_configured_recipe(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(verify_commands={"rating": "printf 'recipe ok\\n'"})
+        t = worker_module.AtomicTools(worktree, config)
+
+        result = t.verify_recipe("rating")
+
+        assert "recipe ok" in result
+        assert "EXIT:0" in result
+
+    def test_lists_available_recipes_for_unknown_name(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(verify_commands={"lint": "true", "types": "true"})
+        t = worker_module.AtomicTools(worktree, config)
+
+        result = t.verify_recipe("missing")
+
+        assert result.startswith("Error:")
+        assert "Available recipes: lint, types" in result
+
+    def test_reports_when_recipes_are_unconfigured(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+
+        result = t.verify_recipe("rating")
+
+        assert result.startswith("Error:")
+        assert "no project verify recipes" in result
+
+
+class TestProcessTimeoutCleanup:
+    def test_execute_shell_timeout_kills_process_group(self, worktree, worker_module, monkeypatch):
+        calls = {}
+
+        class FakePopen:
+            pid = 1234
+            returncode = None
+
+            def __init__(self, argv, **kwargs):
+                calls["argv"] = argv
+                calls["start_new_session"] = kwargs.get("start_new_session")
+
+            def communicate(self, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired("slow", timeout)
+                self.returncode = -9
+                return "", ""
+
+            def kill(self):
+                calls["fallback_kill"] = True
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setattr("dgov.workers.atomic.os.getpgid", lambda pid: 4321)
+        monkeypatch.setattr(
+            "dgov.workers.atomic.os.killpg",
+            lambda pgid, sig: calls.update({"killed": (pgid, sig)}),
+        )
+        config = worker_module.AtomicConfig(tool_timeout_s=0.01)
+        t = worker_module.AtomicTools(worktree, config)
+
+        result = t._execute_shell("slow-command", enforce_policy=False)
+
+        assert result == "Error: Command timed out after 0.01s."
+        assert calls["start_new_session"] is True
+        assert calls["killed"][0] == 4321
+
+    def test_process_group_fallback_ignores_raced_exit(self, worktree, worker_module, monkeypatch):
+        class FakePopen:
+            pid = 1234
+
+            def kill(self):
+                raise ProcessLookupError
+
+        monkeypatch.setattr("dgov.workers.atomic.os.getpgid", lambda pid: 4321)
+
+        def _raise_os_error(pgid, sig):
+            raise OSError
+
+        monkeypatch.setattr("dgov.workers.atomic.os.killpg", _raise_os_error)
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+
+        t._kill_process_group(FakePopen())
 
 
 class TestScopeStatus:
@@ -774,6 +1041,71 @@ class TestToolSpec:
         assert "revert_file" not in spec_names
         assert "lint_fix" not in spec_names
         assert "format_file" not in spec_names
+        assert "scope_status" not in spec_names
         assert "read_file" in spec_names
         assert "run_tests" in spec_names
+        assert "verify_recipe" in spec_names
         assert "done" in spec_names
+
+
+# -- Shell injection prevention for power tools --
+
+
+class TestRipgrepInjection:
+    def test_rejects_command_separator_in_flags(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        (worktree / "foo.py").write_text("x = 1\n")
+        result = t.ripgrep("x", flags="; touch pwned")
+        assert "Error:" in result
+        assert not (worktree / "pwned").exists()
+
+    def test_rejects_shell_redirection_in_flags(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        (worktree / "foo.py").write_text("x = 1\n")
+        result = t.ripgrep("x", flags="> pwned")
+        assert "Error:" in result
+        assert not (worktree / "pwned").exists()
+
+    def test_rejects_command_substitution_in_flags(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        (worktree / "foo.py").write_text("x = 1\n")
+        result = t.ripgrep("x", flags="$(touch pwned)")
+        assert "Error:" in result
+        assert not (worktree / "pwned").exists()
+
+    def test_allows_safe_flags(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        (worktree / "foo.py").write_text("hello = 1\n")
+        result = t.ripgrep("hello", flags="-i")
+        assert "hello" in result
+
+    def test_allows_safe_flag_arguments(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        (worktree / "foo.py").write_text("hello = 1\n")
+        result = t.ripgrep("hello", flags="--type py")
+        assert "hello" in result
+
+
+class TestTreeInjection:
+    def test_rejects_command_separator_in_max_depth(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        result = t.tree(max_depth="1; touch pwned")
+        assert "Error:" in result
+        assert not (worktree / "pwned").exists()
+
+
+class TestJqInjection:
+    def test_does_not_execute_shell_via_expr(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        (worktree / "data.json").write_text('{"key": "value"}')
+        t.jq(".key; touch pwned", "data.json")
+        assert not (worktree / "pwned").exists()
+
+
+class TestWordCountInjection:
+    def test_does_not_execute_shell_via_path(self, worktree, worker_module):
+        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        (worktree / "foo.py").write_text("x = 1\n")
+        result = t.word_count("foo.py; touch pwned")
+        assert "EXIT:" in result
+        assert not (worktree / "pwned").exists()

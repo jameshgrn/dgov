@@ -1,0 +1,4 @@
+[plan]
+name = "network-egress-policy"
+summary = "Add policy-level network-egress denial for worker shell commands."
+sections = ["tasks"]

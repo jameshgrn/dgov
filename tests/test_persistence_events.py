@@ -63,6 +63,26 @@ class TestEmitEvent:
         assert events[0]["event"] == "run_start"
         assert events[0]["run_source"] == "workshop"
 
+    def test_emit_task_closed_and_read_back(self, tmp_path):
+        session_root = _session(tmp_path)
+
+        emit_event(
+            session_root,
+            event="task_closed",
+            pane="diagnose",
+            plan_name="archived-plan",
+            task_slug="tasks/a",
+            reason="stale_review_attention",
+        )
+
+        events = read_events(session_root)
+
+        assert events[0]["event"] == "task_closed"
+        assert events[0]["pane"] == "diagnose"
+        assert events[0]["plan_name"] == "archived-plan"
+        assert events[0]["task_slug"] == "tasks/a"
+        assert events[0]["reason"] == "stale_review_attention"
+
     def test_emit_invalid_event_raises_valueerror(self, tmp_path):
         """Emit with an invalid event name raises ValueError."""
         session_root = _session(tmp_path)
@@ -256,6 +276,7 @@ class TestValidEvents:
     def test_valid_events_contains_run_completed(self):
         """VALID_EVENTS should contain run_completed event."""
         assert "run_completed" in VALID_EVENTS
+        assert "task_closed" in VALID_EVENTS
 
     def test_valid_events_contains_semantic_settlement_events(self):
         """VALID_EVENTS contains the semantic settlement event family."""
@@ -805,6 +826,66 @@ class TestSettlementPhaseEvents:
         # Verify deserialized events match test constants
         self._assert_started_event_matches_test_constants(deserialize_event(events[0]))
         self._assert_completed_event_matches_test_constants(deserialize_event(events[1]))
+
+    def test_settlement_phase_completed_facts_roundtrip(self, tmp_path):
+        """Facts payload on SettlementPhaseCompleted serializes and deserializes correctly."""
+        from dgov.event_types import SettlementPhaseCompleted, deserialize_event, serialize_event
+
+        session_root = _session(tmp_path)
+
+        facts = (
+            {
+                "gate": "lint",
+                "source": "ruff",
+                "command": "ruff check .",
+                "outcome": "completed",
+                "duration_s": 1.2,
+                "exit_code": 0,
+            },
+            {
+                "gate": "test",
+                "source": "pytest",
+                "command": "pytest",
+                "outcome": "timed_out",
+                "duration_s": 30.0,
+                "timeout_s": 30.0,
+            },
+        )
+        event = SettlementPhaseCompleted(
+            pane="test-pane",
+            plan_name="test-plan",
+            task_slug="task-123",
+            phase="isolated_validation",
+            status="passed",
+            duration_s=2.5,
+            facts=facts,
+        )
+
+        event_name, pane, kwargs = serialize_event(event)
+        emit_event(session_root, event=event_name, pane=pane, **kwargs)
+
+        events = read_events(session_root)
+        assert len(events) == 1
+        deserialized = deserialize_event(events[0])
+        assert isinstance(deserialized, SettlementPhaseCompleted)
+        assert deserialized.facts == facts
+
+    def test_settlement_phase_completed_old_event_without_facts_deserializes(self):
+        """Old settlement_phase_completed rows without facts should retain the default."""
+        from dgov.event_types import SettlementPhaseCompleted, deserialize_event
+
+        event = deserialize_event({
+            "event": "settlement_phase_completed",
+            "pane": "test-pane",
+            "plan_name": "test-plan",
+            "task_slug": "task-123",
+            "phase": "isolated_validation",
+            "status": "passed",
+            "duration_s": 1.0,
+        })
+
+        assert isinstance(event, SettlementPhaseCompleted)
+        assert event.facts == ()
 
 
 class TestEmitEventFailures:

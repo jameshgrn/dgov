@@ -20,11 +20,12 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
-from typing import cast
+from typing import Literal, cast
 
 from dgov.config import ProjectConfig, load_project_config
 from dgov.git_status import git_path_output_paths, porcelain_status_paths
@@ -50,11 +51,40 @@ _WRITE_ACTIVITY_MODES = frozenset({"create", "edit", "patch", "revert"})
 
 
 @dataclass(frozen=True)
+class CommandExecutionFact:
+    """Objective record of a command executed by a settlement gate."""
+
+    gate: str
+    source: str
+    command: str
+    outcome: Literal["completed", "timed_out"]
+    duration_s: float
+    exit_code: int | None = None
+    timeout_s: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.outcome == "completed":
+            if self.exit_code is None:
+                raise ValueError("CommandExecutionFact: completed outcome requires exit_code")
+            if self.timeout_s is not None:
+                raise ValueError("CommandExecutionFact: completed outcome cannot set timeout_s")
+            return
+        if self.outcome == "timed_out":
+            if self.exit_code is not None:
+                raise ValueError("CommandExecutionFact: timed_out outcome cannot set exit_code")
+            if self.timeout_s is None:
+                raise ValueError("CommandExecutionFact: timed_out outcome requires timeout_s")
+            return
+        raise ValueError(f"CommandExecutionFact: unknown outcome {self.outcome!r}")
+
+
+@dataclass(frozen=True)
 class GateResult:
     """The outcome of a validation gate."""
 
     passed: bool
     error: str | None = None
+    facts: tuple[CommandExecutionFact, ...] = ()
 
     def __post_init__(self) -> None:
         if self.passed and self.error is not None:
@@ -96,6 +126,7 @@ class _AcceptanceGateContext:
     base_commit: str | None = None
     task_test_cmd: str | None = None
     type_baseline_path: Path | None = None
+    facts: list[CommandExecutionFact] = field(default_factory=list)
 
 
 def _walk_shallow(node: ast.AST) -> list[ast.AST]:
@@ -254,6 +285,118 @@ def _run_cmd(
     cmd = cmd_template.replace("{file}", file_args)
     return subprocess.run(
         cmd, shell=True, cwd=cwd, capture_output=True, text=True, timeout=timeout
+    )
+
+
+def _completed_command_fact(
+    *,
+    gate: str,
+    source: str,
+    command: str,
+    exit_code: int,
+    duration_s: float,
+) -> CommandExecutionFact:
+    return CommandExecutionFact(
+        gate=gate,
+        source=source,
+        command=command,
+        outcome="completed",
+        exit_code=exit_code,
+        duration_s=duration_s,
+    )
+
+
+def _timed_out_command_fact(
+    *,
+    gate: str,
+    source: str,
+    command: str,
+    timeout_s: float,
+    duration_s: float,
+) -> CommandExecutionFact:
+    return CommandExecutionFact(
+        gate=gate,
+        source=source,
+        command=command,
+        outcome="timed_out",
+        timeout_s=timeout_s,
+        duration_s=duration_s,
+    )
+
+
+def _run_cmd_with_fact(
+    gate: str,
+    source: str,
+    cmd_template: str,
+    files: list[str],
+    cwd: Path,
+    timeout: float = 120,
+) -> tuple[subprocess.CompletedProcess[str] | None, CommandExecutionFact]:
+    """Run a command and record an execution fact."""
+    file_args = " ".join(shlex.quote(f) for f in files)
+    cmd = cmd_template.replace("{file}", file_args)
+    start = time.monotonic()
+    try:
+        res = subprocess.run(
+            cmd,
+            shell=True,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        duration = time.monotonic() - start
+        return None, _timed_out_command_fact(
+            gate=gate,
+            source=source,
+            command=cmd,
+            timeout_s=timeout,
+            duration_s=duration,
+        )
+    return res, _completed_command_fact(
+        gate=gate,
+        source=source,
+        command=cmd,
+        exit_code=res.returncode,
+        duration_s=time.monotonic() - start,
+    )
+
+
+def _run_argv_with_fact(
+    gate: str,
+    source: str,
+    args: Sequence[str],
+    cwd: Path,
+    timeout: int,
+) -> tuple[subprocess.CompletedProcess[str] | None, CommandExecutionFact]:
+    """Run argv-style command and record an execution fact."""
+    command = shlex.join(args)
+    start = time.monotonic()
+    try:
+        res = subprocess.run(
+            list(args),
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        duration = time.monotonic() - start
+        return None, _timed_out_command_fact(
+            gate=gate,
+            source=source,
+            command=command,
+            timeout_s=timeout,
+            duration_s=duration,
+        )
+    return res, _completed_command_fact(
+        gate=gate,
+        source=source,
+        command=command,
+        exit_code=res.returncode,
+        duration_s=time.monotonic() - start,
     )
 
 
@@ -579,6 +722,8 @@ def _transient_write_path(item: object) -> str | None:
     item_map = cast(Mapping[str, object], item)
     path = item_map.get("path")
     if not isinstance(path, str):
+        return None
+    if item_map.get("mode") == "shell_attempt":
         return None
     if (
         item_map.get("kind") in _WRITE_ACTIVITY_KINDS
@@ -1244,20 +1389,28 @@ def _build_test_cmd(config: ProjectConfig, changed_files: list[str], worktree_pa
     return config.test_cmd.replace("{test_dir}", " ".join(shlex.quote(f) for f in targets))
 
 
-def _run_test_gate(test_cmd: str, worktree_path: Path, timeout: int = 120) -> GateResult | None:
-    """Run tests. Return failure GateResult on non-zero exit, None on pass."""
-    res = subprocess.run(
-        test_cmd,
-        shell=True,
-        cwd=worktree_path,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+def _run_test_gate(
+    test_cmd: str,
+    worktree_path: Path,
+    timeout: float = 120,
+    source: str = "test_cmd",
+) -> tuple[GateResult | None, CommandExecutionFact]:
+    """Run tests. Return failure GateResult and fact on non-zero exit, None and fact on pass."""
+    res, fact = _run_cmd_with_fact("test", source, test_cmd, [], worktree_path, timeout=timeout)
+    if res is None:
+        return GateResult(
+            passed=False,
+            error=f"Test command timed out after {timeout}s",
+            facts=(fact,),
+        ), fact
     # Exit code 5 = "no tests were collected" — not a failure (e.g. scaffold tasks)
     if res.returncode not in (0, 5):
-        return GateResult(passed=False, error=_test_failure_error(res, test_cmd))
-    return None
+        return GateResult(
+            passed=False,
+            error=_test_failure_error(res, test_cmd),
+            facts=(fact,),
+        ), fact
+    return None, fact
 
 
 def _normalize_coverage_path(path: str, worktree_path: Path) -> str:
@@ -1356,15 +1509,14 @@ def _run_coverage_measurement(
     coverage_cmd: str,
     worktree_path: Path,
     timeout: int,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+) -> tuple[subprocess.CompletedProcess[str] | None, CommandExecutionFact]:
+    return _run_cmd_with_fact(
+        "coverage",
+        "project.coverage_cmd",
         coverage_cmd,
-        shell=True,
-        cwd=worktree_path,
-        capture_output=True,
-        text=True,
+        [],
+        worktree_path,
         timeout=timeout,
-        check=False,
     )
 
 
@@ -1372,7 +1524,7 @@ def _measure_current_coverage(
     worktree_path: Path,
     changed_files: Sequence[str],
     config: ProjectConfig,
-) -> object | None:
+) -> tuple[object | None, CommandExecutionFact | None]:
     output_path = _new_coverage_output_path(worktree_path)
     try:
         coverage_cmd = _build_coverage_cmd(
@@ -1382,17 +1534,26 @@ def _measure_current_coverage(
             output_path,
         )
         if not coverage_cmd:
-            return None
+            return None, None
 
-        res = _run_coverage_measurement(coverage_cmd, worktree_path, config.settlement_timeout)
+        res, fact = _run_coverage_measurement(
+            coverage_cmd,
+            worktree_path,
+            config.settlement_timeout,
+        )
+        if res is None:
+            logger.warning(
+                "Coverage gate measurement timed out after %ss", config.settlement_timeout
+            )
+            return None, fact
         if res.returncode != 0:
             output = ((res.stdout or "") + (res.stderr or ""))[-500:]
             logger.warning("Coverage gate measurement failed: %s", output)
-            return None
+            return None, fact
 
         import json
 
-        return json.loads(output_path.read_text())
+        return json.loads(output_path.read_text()), fact
     finally:
         if output_path.exists():
             output_path.unlink()
@@ -1430,6 +1591,7 @@ def _run_coverage_gate(
     changed_files: Sequence[str],
     project_root: str,
     config: ProjectConfig,
+    facts: list[CommandExecutionFact] | None = None,
 ) -> GateResult | None:
     """Reject coverage regressions for changed Python files when coverage is configured."""
     if not config.coverage_cmd:
@@ -1442,7 +1604,9 @@ def _run_coverage_gate(
         baseline_data = _coverage_baseline_data(worktree_path, project_root)
         if baseline_data is None:
             return None
-        current_data = _measure_current_coverage(worktree_path, changed_files, config)
+        current_data, fact = _measure_current_coverage(worktree_path, changed_files, config)
+        if fact is not None and facts is not None:
+            facts.append(fact)
         if current_data is None:
             return None
         return _coverage_regression(
@@ -1455,21 +1619,6 @@ def _run_coverage_gate(
     except Exception as exc:
         logger.warning("Coverage gate skipped after measurement error: %s", exc)
     return None
-
-
-def _run_type_check_cmd(
-    type_check_cmd: str,
-    cwd: Path,
-    timeout: int,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        type_check_cmd,
-        shell=True,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
 
 
 def _type_check_output(result: subprocess.CompletedProcess[str]) -> str:
@@ -1503,7 +1652,7 @@ def _type_check_gate(
     project_root: str,
     timeout: int = 120,
     baseline_path: Path | None = None,
-) -> GateResult | None:
+) -> tuple[GateResult | None, tuple[CommandExecutionFact, ...]]:
     """Run type checker with baseline comparison.
 
     Runs the type checker in both the project root (baseline) and the
@@ -1515,18 +1664,56 @@ def _type_check_gate(
     # pass a detached baseline worktree so diagnostics are compared against the
     # merge base instead of the already-mutated feature branch.
     baseline_cwd = baseline_path or Path(project_root)
-    baseline_res = _run_type_check_cmd(type_check_cmd, baseline_cwd, timeout)
+    baseline_res, baseline_fact = _run_cmd_with_fact(
+        "type_check",
+        "project.type_check_cmd:baseline",
+        type_check_cmd,
+        [],
+        baseline_cwd,
+        timeout=timeout,
+    )
+    if baseline_res is None:
+        return (
+            GateResult(
+                passed=False,
+                error=f"Type check baseline command timed out after {timeout}s",
+                facts=(baseline_fact,),
+            ),
+            (baseline_fact,),
+        )
     baseline_output = _type_check_output(baseline_res)
     baseline_ids = parse_diagnostic_identities(baseline_output, baseline_cwd)
 
     # Worktree: run against worker's changes
-    worktree_res = _run_type_check_cmd(type_check_cmd, worktree_path, timeout)
+    worktree_res, worktree_fact = _run_cmd_with_fact(
+        "type_check",
+        "project.type_check_cmd:worktree",
+        type_check_cmd,
+        [],
+        worktree_path,
+        timeout=timeout,
+    )
+    if worktree_res is None:
+        return (
+            GateResult(
+                passed=False,
+                error=f"Type check worktree command timed out after {timeout}s",
+                facts=(baseline_fact, worktree_fact),
+            ),
+            (baseline_fact, worktree_fact),
+        )
     worktree_output = _type_check_output(worktree_res)
     worktree_ids = parse_diagnostic_identities(worktree_output, worktree_path)
 
     # Compare identity sets: new diagnostics are those in worktree but not baseline
     new_ids = worktree_ids - baseline_ids
-    return _type_check_failure(worktree_res, worktree_output, new_ids, worktree_ids)
+    failure = _type_check_failure(worktree_res, worktree_output, new_ids, worktree_ids)
+    if failure is not None:
+        return replace(failure, facts=(baseline_fact, worktree_fact)), (
+            baseline_fact,
+            worktree_fact,
+        )
+    return None, (baseline_fact, worktree_fact)
 
 
 def _sentrux_is_warn_only(output: str) -> bool:
@@ -1562,21 +1749,24 @@ def _copy_sentrux_baseline(baseline: Path, worktree_path: Path) -> None:
 def _execute_sentrux_gate(
     worktree_path: Path,
     timeout: int,
-) -> subprocess.CompletedProcess[str] | GateResult:
-    try:
-        return subprocess.run(
-            ["sentrux", "gate", "."],
-            cwd=worktree_path,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
+) -> tuple[subprocess.CompletedProcess[str] | GateResult, CommandExecutionFact]:
+    res, fact = _run_argv_with_fact(
+        "sentrux",
+        "sentrux.gate",
+        ("sentrux", "gate", "."),
+        worktree_path,
+        timeout,
+    )
+    if res is None:
+        return (
+            GateResult(
+                passed=False,
+                error=f"Sentrux gate timed out after {timeout}s.",
+                facts=(fact,),
+            ),
+            fact,
         )
-    except subprocess.TimeoutExpired:
-        return GateResult(
-            passed=False,
-            error=f"Sentrux gate timed out after {timeout}s.",
-        )
+    return res, fact
 
 
 def _sentrux_gate_result(
@@ -1625,6 +1815,7 @@ def _run_sentrux_gate(
     changed_files: Sequence[str] = (),
     base_commit: str | None = None,
     config: ProjectConfig | None = None,
+    facts: list[CommandExecutionFact] | None = None,
 ) -> GateResult:
     """Run sentrux policy gate — reject on hard degradation, warn on complexity only."""
     if config is None:
@@ -1645,10 +1836,12 @@ def _run_sentrux_gate(
         return GateResult(passed=True)
 
     _copy_sentrux_baseline(baseline, worktree_path)
-    res_sx = _execute_sentrux_gate(worktree_path, timeout)
+    res_sx, fact = _execute_sentrux_gate(worktree_path, timeout)
+    if facts is not None:
+        facts.append(fact)
     if isinstance(res_sx, GateResult):
         return res_sx
-    return _sentrux_gate_result(
+    result = _sentrux_gate_result(
         res_sx,
         worktree_path=worktree_path,
         project_root=project_root,
@@ -1657,26 +1850,39 @@ def _run_sentrux_gate(
         base_commit=base_commit,
         config=config,
     )
+    if not result.passed:
+        return replace(result, facts=(fact,))
+    return result
 
 
-def _run_setup_cmd(setup_cmd: str, worktree_path: Path, timeout: int = 300) -> GateResult | None:
+def _run_setup_cmd(
+    setup_cmd: str,
+    worktree_path: Path,
+    timeout: int = 300,
+    facts: list[CommandExecutionFact] | None = None,
+) -> GateResult | None:
     """Run the project setup command in the worktree. Returns failure or None on success."""
     if not setup_cmd:
         return None
-    try:
-        res = subprocess.run(
-            setup_cmd,
-            shell=True,
-            cwd=worktree_path,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+    res, fact = _run_cmd_with_fact(
+        "setup",
+        "project.setup_cmd",
+        setup_cmd,
+        [],
+        worktree_path,
+        timeout=timeout,
+    )
+    if facts is not None:
+        facts.append(fact)
+    if res is None:
+        return GateResult(
+            passed=False,
+            error=f"setup_cmd timed out after {timeout}s",
+            facts=(fact,),
         )
-    except subprocess.TimeoutExpired:
-        return GateResult(passed=False, error=f"setup_cmd timed out after {timeout}s")
     if res.returncode != 0:
         output = _combined_output(res)[-500:]
-        return GateResult(passed=False, error=f"setup_cmd failed:\n{output}")
+        return GateResult(passed=False, error=f"setup_cmd failed:\n{output}", facts=(fact,))
     return None
 
 
@@ -1717,16 +1923,16 @@ def _ruff_json_lint_result(
     worktree_path: Path,
     existing_files: Sequence[str],
     config: ProjectConfig,
-) -> subprocess.CompletedProcess[str]:
+) -> tuple[subprocess.CompletedProcess[str] | None, CommandExecutionFact]:
     file_args = " ".join(shlex.quote(f) for f in existing_files)
     lint_json_cmd = config.lint_cmd.replace("{file}", file_args)
     lint_json_cmd = lint_json_cmd + " --output-format=json"
-    return subprocess.run(
+    return _run_cmd_with_fact(
+        "lint",
+        "project.lint_cmd:scoped-json",
         lint_json_cmd,
-        shell=True,
-        cwd=worktree_path,
-        capture_output=True,
-        text=True,
+        [],
+        worktree_path,
         timeout=config.settlement_timeout,
     )
 
@@ -1796,7 +2002,7 @@ def _scoped_lint_check(
     existing_files: list[str],
     base_commit: str,
     config: ProjectConfig,
-) -> GateResult | None:
+) -> tuple[GateResult | None, CommandExecutionFact | None]:
     """Run lint check scoped to worker-changed lines only.
 
     Uses ``ruff check --output-format=json`` to get per-diagnostic line numbers,
@@ -1808,21 +2014,29 @@ def _scoped_lint_check(
     """
     changed_by_file = _changed_lines_by_file(worktree_path, existing_files, base_commit)
     if not changed_by_file:
-        return None
+        return None, None
 
-    res = _ruff_json_lint_result(worktree_path, existing_files, config)
+    res, fact = _ruff_json_lint_result(worktree_path, existing_files, config)
+    if res is None:
+        return GateResult(
+            passed=False,
+            error=f"Lint command timed out after {config.settlement_timeout}s",
+            facts=(fact,),
+        ), fact
     if res.returncode == 0:
-        return None  # no lint issues at all
+        return None, fact  # no lint issues at all
 
     diagnostics = _ruff_diagnostics(res, config.lint_cmd)
     if isinstance(diagnostics, GateResult):
-        return diagnostics
+        return replace(diagnostics, facts=(fact,)), fact
 
     scoped_issues = _scoped_lint_issues(diagnostics, changed_by_file, worktree_path)
     if scoped_issues:
         detail = "\n".join(scoped_issues)
-        return GateResult(passed=False, error=f"Lint failure (worker-changed lines):\n{detail}")
-    return None
+        return GateResult(
+            passed=False, error=f"Lint failure (worker-changed lines):\n{detail}", facts=(fact,)
+        ), fact
+    return None, fact
 
 
 def _build_explicit_test_cmd(
@@ -1849,15 +2063,34 @@ def _build_test_commands(
     Task-level verification is useful when a worker needs an exact command, but
     it must not replace the project auto-targeting that runs changed test files.
     """
-    commands: list[str] = []
+    return [
+        command
+        for _source, command in _build_test_command_sources(
+            config,
+            changed_files,
+            worktree_path,
+            task_test_cmd,
+        )
+    ]
+
+
+def _build_test_command_sources(
+    config: ProjectConfig,
+    changed_files: Sequence[str],
+    worktree_path: Path,
+    task_test_cmd: str | None = None,
+) -> list[tuple[str, str]]:
+    """Return test commands paired with their config source."""
+    commands: list[tuple[str, str]] = []
     if task_test_cmd:
         explicit = _build_explicit_test_cmd(config, changed_files, worktree_path, task_test_cmd)
         if explicit:
-            commands.append(explicit)
+            commands.append(("task.test_cmd", explicit))
 
     auto = _build_test_cmd(config, list(changed_files), worktree_path)
-    if auto and auto not in commands:
-        commands.append(auto)
+    command_values = {command for _source, command in commands}
+    if auto and auto not in command_values:
+        commands.append(("project.test_cmd", auto))
     return commands
 
 
@@ -1865,48 +2098,71 @@ def _run_lint_gate(
     config: ProjectConfig,
     files: list[str],
     worktree_path: Path,
-) -> GateResult | None:
-    res_lint = _run_cmd(
+) -> tuple[GateResult | None, CommandExecutionFact]:
+    res_lint, fact = _run_cmd_with_fact(
+        "lint",
+        "project.lint_cmd",
         config.lint_cmd,
         files,
         worktree_path,
         timeout=config.settlement_timeout,
     )
+    if res_lint is None:
+        return GateResult(
+            passed=False,
+            error=f"Lint command timed out after {config.settlement_timeout}s",
+            facts=(fact,),
+        ), fact
     if res_lint.returncode == 0:
-        return None
+        return None, fact
     return GateResult(
         passed=False,
         error=_lint_failure_error(res_lint, config.lint_cmd),
-    )
+        facts=(fact,),
+    ), fact
 
 
 def _run_format_gate(
     config: ProjectConfig,
     files: list[str],
     worktree_path: Path,
-) -> GateResult | None:
-    res_fmt = _run_cmd(
+) -> tuple[GateResult | None, CommandExecutionFact]:
+    res_fmt, fact = _run_cmd_with_fact(
+        "format",
+        "project.format_check_cmd",
         config.format_check_cmd,
         files,
         worktree_path,
         timeout=config.settlement_timeout,
     )
+    if res_fmt is None:
+        return GateResult(
+            passed=False,
+            error=f"Format command timed out after {config.settlement_timeout}s",
+            facts=(fact,),
+        ), fact
     if res_fmt.returncode == 0:
-        return None
+        return None, fact
     return GateResult(
         passed=False,
         error=_format_failure_error(res_fmt, config.format_check_cmd),
-    )
+        facts=(fact,),
+    ), fact
 
 
 def _run_full_file_quality_gates(
     context: _AcceptanceGateContext,
     files: list[str],
 ) -> GateResult | None:
-    lint_failure = _run_lint_gate(context.config, files, context.worktree_path)
+    lint_failure, lint_fact = _run_lint_gate(context.config, files, context.worktree_path)
+    if lint_fact is not None:
+        context.facts.append(lint_fact)
     if lint_failure is not None:
         return lint_failure
-    return _run_format_gate(context.config, files, context.worktree_path)
+    format_failure, format_fact = _run_format_gate(context.config, files, context.worktree_path)
+    if format_fact is not None:
+        context.facts.append(format_fact)
+    return format_failure
 
 
 def _split_files_by_base_existence(
@@ -1927,8 +2183,14 @@ def _run_preexisting_file_lint_gate(
     if not files:
         return None
     if "ruff" in context.config.lint_cmd:
-        return _scoped_lint_check(context.worktree_path, files, base_commit, context.config)
-    return _run_lint_gate(context.config, files, context.worktree_path)
+        failure, fact = _scoped_lint_check(
+            context.worktree_path, files, base_commit, context.config
+        )
+    else:
+        failure, fact = _run_lint_gate(context.config, files, context.worktree_path)
+    if fact is not None:
+        context.facts.append(fact)
+    return failure
 
 
 def _run_post_commit_file_quality_gates(
@@ -1968,27 +2230,32 @@ def _run_changed_file_quality_gates(
 def _run_type_check_acceptance_gate(context: _AcceptanceGateContext) -> GateResult | None:
     if not context.config.type_check_cmd:
         return None
-    return _type_check_gate(
+    failure, facts = _type_check_gate(
         context.config.type_check_cmd,
         context.worktree_path,
         context.project_root,
         timeout=context.config.settlement_timeout,
         baseline_path=context.type_baseline_path,
     )
+    for fact in facts:
+        context.facts.append(fact)
+    return failure
 
 
 def _run_test_acceptance_gates(context: _AcceptanceGateContext) -> GateResult | None:
-    for test_cmd in _build_test_commands(
+    for source, test_cmd in _build_test_command_sources(
         context.config,
         context.changed_files,
         context.worktree_path,
         context.task_test_cmd,
     ):
-        test_failure = _run_test_gate(
+        test_failure, fact = _run_test_gate(
             test_cmd,
             context.worktree_path,
             timeout=context.config.settlement_timeout,
+            source=source,
         )
+        context.facts.append(fact)
         if test_failure is not None:
             return test_failure
     return None
@@ -2000,6 +2267,7 @@ def _run_coverage_acceptance_gate(context: _AcceptanceGateContext) -> GateResult
         context.changed_files,
         context.project_root,
         context.config,
+        facts=context.facts,
     )
 
 
@@ -2011,6 +2279,7 @@ def _run_sentrux_acceptance_gate(context: _AcceptanceGateContext) -> GateResult 
         changed_files=context.changed_files,
         base_commit=context.base_commit,
         config=context.config,
+        facts=context.facts,
     )
     if sx_result.passed:
         return None
@@ -2018,7 +2287,11 @@ def _run_sentrux_acceptance_gate(context: _AcceptanceGateContext) -> GateResult 
 
 
 def _run_acceptance_gate_sequence(context: _AcceptanceGateContext) -> GateResult | None:
-    setup_failure = _run_setup_cmd(context.config.setup_cmd or "", context.worktree_path)
+    setup_failure = _run_setup_cmd(
+        context.config.setup_cmd or "",
+        context.worktree_path,
+        facts=context.facts,
+    )
     if setup_failure is not None:
         return setup_failure
 
@@ -2075,10 +2348,14 @@ def _run_acceptance_gates(
     try:
         failure = _run_acceptance_gate_sequence(context)
     except Exception as exc:
-        return GateResult(passed=False, error=f"Unexpected validation error: {exc}")
+        return GateResult(
+            passed=False,
+            error=f"Unexpected validation error: {exc}",
+            facts=tuple(context.facts),
+        )
     if failure is not None:
-        return failure
-    return GateResult(passed=True)
+        return replace(failure, facts=tuple(context.facts))
+    return GateResult(passed=True, facts=tuple(context.facts))
 
 
 def preflight_sandbox(

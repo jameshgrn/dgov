@@ -143,6 +143,7 @@ class SettlementPhaseTiming:
     duration_s: float
     status: str
     error: str | None = None
+    facts: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -746,6 +747,8 @@ def _apply_settlement_phase_event(ev: _EventWithId, state: dict) -> bool:
         phase = ev.event.phase
         if isinstance(phase, str) and phase:
             duration = ev.event.duration_s
+            raw_facts = ev.event.facts
+            facts = tuple(raw_facts) if isinstance(raw_facts, tuple | list) else ()
             if isinstance(duration, int | float):
                 state["phase_timings"].append(
                     SettlementPhaseTiming(
@@ -753,6 +756,7 @@ def _apply_settlement_phase_event(ev: _EventWithId, state: dict) -> bool:
                         duration_s=float(duration),
                         status=ev.event.status,
                         error=ev.event.error,
+                        facts=facts,
                     )
                 )
         state["phase"] = None
