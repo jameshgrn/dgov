@@ -119,7 +119,6 @@ def _analyze_scope_status_for_cli(
     *,
     project_root: str,
     task: str,
-    pane: str | None,
     claims: _ScopeClaims,
     scope_ignore_files: Sequence[str],
     scope_allow_files: Sequence[str],
@@ -139,7 +138,6 @@ def _analyze_scope_status_for_cli(
         scope_deny_files=scope_deny_files,
         session_root=project_root,
         task_slug=task,
-        pane_slug=pane,
     )
 
 
@@ -156,7 +154,6 @@ def scope_cmd() -> None:
     type=click.Path(path_type=Path, exists=True),
     help="Compiled plan file or plan directory",
 )
-@click.option("--pane", help="Pane slug for transient write filtering")
 @click.option("--claim", multiple=True, help="Explicit writable file claim (ad hoc mode)")
 @click.option(
     "--read",
@@ -167,7 +164,6 @@ def scope_cmd() -> None:
 def scope_status_cmd(
     task: str,
     plan: Path | None,
-    pane: str | None,
     claim: tuple[str, ...],
     read_files: tuple[str, ...],
 ) -> None:
@@ -192,7 +188,6 @@ def scope_status_cmd(
     status = _analyze_scope_status_for_cli(
         project_root=project_root,
         task=task,
-        pane=pane,
         claims=claims,
         scope_ignore_files=config.scope_ignore_files,
         scope_allow_files=config.scope_allow_files,
