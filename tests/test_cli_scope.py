@@ -238,3 +238,22 @@ def test_json_output(runner: CliRunner, tmp_path: Path, monkeypatch: pytest.Monk
     assert data["path_policy_denied_paths"] == []
     assert data["path_policy_outside_allow_paths"] == []
     assert data["blocking_failure"] is None
+
+
+def test_pane_flag_accepted(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "a.py").write_text("hello\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        cli,
+        ["scope", "status", "--task", "t", "--pane", "test-pane", "--claim", "src/a.py"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "claimed_writable: src/a.py" in result.output
+    assert "modified_files: src/a.py" in result.output
+    assert "blocking: (none)" in result.output
