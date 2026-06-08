@@ -855,9 +855,9 @@ class TestProcessTimeoutCleanup:
                 calls["fallback_kill"] = True
 
         monkeypatch.setattr(subprocess, "Popen", FakePopen)
-        monkeypatch.setattr("dgov.workers.atomic.os.getpgid", lambda pid: 4321)
+        monkeypatch.setattr("dgov.process_util.os.getpgid", lambda pid: 4321)
         monkeypatch.setattr(
-            "dgov.workers.atomic.os.killpg",
+            "dgov.process_util.os.killpg",
             lambda pgid, sig: calls.update({"killed": (pgid, sig)}),
         )
         config = worker_module.AtomicConfig(tool_timeout_s=0.01)
@@ -870,21 +870,22 @@ class TestProcessTimeoutCleanup:
         assert calls["killed"][0] == 4321
 
     def test_process_group_fallback_ignores_raced_exit(self, worktree, worker_module, monkeypatch):
+        from dgov.process_util import kill_process_group
+
         class FakePopen:
             pid = 1234
 
             def kill(self):
                 raise ProcessLookupError
 
-        monkeypatch.setattr("dgov.workers.atomic.os.getpgid", lambda pid: 4321)
+        monkeypatch.setattr("dgov.process_util.os.getpgid", lambda pid: 4321)
 
         def _raise_os_error(pgid, sig):
             raise OSError
 
-        monkeypatch.setattr("dgov.workers.atomic.os.killpg", _raise_os_error)
-        t = worker_module.AtomicTools(worktree, worker_module.AtomicConfig())
+        monkeypatch.setattr("dgov.process_util.os.killpg", _raise_os_error)
 
-        t._kill_process_group(FakePopen())
+        kill_process_group(FakePopen())
 
 
 class TestScopeStatus:

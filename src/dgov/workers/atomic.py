@@ -13,7 +13,6 @@ import os
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -23,6 +22,7 @@ from typing import Any, Literal
 
 import dgov.workers.config as worker_config
 from dgov.git_status import porcelain_status_paths
+from dgov.process_util import kill_process_group
 
 
 def shell_quote(s: str) -> str:
@@ -270,16 +270,17 @@ def _ty_verify_tool(core: list[str]) -> str | None:
 def _dgov_verify_tool(core: list[str]) -> str | None:
     if len(core) >= 3 and core[:3] == ["dgov", "verify", "run"]:
         return "dgov_verify_run"
-    if len(core) >= 5 and core[:4] in (
-        ["python", "-m", "dgov", "verify"],
-        ["python3", "-m", "dgov", "verify"],
-    ):
+    if len(core) >= 5 and _python_module_command(core[:4], "dgov.verify"):
         return "dgov_verify_run" if core[4] == "run" else None
     return None
 
 
 def _python_module_command(core: list[str], module: str) -> bool:
-    return core[:3] in (["python", "-m", module], ["python3", "-m", module])
+    if len(core) < 3:
+        return False
+    if not core[0].startswith("python"):
+        return False
+    return core[1:3] == ["-m", module]
 
 
 def _network_egress_error(detail: str) -> str:
@@ -764,21 +765,10 @@ class AtomicTools:
         try:
             stdout, stderr = proc.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            self._kill_process_group(proc)
+            kill_process_group(proc)
             proc.communicate()
             return f"Error: Command timed out after {timeout_s:g}s."
         return f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}\nEXIT:{proc.returncode}"
-
-    def _kill_process_group(self, proc: subprocess.Popen[str]) -> None:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            return
-        except OSError:
-            try:
-                proc.kill()
-            except (ProcessLookupError, OSError):
-                return
 
     def run_bash(self, cmd: str) -> str:
         """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
@@ -1056,17 +1046,26 @@ class AtomicTools:
 
     def _run_ast_grep(self, cmd: list[str]) -> subprocess.CompletedProcess[str] | str:
         try:
-            return subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 cwd=self.worktree,
                 env=self._sandbox_env(),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=30,
-                check=False,
+                start_new_session=True,
             )
+        except FileNotFoundError:
+            return f"Error: command not found: {cmd[0]}"
+        try:
+            stdout, stderr = proc.communicate(timeout=30)
         except subprocess.TimeoutExpired:
+            kill_process_group(proc)
+            proc.communicate()
             return "Error: ast-grep timed out after 30s."
+        return subprocess.CompletedProcess(
+            cmd, returncode=proc.returncode, stdout=stdout, stderr=stderr
+        )
 
     def _format_ast_grep_result(self, res: subprocess.CompletedProcess[str]) -> str:
         output = (res.stdout or "") + (res.stderr or "")

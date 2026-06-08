@@ -235,10 +235,9 @@ class TestRunVerifyRecipe:
                 calls["fallback_kill"] = True
 
         monkeypatch.setattr(verify.subprocess, "Popen", FakePopen)
-        monkeypatch.setattr(verify.os, "getpgid", lambda pid: 4321)
+        monkeypatch.setattr("dgov.process_util.os.getpgid", lambda pid: 4321)
         monkeypatch.setattr(
-            verify.os,
-            "killpg",
+            "dgov.process_util.os.killpg",
             lambda pgid, sig: calls.update({"killed": (pgid, sig)}),
         )
         recipe = VerifyRecipe(name="slow", command="slow-command")
@@ -250,7 +249,7 @@ class TestRunVerifyRecipe:
         assert calls["killed"][0] == 4321
 
     def test_timeout_fallback_ignores_raced_exit(self, monkeypatch):
-        from dgov import verify
+        from dgov.process_util import kill_process_group
 
         class FakePopen:
             pid = 1234
@@ -258,14 +257,14 @@ class TestRunVerifyRecipe:
             def kill(self):
                 raise ProcessLookupError
 
-        monkeypatch.setattr(verify.os, "getpgid", lambda pid: 4321)
+        monkeypatch.setattr("dgov.process_util.os.getpgid", lambda pid: 4321)
 
         def _raise_os_error(pgid, sig):
             raise OSError
 
-        monkeypatch.setattr(verify.os, "killpg", _raise_os_error)
+        monkeypatch.setattr("dgov.process_util.os.killpg", _raise_os_error)
 
-        verify._kill_process_group(cast(subprocess.Popen[str], FakePopen()))
+        kill_process_group(cast(subprocess.Popen[str], FakePopen()))
 
     def test_summary_singular_warning(self, tmp_path):
         script = self._write_script(tmp_path, "print('warning: only one')")
