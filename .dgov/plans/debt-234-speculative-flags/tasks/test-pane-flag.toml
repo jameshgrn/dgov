@@ -1,0 +1,21 @@
+[tasks.test-pane-flag]
+summary = "Add test exercising dgov scope status --pane"
+prompt = """
+Orient:
+- Read `src/dgov/cli/scope.py` and `src/dgov/scope_status.py`.
+- Read `tests/test_cli_scope.py` for existing test patterns.
+- The `--pane` flag in `scope status` is parsed but never exercised in tests.
+
+Edit:
+1. Add a test in `tests/test_cli_scope.py` that invokes `scope status --pane`.
+2. The test should verify the command accepts the flag and produces output.
+3. Follow the existing test pattern: use `CliRunner`, `_init_repo`, and `monkeypatch.chdir`.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_cli_scope.py::<test_name>`
+- `uv run ruff check tests/test_cli_scope.py`
+"""
+commit_message = "Add test for scope status --pane"
+role = "worker"
+files = { edit = ["tests/test_cli_scope.py"], read = ["src/dgov/cli/scope.py", "src/dgov/scope_status.py"] }
+test_cmd = "uv run pytest -q -m unit tests/test_cli_scope.py"

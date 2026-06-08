@@ -1,0 +1,4 @@
+[plan]
+name = "debt-234-speculative-flags"
+summary = "Exercise unverified CLI flags: --pane, --graph, --recompile-sops"
+sections = ["tasks"]

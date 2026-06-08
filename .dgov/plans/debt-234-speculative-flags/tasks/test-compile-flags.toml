@@ -1,0 +1,23 @@
+[tasks.test-compile-flags]
+summary = "Add tests exercising dgov compile --graph and --recompile-sops"
+prompt = """
+Orient:
+- Read `src/dgov/cli/compile.py` around lines 475 and 726 for `--graph` and `--recompile-sops` handling.
+- Read `tests/test_cli_compile.py` for existing test patterns.
+- Read `src/dgov/cli/__init__.py` for `print_dag_graph`.
+
+Edit:
+1. Add a test in `tests/test_cli_compile.py` that invokes `compile --graph` on a minimal plan tree.
+   - Verify the DAG output contains expected task names.
+2. Add a test in `tests/test_cli_compile.py` that invokes `compile --recompile-sops` on a plan tree.
+   - Verify the command completes without error and produces expected output.
+3. Use the existing `_make_plan_tree` fixture and test patterns.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_cli_compile.py::<test_names>`
+- `uv run ruff check tests/test_cli_compile.py`
+"""
+commit_message = "Add tests for compile --graph and --recompile-sops"
+role = "worker"
+files = { edit = ["tests/test_cli_compile.py"], read = ["src/dgov/cli/compile.py", "src/dgov/cli/__init__.py"] }
+test_cmd = "uv run pytest -q -m unit tests/test_cli_compile.py"
