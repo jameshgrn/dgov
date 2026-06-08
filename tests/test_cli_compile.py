@@ -704,3 +704,43 @@ def test_compile_preserves_prompt_file_and_worker_controls(
     assert unit.prompt.startswith("Orient:")
     assert unit.self_review is True
     assert unit.max_fork_depth == 0
+
+
+# -- graph flag --
+
+
+def test_compile_graph_prints_dag(runner: CliRunner, tmp_path: Path) -> None:
+    plan_dir = _make_plan_tree(tmp_path)
+    result = runner.invoke(cli, ["compile", str(plan_dir), "--graph"])
+    assert result.exit_code == 0, result.output
+    assert "DAG (3 tasks, 2 edges):" in result.output
+    assert "core/setup.init" in result.output
+    assert "core/setup.config" in result.output
+    assert "cli/commands.entry" in result.output
+
+
+def test_compile_graph_suppressed_with_json(runner: CliRunner, tmp_path: Path) -> None:
+    plan_dir = _make_plan_tree(tmp_path)
+    result = runner.invoke(cli, ["--json", "compile", str(plan_dir), "--graph"])
+    assert result.exit_code == 0, result.output
+    assert "DAG" not in result.output
+
+
+# -- recompile-sops flag --
+
+
+def test_compile_recompile_sops_completes_without_error(runner: CliRunner, tmp_path: Path) -> None:
+    plan_dir = _make_plan_tree(tmp_path)
+    result = runner.invoke(cli, ["compile", str(plan_dir), "--recompile-sops"])
+    assert result.exit_code == 0, result.output
+    assert (plan_dir / "_compiled.toml").exists()
+    assert "3 units" in result.output
+    assert "compiled" in result.output.lower()
+
+
+def test_compile_recompile_sops_with_dry_run(runner: CliRunner, tmp_path: Path) -> None:
+    plan_dir = _make_plan_tree(tmp_path)
+    result = runner.invoke(cli, ["compile", str(plan_dir), "--dry-run", "--recompile-sops"])
+    assert result.exit_code == 0, result.output
+    assert "dry-run" in result.output
+    assert (plan_dir / "_compiled.toml").exists()
