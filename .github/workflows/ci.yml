@@ -73,7 +73,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y ripgrep
-          npm install --global @ast-grep/cli
+          sudo npm install --global @ast-grep/cli
           rg --version
           sg --version
 
