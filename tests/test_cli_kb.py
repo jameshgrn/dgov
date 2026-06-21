@@ -52,62 +52,48 @@ Source-backed article body.
     )
 
 
+def _related_yaml(related: tuple[str, ...]) -> str:
+    if not related:
+        return "[]"
+    return "\n" + "\n".join(f"  - {item}" for item in related)
+
+
+def _write_kb_article(
+    root: Path,
+    *,
+    article_id: str,
+    title: str,
+    related: tuple[str, ...],
+) -> None:
+    _write(
+        root / "docs" / "knowledge" / "concepts" / f"{article_id}.md",
+        f"""---
+id: {article_id}
+title: {title}
+kind: concept
+status: living
+sources:
+  - .dgov/governor.md
+related: {_related_yaml(related)}
+---
+
+# {title}
+
+Body.
+""",
+    )
+
+
 def _write_kb_with_relations(root: Path) -> None:
     _write(root / ".dgov" / "governor.md", "governor\n")
-    _write(
-        root / "docs" / "knowledge" / "concepts" / "sentrux.md",
-        """---
-id: sentrux
-title: Sentrux
-kind: concept
-status: living
-sources:
-  - .dgov/governor.md
-related:
-  - runner
----
-
-# Sentrux
-
-Body.
-""",
+    _write_kb_article(root, article_id="sentrux", title="Sentrux", related=("runner",))
+    _write_kb_article(
+        root,
+        article_id="runner",
+        title="Runner",
+        related=("sentrux", "planner"),
     )
-    _write(
-        root / "docs" / "knowledge" / "concepts" / "runner.md",
-        """---
-id: runner
-title: Runner
-kind: concept
-status: living
-sources:
-  - .dgov/governor.md
-related:
-  - sentrux
-  - planner
----
-
-# Runner
-
-Body.
-""",
-    )
-    _write(
-        root / "docs" / "knowledge" / "concepts" / "planner.md",
-        """---
-id: planner
-title: Planner
-kind: concept
-status: living
-sources:
-  - .dgov/governor.md
-related: []
----
-
-# Planner
-
-Body.
-""",
-    )
+    _write_kb_article(root, article_id="planner", title="Planner", related=())
 
 
 def test_kb_validate_passes(runner: CliRunner, tmp_path: Path) -> None:
