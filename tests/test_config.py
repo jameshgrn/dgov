@@ -10,6 +10,25 @@ from dgov.workers.config import AtomicConfig, ProviderConfig
 
 pytestmark = pytest.mark.unit
 
+_NAMED_PROVIDER_REGISTRY_TOML = """
+[project]
+provider = "openai"
+
+[providers.openai]
+default_agent = "gpt-test"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[providers.openrouter]
+default_agent = "openrouter/test"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+max_tokens = 8192
+token_limit_label = "OpenRouter token policy"
+prompt_token_limit_header = "x-prompt-limit"
+generated_token_limit_header = "x-generated-limit"
+"""
+
 
 def _project_with_provider(
     name: str,
@@ -42,6 +61,29 @@ def _project_with_provider(
         },
         **kwargs,
     )
+
+
+def _write_named_provider_registry(root: Path) -> None:
+    dgov_dir = root / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text(_NAMED_PROVIDER_REGISTRY_TOML)
+
+
+def _assert_openrouter_provider(pc: ProjectConfig) -> None:
+    assert pc.llm_runtime_settings("openrouter") == (
+        "https://openrouter.ai/api/v1",
+        "OPENROUTER_API_KEY",
+    )
+    assert pc.provider_config("openrouter").max_tokens == 8192
+    openrouter = pc.provider_config("openrouter")
+    assert openrouter.token_limit_label == "OpenRouter token policy"
+    assert openrouter.prompt_token_limit_header == "x-prompt-limit"
+    assert openrouter.generated_token_limit_header == "x-generated-limit"
+    payload = pc.to_worker_payload("openrouter")
+    assert payload["llm_max_tokens"] == 8192
+    assert payload["llm_token_limit_label"] == "OpenRouter token policy"
+    assert payload["llm_prompt_token_limit_header"] == "x-prompt-limit"
+    assert payload["llm_generated_token_limit_header"] == "x-generated-limit"
 
 
 class TestProjectConfigDefaults:
@@ -297,48 +339,14 @@ class TestLoadProjectConfig:
         assert pc.type_check_cmd == "ty check"
 
     def test_loads_named_provider_registry(self, tmp_path):
-        dgov_dir = tmp_path / ".dgov"
-        dgov_dir.mkdir()
-        (dgov_dir / "project.toml").write_text(
-            """
-[project]
-provider = "openai"
-
-[providers.openai]
-default_agent = "gpt-test"
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-
-[providers.openrouter]
-default_agent = "openrouter/test"
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-max_tokens = 8192
-token_limit_label = "OpenRouter token policy"
-prompt_token_limit_header = "x-prompt-limit"
-generated_token_limit_header = "x-generated-limit"
-"""
-        )
+        _write_named_provider_registry(tmp_path)
 
         pc = load_project_config(tmp_path)
 
         assert pc.llm_provider == "openai"
         assert pc.default_agent == "gpt-test"
         assert pc.llm_runtime_settings() == ("https://api.openai.com/v1", "OPENAI_API_KEY")
-        assert pc.llm_runtime_settings("openrouter") == (
-            "https://openrouter.ai/api/v1",
-            "OPENROUTER_API_KEY",
-        )
-        assert pc.provider_config("openrouter").max_tokens == 8192
-        openrouter = pc.provider_config("openrouter")
-        assert openrouter.token_limit_label == "OpenRouter token policy"
-        assert openrouter.prompt_token_limit_header == "x-prompt-limit"
-        assert openrouter.generated_token_limit_header == "x-generated-limit"
-        payload = pc.to_worker_payload("openrouter")
-        assert payload["llm_max_tokens"] == 8192
-        assert payload["llm_token_limit_label"] == "OpenRouter token policy"
-        assert payload["llm_prompt_token_limit_header"] == "x-prompt-limit"
-        assert payload["llm_generated_token_limit_header"] == "x-generated-limit"
+        _assert_openrouter_provider(pc)
         assert pc.provider_default_agents() == {
             "openai": "gpt-test",
             "openrouter": "openrouter/test",
