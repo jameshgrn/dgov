@@ -5,8 +5,7 @@ from __future__ import annotations
 import pytest
 from click.testing import CliRunner
 
-from dgov.cli import cli
-from dgov.cli.run import _make_worker_event_callback
+from dgov.cli.run import _make_worker_event_callback, cli
 
 pytestmark = pytest.mark.unit
 

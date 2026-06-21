@@ -14,8 +14,8 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from runner_helpers import InterruptGovernor, MergeTask
 
-from dgov.actions import InterruptGovernor, MergeTask
 from dgov.command_facts import CommandExecutionFact
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
 from dgov.dispatch_run import DispatchRun
@@ -1420,8 +1420,7 @@ class TestInterruptHandling:
 
     def test_adaptive_rate_limit_fails_fast_even_with_retries_remaining(self):
         """Configured provider token-limit errors should fail immediately, not retry."""
-        from dgov.actions import GovernorAction
-        from dgov.event_types import GovernorResumed
+        from runner_helpers import GovernorAction, GovernorResumed
 
         with _io_patches(), patch("dgov.runner.emit_event") as mock_emit:
             runner = _make_runner(_single_dag())
@@ -1452,8 +1451,7 @@ class TestInterruptHandling:
 
     def test_ordinary_errors_still_retry_when_attempts_remain(self):
         """Normal worker errors should still follow retry logic."""
-        from dgov.actions import GovernorAction
-        from dgov.event_types import GovernorResumed
+        from runner_helpers import GovernorAction, GovernorResumed
 
         with _io_patches(), patch("dgov.runner.emit_event") as mock_emit:
             runner = _make_runner(_single_dag())
@@ -1481,8 +1479,7 @@ class TestInterruptHandling:
 
     def test_generated_token_rate_limit_also_fails_fast(self):
         """Configured provider generated-token limits should also fail fast."""
-        from dgov.actions import GovernorAction
-        from dgov.event_types import GovernorResumed
+        from runner_helpers import GovernorAction, GovernorResumed
 
         with _io_patches(), patch("dgov.runner.emit_event") as mock_emit:
             runner = _make_runner(_single_dag())
@@ -1884,7 +1881,7 @@ class TestPythonSemanticGateSubprocess:
 
     def test_subprocess_uses_candidate_src_path(self, tmp_path, monkeypatch):
         """Candidate subprocess should import from the candidate src tree first."""
-        from dgov.settlement_flow import run_python_semantic_gate_in_subprocess
+        from runner_helpers import run_python_semantic_gate_in_subprocess
 
         captured: dict[str, object] = {}
 
@@ -1923,7 +1920,7 @@ class TestPythonSemanticGateSubprocess:
 
     def test_subprocess_failure_fails_closed(self, tmp_path, monkeypatch):
         """Runner should reject when candidate-side semantic execution fails."""
-        from dgov.settlement_flow import run_python_semantic_gate_in_subprocess
+        from runner_helpers import run_python_semantic_gate_in_subprocess
 
         def _fake_run(cmd, cwd, capture_output, text, env, check):
             result = MagicMock()
@@ -2000,8 +1997,7 @@ class TestRecoveryPipeline:
 
     def test_apply_rehydrate_event_dispatched(self):
         """Rehydration applies dispatched events to kernel."""
-        from dgov.actions import TaskDispatched
-        from dgov.event_types import EvtTaskDispatched
+        from runner_helpers import EvtTaskDispatched, TaskDispatched
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2018,8 +2014,7 @@ class TestRecoveryPipeline:
 
     def test_apply_rehydrate_event_task_done(self):
         """Rehydration applies task_done events to kernel."""
-        from dgov.actions import TaskWaitDone
-        from dgov.event_types import TaskDone
+        from runner_helpers import TaskDone, TaskWaitDone
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2034,8 +2029,7 @@ class TestRecoveryPipeline:
 
     def test_apply_rehydrate_event_task_failed(self):
         """Rehydration applies task_failed events with FAILED state."""
-        from dgov.actions import TaskWaitDone
-        from dgov.event_types import TaskFailed
+        from runner_helpers import TaskFailed, TaskWaitDone
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2050,8 +2044,7 @@ class TestRecoveryPipeline:
 
     def test_apply_rehydrate_event_task_failed_timeout(self):
         """Rehydration detects timeout from error string and sets TIMED_OUT state."""
-        from dgov.actions import TaskWaitDone
-        from dgov.event_types import TaskFailed
+        from runner_helpers import TaskFailed, TaskWaitDone
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2079,8 +2072,7 @@ class TestRecoveryPipeline:
         and `_fork_worker`. A bare `"timeout" in error` substring check missed them,
         causing genuine timeouts to rehydrate as TaskState.FAILED.
         """
-        from dgov.actions import TaskWaitDone
-        from dgov.event_types import TaskFailed
+        from runner_helpers import TaskFailed, TaskWaitDone
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2095,8 +2087,7 @@ class TestRecoveryPipeline:
 
     def test_apply_rehydrate_event_governor_resumed(self):
         """Rehydration restores governor-resume events for retry state."""
-        from dgov.actions import GovernorAction, TaskGovernorResumed
-        from dgov.event_types import GovernorResumed
+        from runner_helpers import GovernorAction, GovernorResumed, TaskGovernorResumed
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2111,7 +2102,7 @@ class TestRecoveryPipeline:
 
     def test_abandon_orphaned_task_marks_abandoned(self):
         """Orphan abandonment marks ACTIVE tasks as ABANDONED."""
-        from dgov.actions import TaskWaitDone
+        from runner_helpers import TaskWaitDone
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2143,7 +2134,7 @@ class TestRecoveryPipeline:
 
     def test_resume_single_task_emits_event(self):
         """Resume emits governor-resumed event for auditability."""
-        from dgov.actions import GovernorAction, TaskGovernorResumed
+        from runner_helpers import GovernorAction, TaskGovernorResumed
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2288,7 +2279,7 @@ class TestSettlementPhaseBoundaries:
         """_settle_and_merge returns early when run_isolated_validation returns error."""
         from unittest.mock import MagicMock
 
-        from dgov.settlement_flow import IsolatedValidationResult
+        from runner_helpers import IsolatedValidationResult
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2323,7 +2314,7 @@ class TestSettlementPhaseBoundaries:
             action = MagicMock(task_slug="a", pane_slug="pane-1")
             wt = _mock_create_worktree("/tmp", "a")
 
-            from dgov.settlement_flow import IsolatedValidationResult
+            from runner_helpers import IsolatedValidationResult
 
             sf = runner._settlement_flow
             _set_async_mock(sf, "prepare_and_commit", return_value=(None, True))
@@ -2433,7 +2424,7 @@ class TestSettlementPhaseBoundaries:
             runner = _make_runner(_single_dag())
 
             # Make isolated validation fail
-            from dgov.settlement_flow import IsolatedValidationResult
+            from runner_helpers import IsolatedValidationResult
 
             sf = runner._settlement_flow
             _set_async_mock(
@@ -2474,7 +2465,7 @@ class TestSettlementPhaseBoundaries:
         """SettlementPhaseCompleted events should include facts from gate results."""
         from unittest.mock import patch
 
-        from dgov.settlement_flow import IsolatedValidationResult
+        from runner_helpers import IsolatedValidationResult
 
         with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
             runner = _make_runner(_single_dag())
@@ -2511,8 +2502,9 @@ class TestSettlementPhaseBoundaries:
     @pytest.mark.unit
     def test_serialize_command_facts_preserves_optional_fields(self):
         """Verify that _serialize_command_facts preserves log_path and warning_count."""
+        from runner_helpers import _serialize_command_facts
+
         from dgov.command_facts import CommandExecutionFact
-        from dgov.settlement_flow import _serialize_command_facts
 
         facts = (
             CommandExecutionFact(
@@ -2555,7 +2547,7 @@ class TestSettlementPhaseBoundaries:
         """Passing isolated_validation should include facts on its completed event."""
         from unittest.mock import MagicMock, patch
 
-        from dgov.settlement_flow import IsolatedValidationResult, RiskLevel
+        from runner_helpers import IsolatedValidationResult, RiskLevel
 
         facts = (
             {
@@ -2598,7 +2590,7 @@ class TestSettlementPhaseBoundaries:
     @pytest.mark.unit
     def test_candidate_validation_pass_carries_facts(self):
         """Passing candidate_validation should include facts on its completed event."""
-        from dgov.settlement_flow import CandidateValidationResult
+        from runner_helpers import CandidateValidationResult
 
         facts = _candidate_validation_pass_facts()
         with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:

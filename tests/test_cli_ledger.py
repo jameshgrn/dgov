@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from helpers import cli
 
-from dgov.cli import cli
 from dgov.persistence import list_ledger_entries
 from dgov.persistence.connection import _get_db
 

@@ -11,11 +11,10 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-from helpers import compile_plan_tree
+from helpers import cli, compile_plan_tree
 from rich.console import Console
 
 from dgov.bootstrap_policy import BOOTSTRAP_SOP_FILENAMES
-from dgov.cli import cli
 from dgov.cli.init import (
     _detect_project,
     _detect_scope_ignore_files,
@@ -89,7 +88,7 @@ def _make_compiled_plan(
 
 def _patched_load_review(monkeypatch, **overrides):
     """Return a helper that stubs load_review to return a fixed PlanReview."""
-    from dgov.plan_review import DiffStat, PlanReview, UnitReview
+    from helpers import DiffStat, PlanReview, UnitReview
 
     default_unit = UnitReview(
         unit="tasks/main.a",
@@ -134,7 +133,7 @@ def _patched_load_review(monkeypatch, **overrides):
 
 
 def _json_integration_review():
-    from dgov.plan_review import DiffStat, PlanReview, UnitReview
+    from helpers import DiffStat, PlanReview, UnitReview
 
     unit = UnitReview(
         unit="tasks/main.a",
@@ -166,7 +165,7 @@ def _json_integration_review():
 
 def _patched_run_envelope(monkeypatch, **overrides):
     """Stub load_run_envelope to return a fixed run-level snapshot."""
-    from dgov.plan_review import RunEnvelope
+    from helpers import RunEnvelope
 
     envelope = overrides.get("envelope", RunEnvelope(plan_name="p", last_run_ts=None))
     monkeypatch.setattr("dgov.plan_review.load_run_envelope", lambda *_args, **_kwargs: envelope)
@@ -1471,7 +1470,7 @@ def test_watch_root_forwards_resolved_project_root(
 def test_plan_remediate_scaffolds_follow_up_plan(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import RunEnvelope
+    from helpers import RunEnvelope
 
     plan_dir = _make_compiled_plan(tmp_path, "source-plan", {"tasks/main.a": "do a"})
     envelope = RunEnvelope(
@@ -1483,7 +1482,7 @@ def test_plan_remediate_scaffolds_follow_up_plan(
     )
     _patched_run_envelope(monkeypatch, envelope=envelope)
     monkeypatch.chdir(tmp_path)
-    from dgov.deploy_log import append as deploy_append
+    from helpers import deploy_append
 
     deploy_append(str(tmp_path), "source-plan", "tasks/main.a", "sha1")
 
@@ -1503,7 +1502,7 @@ def test_plan_remediate_scaffolds_follow_up_plan(
 def test_plan_remediate_rejects_non_degraded_plan(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import RunEnvelope
+    from helpers import RunEnvelope
 
     plan_dir = _make_compiled_plan(tmp_path, "source-plan", {"tasks/main.a": "do a"})
     envelope = RunEnvelope(
@@ -1513,7 +1512,7 @@ def test_plan_remediate_rejects_non_degraded_plan(
     )
     _patched_run_envelope(monkeypatch, envelope=envelope)
     monkeypatch.chdir(tmp_path)
-    from dgov.deploy_log import append as deploy_append
+    from helpers import deploy_append
 
     deploy_append(str(tmp_path), "source-plan", "tasks/main.a", "sha1")
 
@@ -1536,7 +1535,7 @@ def test_plan_remediate_reports_invalid_compiled_toml(runner: CliRunner, tmp_pat
 def test_plan_remediate_fails_when_live_plan_exists(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import RunEnvelope
+    from helpers import RunEnvelope
 
     plan_dir = _make_compiled_plan(tmp_path, "source-plan", {"tasks/main.a": "do a"})
     envelope = RunEnvelope(
@@ -1548,7 +1547,7 @@ def test_plan_remediate_fails_when_live_plan_exists(
     )
     _patched_run_envelope(monkeypatch, envelope=envelope)
     monkeypatch.chdir(tmp_path)
-    from dgov.deploy_log import append as deploy_append
+    from helpers import deploy_append
 
     deploy_append(str(tmp_path), "source-plan", "tasks/main.a", "sha1")
     existing = tmp_path / ".dgov" / "plans" / "source-plan-remediation"
@@ -1564,7 +1563,7 @@ def test_plan_remediate_fails_when_live_plan_exists(
 def test_plan_remediate_explicit_name_fails_when_archived_name_exists(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import RunEnvelope
+    from helpers import RunEnvelope
 
     plan_dir = _make_compiled_plan(tmp_path, "source-plan", {"tasks/main.a": "do a"})
     envelope = RunEnvelope(
@@ -1575,7 +1574,7 @@ def test_plan_remediate_explicit_name_fails_when_archived_name_exists(
     )
     _patched_run_envelope(monkeypatch, envelope=envelope)
     monkeypatch.chdir(tmp_path)
-    from dgov.deploy_log import append as deploy_append
+    from helpers import deploy_append
 
     deploy_append(str(tmp_path), "source-plan", "tasks/main.a", "sha1")
     archived = tmp_path / ".dgov" / "plans" / "archive" / "custom-name"
@@ -1591,7 +1590,7 @@ def test_plan_remediate_explicit_name_fails_when_archived_name_exists(
 def test_plan_remediate_generated_name_skips_live_suffixed_collision(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import RunEnvelope
+    from helpers import RunEnvelope
 
     plan_dir = _make_compiled_plan(tmp_path, "source-plan", {"tasks/main.a": "do a"})
     envelope = RunEnvelope(
@@ -1602,7 +1601,7 @@ def test_plan_remediate_generated_name_skips_live_suffixed_collision(
     )
     _patched_run_envelope(monkeypatch, envelope=envelope)
     monkeypatch.chdir(tmp_path)
-    from dgov.deploy_log import append as deploy_append
+    from helpers import deploy_append
 
     deploy_append(str(tmp_path), "source-plan", "tasks/main.a", "sha1")
     archived = tmp_path / ".dgov" / "plans" / "archive" / "source-plan-remediation"
@@ -1623,7 +1622,7 @@ def test_plan_remediate_uses_runs_log_fallback(
 ) -> None:
     plan_dir = _make_compiled_plan(tmp_path, "source-plan", {"tasks/main.a": "do a"})
     monkeypatch.chdir(tmp_path)
-    from dgov.deploy_log import append as deploy_append
+    from helpers import deploy_append
 
     deploy_append(str(tmp_path), "source-plan", "tasks/main.a", "sha1")
     runs_log = tmp_path / ".dgov" / "runs.log"
@@ -2215,7 +2214,7 @@ class TestReviewIntegrationTelemetry:
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Human output should show risk level and overlap when present."""
-        from dgov.plan_review import DiffStat, PlanReview, UnitReview
+        from helpers import DiffStat, PlanReview, UnitReview
 
         unit = UnitReview(
             unit="tasks/main.a",
@@ -2259,7 +2258,7 @@ class TestReviewIntegrationTelemetry:
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Human output should show candidate failure class when present."""
-        from dgov.plan_review import PlanReview, UnitReview
+        from helpers import PlanReview, UnitReview
 
         unit = UnitReview(
             unit="tasks/main.a",
@@ -2298,7 +2297,7 @@ class TestReviewIntegrationTelemetry:
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Human output should not show integration fields when not present."""
-        from dgov.plan_review import DiffStat, PlanReview, UnitReview
+        from helpers import DiffStat, PlanReview, UnitReview
 
         unit = UnitReview(
             unit="tasks/main.a",

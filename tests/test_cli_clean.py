@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from helpers import cli
 
-from dgov.cli import cli
 from dgov.persistence import emit_event
 
 pytestmark = pytest.mark.unit
