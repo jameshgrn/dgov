@@ -202,6 +202,7 @@ def _build_worker_env(project_root: str, task: DagTaskSpec) -> dict[str, str]:
 async def _launch_worker_subprocess(
     cmd: list[str],
     project_root: str,
+    env: Mapping[str, str],
 ) -> asyncio.subprocess.Process:
     """Launch the worker subprocess with stdout piped."""
     process = await asyncio.create_subprocess_exec(
@@ -209,6 +210,7 @@ async def _launch_worker_subprocess(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=project_root,
+        env=env,
     )
     assert process.stdout is not None
     return process
@@ -254,6 +256,26 @@ async def _drain_worker_stdout(
             prompt_tokens, completion_tokens = tokens
 
     return last_error, prompt_tokens, completion_tokens
+
+
+async def _worker_subprocess_result(
+    process: asyncio.subprocess.Process,
+    *,
+    project_root: str,
+    plan_name: str,
+    task_slug: str,
+    pane_slug: str,
+    on_event: Callable[[str, str, object], None] | None,
+) -> tuple[int, str, int, int]:
+    last_error, prompt_tokens, completion_tokens = await _drain_worker_stdout(
+        process,
+        project_root=project_root,
+        plan_name=plan_name,
+        task_slug=task_slug,
+        pane_slug=pane_slug,
+        on_event=on_event,
+    )
+    return await process.wait(), last_error, prompt_tokens, completion_tokens
 
 
 def _decode_worker_stdout_line(line_bytes: bytes, task_slug: str) -> dict | None:
@@ -346,15 +368,8 @@ async def run_headless_worker(
 
     try:
         env = _build_worker_env(project_root, task)
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=project_root,
-            env=env,
-        )
-        assert process.stdout is not None
-        last_error, prompt_tokens, completion_tokens = await _drain_worker_stdout(
+        process = await _launch_worker_subprocess(cmd, project_root, env)
+        exit_code, last_error, prompt_tokens, completion_tokens = await _worker_subprocess_result(
             process,
             project_root=project_root,
             plan_name=plan_name,
@@ -362,7 +377,6 @@ async def run_headless_worker(
             pane_slug=pane_slug,
             on_event=on_event,
         )
-        exit_code = await process.wait()
         _report_exit(
             on_exit,
             task_slug,
