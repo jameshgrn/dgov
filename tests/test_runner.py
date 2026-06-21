@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from dgov.actions import InterruptGovernor, MergeTask
+from dgov.command_facts import CommandExecutionFact
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
 from dgov.dispatch_run import DispatchRun
 from dgov.persistence import (
@@ -25,6 +26,7 @@ from dgov.persistence import (
     save_dispatch_run,
 )
 from dgov.runner import EventDagRunner, _ForkProvenance, _test_failure_command
+from dgov.settlement import GateResult
 from dgov.types import TaskState, WorkerExit, Worktree
 
 # ---------------------------------------------------------------------------
@@ -62,6 +64,51 @@ def _task(
 
 def _single_dag() -> DagDefinition:
     return _dag({"a": _task("a")})
+
+
+def _candidate_validation_test_fact() -> CommandExecutionFact:
+    return CommandExecutionFact(
+        gate="test",
+        source="project.test_cmd",
+        command="uv run pytest -q tests/test_candidate.py",
+        outcome="completed",
+        duration_s=1.25,
+        exit_code=1,
+    )
+
+
+def _candidate_validation_fail_validator(call_count: dict[str, int]):
+    def _validate_with_candidate_fail(
+        wt_path,
+        base_commit,
+        project_root,
+        config=None,
+        **_kwargs,
+    ):
+        call_count["count"] += 1
+        if call_count["count"] == 1:
+            return GateResult(passed=True)
+        return GateResult(
+            passed=False,
+            error="Candidate gate failed",
+            facts=(_candidate_validation_test_fact(),),
+        )
+
+    return _validate_with_candidate_fail
+
+
+def _emitted_events(mock_emit: MagicMock, event_type: str) -> list[Any]:
+    return [
+        c.args[1]
+        for c in mock_emit.call_args_list
+        if getattr(c.args[1], "event_type", None) == event_type
+    ]
+
+
+def _emitted_settlement_phase(mock_emit: MagicMock, phase: str) -> Any:
+    return next(
+        e for e in _emitted_events(mock_emit, "settlement_phase_completed") if e.phase == phase
+    )
 
 
 def _chain_dag() -> DagDefinition:
@@ -1670,56 +1717,18 @@ class TestIntegrationCandidate:
 
     def test_candidate_validation_gate_failure_rejects(self):
         """If candidate passes replay but fails validation gates, reject."""
-        # First call is isolated validation (pass), second is candidate validation (fail)
         call_count = {"count": 0}
 
-        def _validate_with_candidate_fail(
-            wt_path, base_commit, project_root, config=None, **_kwargs
-        ):
-            from dgov.settlement import CommandExecutionFact, GateResult
-
-            call_count["count"] += 1
-            if call_count["count"] == 1:
-                return GateResult(passed=True)  # Isolated validation passes
-            return GateResult(
-                passed=False,
-                error="Candidate gate failed",
-                facts=(
-                    CommandExecutionFact(
-                        gate="test",
-                        source="project.test_cmd",
-                        command="uv run pytest -q tests/test_candidate.py",
-                        outcome="completed",
-                        duration_s=1.25,
-                        exit_code=1,
-                    ),
-                ),
-            )
-
         with (
-            _io_patches(validate=_validate_with_candidate_fail) as _,
+            _io_patches(validate=_candidate_validation_fail_validator(call_count)) as _,
             patch(_P_EMIT_EVENT) as mock_emit,
         ):
             runner = _make_runner(_single_dag())
             results = asyncio.run(runner.run())
 
-            # Task should fail due to candidate gate failure
             assert results["a"] == "failed"
-
-            # Verify both candidate creation and cleanup were called
-            # and integration_candidate_failed was emitted (typed event signature)
-            failed_calls = [
-                c
-                for c in mock_emit.call_args_list
-                if getattr(c.args[1], "event_type", None) == "integration_candidate_failed"
-            ]
-            assert len(failed_calls) == 1
-            completed_events = [
-                c.args[1]
-                for c in mock_emit.call_args_list
-                if getattr(c.args[1], "event_type", None) == "settlement_phase_completed"
-            ]
-            cv_event = next(e for e in completed_events if e.phase == "candidate_validation")
+            assert len(_emitted_events(mock_emit, "integration_candidate_failed")) == 1
+            cv_event = _emitted_settlement_phase(mock_emit, "candidate_validation")
             assert cv_event.facts == (
                 {
                     "gate": "test",
