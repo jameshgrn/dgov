@@ -71,6 +71,27 @@ def effective_sop_set_hash(session_root: str) -> str:
         return ""
 
 
+def latest_dispatch_run_id(session_root: str, plan_id: str, unit_slug: str) -> str | None:
+    from dgov.persistence.dispatch_runs import list_dispatch_runs
+
+    rows = list_dispatch_runs(session_root, plan_id=plan_id, unit_slug=unit_slug)
+    return rows[-1]["id"] if rows else None
+
+
+def save_runner_dispatch_run(session_root: str, dispatch_run: Any) -> None:
+    from dgov.persistence.dispatch_runs import save_dispatch_run
+
+    save_dispatch_run(session_root, dispatch_run)
+
+
+def load_runner_dispatch_run(session_root: str, dispatch_run_id: str) -> Any | None:
+    from dgov.dispatch_run import _dispatch_run_from_row_dict
+    from dgov.persistence.dispatch_runs import get_dispatch_run
+
+    row = get_dispatch_run(session_root, dispatch_run_id)
+    return _dispatch_run_from_row_dict(row) if row else None
+
+
 def summarize_runner_evidence(overlap_evidence: Iterable[Any]) -> str:
     from dgov.semantic_settlement import summarize_evidence
 
