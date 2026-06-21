@@ -298,52 +298,46 @@ def diff_stat_for_error(worktree: Path) -> str:
         return f"Unavailable: {exc}"
 
 
-def task_scope_section(
-    task_scope: Mapping[str, object] | None,
-    *,
-    include_scope_status_instruction: bool = True,
-) -> str:
-    if not task_scope:
-        return ""
+def _scope_paths(task_scope: Mapping[str, object], name: str) -> list[str]:
+    raw = task_scope.get(name, [])
+    if isinstance(raw, list):
+        return [str(item) for item in raw if str(item).strip()]
+    return []
 
-    def _paths(name: str) -> list[str]:
-        raw = task_scope.get(name, [])
-        if isinstance(raw, list):
-            return [str(item) for item in raw if str(item).strip()]
-        return []
 
-    task_slug = str(task_scope.get("task_slug", "")).strip()
-    writable = list(
+def _writable_scope_paths(task_scope: Mapping[str, object]) -> list[str]:
+    return list(
         dict.fromkeys([
-            *_paths("create"),
-            *_paths("edit"),
-            *_paths("delete"),
-            *_paths("touch"),
+            *_scope_paths(task_scope, "create"),
+            *_scope_paths(task_scope, "edit"),
+            *_scope_paths(task_scope, "delete"),
+            *_scope_paths(task_scope, "touch"),
         ])
     )
-    read_only = _paths("read")
-    lines = ["\nTASK SCOPE:"]
-    if task_slug:
-        lines.append(f"- Task: {task_slug}")
-    lines.append(
-        f"- Writable paths: {', '.join(writable) if writable else '(none; read-only task)'}"
-    )
-    if read_only:
-        lines.append(f"- Read-only context: {', '.join(read_only)}")
-    scope_allow = _paths("scope_allow_files")
-    scope_deny = _paths("scope_deny_files")
-    if scope_allow:
-        lines.append(f"- Project path allowlist: {', '.join(scope_allow)}")
-    if scope_deny:
-        lines.append(f"- Project path denylist: {', '.join(scope_deny)}")
-    verify_test_targets = _paths("verify_test_targets")
-    if verify_test_targets:
-        lines.append(f"- Verification test targets: {', '.join(verify_test_targets)}")
-    if task_scope.get("require_successful_test_verification") is True:
-        lines.append("- Retry completion gate: run_tests() must pass before done.")
-        command = str(task_scope.get("required_verification_command", "")).strip()
-        if command:
-            lines.append(f"- Settlement failing command: {command}")
+
+
+def _append_scope_path_line(lines: list[str], label: str, paths: list[str]) -> None:
+    if paths:
+        lines.append(f"- {label}: {', '.join(paths)}")
+
+
+def _append_retry_verification_lines(
+    lines: list[str],
+    task_scope: Mapping[str, object],
+) -> None:
+    if task_scope.get("require_successful_test_verification") is not True:
+        return
+    lines.append("- Retry completion gate: run_tests() must pass before done.")
+    command = str(task_scope.get("required_verification_command", "")).strip()
+    if command:
+        lines.append(f"- Settlement failing command: {command}")
+
+
+def _append_scope_instructions(
+    lines: list[str],
+    *,
+    include_scope_status_instruction: bool,
+) -> None:
     lines.extend([
         "- Every other path is out of scope, even if it looks related.",
         "- If a path claimed under files.create already exists in this worktree, treat it as"
@@ -354,6 +348,40 @@ def task_scope_section(
             "- Before done, run scope_status to preview modified and transient file scope."
         )
     lines.append("- Before finishing, verify that unclaimed files stayed unchanged.")
+
+
+def task_scope_section(
+    task_scope: Mapping[str, object] | None,
+    *,
+    include_scope_status_instruction: bool = True,
+) -> str:
+    if not task_scope:
+        return ""
+
+    task_slug = str(task_scope.get("task_slug", "")).strip()
+    writable = _writable_scope_paths(task_scope)
+    read_only = _scope_paths(task_scope, "read")
+    lines = ["\nTASK SCOPE:"]
+    if task_slug:
+        lines.append(f"- Task: {task_slug}")
+    lines.append(
+        f"- Writable paths: {', '.join(writable) if writable else '(none; read-only task)'}"
+    )
+    _append_scope_path_line(lines, "Read-only context", read_only)
+    _append_scope_path_line(
+        lines, "Project path allowlist", _scope_paths(task_scope, "scope_allow_files")
+    )
+    _append_scope_path_line(
+        lines, "Project path denylist", _scope_paths(task_scope, "scope_deny_files")
+    )
+    _append_scope_path_line(
+        lines, "Verification test targets", _scope_paths(task_scope, "verify_test_targets")
+    )
+    _append_retry_verification_lines(lines, task_scope)
+    _append_scope_instructions(
+        lines,
+        include_scope_status_instruction=include_scope_status_instruction,
+    )
     return "\n".join(lines)
 
 
