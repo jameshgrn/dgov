@@ -1846,6 +1846,19 @@ def _sentrux_gate_result(
     return GateResult(passed=True)
 
 
+def _sentrux_gate_preflight(baseline: Path) -> GateResult | None:
+    if not baseline.exists():
+        return GateResult(passed=True)
+    if shutil.which("sentrux") is None:
+        return GateResult(
+            passed=False,
+            error="Sentrux not found in PATH. Fix: install sentrux before running dgov.",
+        )
+    if _sentrux_baseline_is_empty(baseline):
+        return GateResult(passed=True)
+    return None
+
+
 def _run_sentrux_gate(
     worktree_path: Path,
     project_root: str,
@@ -1860,19 +1873,9 @@ def _run_sentrux_gate(
     if config is None:
         config = load_project_config(project_root)
     baseline = Path(project_root) / ".sentrux" / "baseline.json"
-    if not baseline.exists():
-        return GateResult(passed=True)
-
-    if shutil.which("sentrux") is None:
-        return GateResult(
-            passed=False,
-            error="Sentrux not found in PATH. Fix: install sentrux before running dgov.",
-        )
-
-    # Skip gate when baseline was captured from an empty project (no import edges).
-    # Comparing against an empty baseline always shows "degradation" for any real code.
-    if _sentrux_baseline_is_empty(baseline):
-        return GateResult(passed=True)
+    preflight_result = _sentrux_gate_preflight(baseline)
+    if preflight_result is not None:
+        return preflight_result
 
     _copy_sentrux_baseline(baseline, worktree_path)
     res_sx, fact = _execute_sentrux_gate(worktree_path, timeout)
