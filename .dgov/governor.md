@@ -310,6 +310,10 @@ This is the sequence for going from idea to running plan.
 - Commit messages must be imperative and reflect one logical change.
 - If a task needs different model behavior, override `agent`; do not restate
   general governance rules in the task prompt.
+- Keep local-provider or unproven local-model tasks smaller than remote-model
+  tasks: one primary edit site, one behavior claim, one narrow verification
+  command, explicit tool-use guidance, and post-run audit/ledgering of model,
+  provider, tool calls, token use, settlement outcome, and lessons.
 - Use `self_review = true` on tasks where the worker is likely to make
   semantic mistakes (e.g. wrong method receiver, unused return values,
   incorrect API usage). Self-review spawns a clean-context reviewer on
