@@ -97,6 +97,29 @@ def _candidate_validation_fail_validator(call_count: dict[str, int]):
     return _validate_with_candidate_fail
 
 
+def _candidate_validation_pass_facts() -> tuple[dict[str, object], ...]:
+    return (
+        {
+            "gate": "test",
+            "source": "project.test_cmd",
+            "command": "uv run pytest -q tests/test_candidate.py",
+            "outcome": "completed",
+            "duration_s": 1.5,
+            "exit_code": 0,
+        },
+    )
+
+
+def _candidate_validation_success_result() -> Any:
+    from dgov.worktree import IntegrationCandidateResult
+
+    return IntegrationCandidateResult(
+        passed=True,
+        candidate_path=Path("/tmp/candidate"),
+        candidate_sha="candidate123",
+    )
+
+
 def _emitted_events(mock_emit: MagicMock, event_type: str) -> list[Any]:
     return [
         c.args[1]
@@ -2575,23 +2598,9 @@ class TestSettlementPhaseBoundaries:
     @pytest.mark.unit
     def test_candidate_validation_pass_carries_facts(self):
         """Passing candidate_validation should include facts on its completed event."""
-        from pathlib import Path
-        from unittest.mock import MagicMock, patch
-
         from dgov.settlement_flow import CandidateValidationResult
-        from dgov.worktree import IntegrationCandidateResult
 
-        facts = (
-            {
-                "gate": "test",
-                "source": "project.test_cmd",
-                "command": "uv run pytest -q tests/test_candidate.py",
-                "outcome": "completed",
-                "duration_s": 1.5,
-                "exit_code": 0,
-            },
-        )
-
+        facts = _candidate_validation_pass_facts()
         with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
             runner = _make_runner(_single_dag())
             _set_async_mock(
@@ -2602,23 +2611,17 @@ class TestSettlementPhaseBoundaries:
 
             action = MagicMock(task_slug="a", pane_slug="pane-1")
             task = runner.dag.tasks["a"]
-            candidate_result = IntegrationCandidateResult(
-                passed=True,
-                candidate_path=Path("/tmp/candidate"),
-                candidate_sha="candidate123",
-            )
             result = asyncio.run(
-                runner._candidate_validation_phase(action, task, candidate_result)
+                runner._candidate_validation_phase(
+                    action,
+                    task,
+                    _candidate_validation_success_result(),
+                )
             )
 
             assert result.error is None
             assert result.facts == facts
-            completed_events = [
-                c.args[1]
-                for c in mock_emit.call_args_list
-                if getattr(c.args[1], "event_type", None) == "settlement_phase_completed"
-            ]
-            cv_event = next(e for e in completed_events if e.phase == "candidate_validation")
+            cv_event = _emitted_settlement_phase(mock_emit, "candidate_validation")
             assert cv_event.status == "passed"
             assert cv_event.facts == facts
 
