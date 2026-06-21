@@ -10,7 +10,13 @@ import pytest
 from click.testing import CliRunner
 
 from dgov.cli import cli
-from dgov.plan_review import DiffStat, PlanReview, UnitReview
+from dgov.plan_review import (
+    DiffStat,
+    PlanReview,
+    SettlementPhaseTiming,
+    SettlementResult,
+    UnitReview,
+)
 from dgov.types import RunStatus
 
 pytestmark = pytest.mark.unit
@@ -82,6 +88,25 @@ def _default_plan_review() -> PlanReview:
         last_run_ts="2026-04-10T12:00:00Z",
         last_run_duration_s=12.5,
         units=[_default_unit_review()],
+    )
+
+
+def _phase_timing_review(
+    *phase_timings: SettlementPhaseTiming, settlement: SettlementResult = "n/a"
+) -> PlanReview:
+    unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="deployed",
+        settlement=settlement,
+        phase_timings=phase_timings,
+    )
+    return PlanReview(
+        plan_name="p",
+        source_dir=None,
+        last_run_ts=None,
+        last_run_duration_s=None,
+        units=[unit],
     )
 
 
@@ -611,24 +636,10 @@ def test_review_json_includes_self_corrections(
 def test_review_renders_settlement_phase_timings(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import PlanReview, SettlementPhaseTiming, UnitReview
-
-    unit = UnitReview(
-        unit="tasks/main.a",
-        summary="do a",
-        status="deployed",
+    review = _phase_timing_review(
+        SettlementPhaseTiming("prepare_commit", 0.5, "passed"),
+        SettlementPhaseTiming("isolated_validation", 76.0, "passed"),
         settlement="ok",
-        phase_timings=(
-            SettlementPhaseTiming("prepare_commit", 0.5, "passed"),
-            SettlementPhaseTiming("isolated_validation", 76.0, "passed"),
-        ),
-    )
-    review = PlanReview(
-        plan_name="p",
-        source_dir=None,
-        last_run_ts=None,
-        last_run_duration_s=None,
-        units=[unit],
     )
     plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
     _patched_load_review(monkeypatch, review=review)
@@ -645,20 +656,8 @@ def test_review_renders_settlement_phase_timings(
 def test_review_json_includes_settlement_phase_timings(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import PlanReview, SettlementPhaseTiming, UnitReview
-
-    unit = UnitReview(
-        unit="tasks/main.a",
-        summary="do a",
-        status="deployed",
-        phase_timings=(SettlementPhaseTiming("isolated_validation", 76.0, "passed"),),
-    )
-    review = PlanReview(
-        plan_name="p",
-        source_dir=None,
-        last_run_ts=None,
-        last_run_duration_s=None,
-        units=[unit],
+    review = _phase_timing_review(
+        SettlementPhaseTiming("isolated_validation", 76.0, "passed"),
     )
     plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
     _patched_load_review(monkeypatch, review=review)
@@ -682,8 +681,6 @@ def test_review_json_includes_settlement_phase_timings(
 def test_review_json_includes_non_empty_settlement_phase_facts(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import PlanReview, SettlementPhaseTiming, UnitReview
-
     facts = (
         {
             "gate": "test",
@@ -694,20 +691,8 @@ def test_review_json_includes_non_empty_settlement_phase_facts(
             "exit_code": 0,
         },
     )
-    unit = UnitReview(
-        unit="tasks/main.a",
-        summary="do a",
-        status="deployed",
-        phase_timings=(
-            SettlementPhaseTiming("candidate_validation", 2.25, "passed", facts=facts),
-        ),
-    )
-    review = PlanReview(
-        plan_name="p",
-        source_dir=None,
-        last_run_ts=None,
-        last_run_duration_s=None,
-        units=[unit],
+    review = _phase_timing_review(
+        SettlementPhaseTiming("candidate_validation", 2.25, "passed", facts=facts),
     )
     plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
     _patched_load_review(monkeypatch, review=review)
