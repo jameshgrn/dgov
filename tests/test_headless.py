@@ -84,6 +84,34 @@ def _make_exit_recorder() -> tuple[list[tuple[int, str, int, int]], Callable]:
     return exits, _on_exit
 
 
+def _run_headless_and_capture_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    task: DagTaskSpec,
+) -> tuple[dict[str, object], list[tuple[int, str, int, int]]]:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        _make_mock_subprocess_exec(exit_code=0, capture=captured),
+    )
+    exits, on_exit = _make_exit_recorder()
+    asyncio.run(
+        run_headless_worker(
+            project_root=str(tmp_path),
+            plan_name="plan-1",
+            task_slug="t1",
+            pane_slug="pane-1",
+            worktree_path=tmp_path,
+            task=task,
+            task_scope={"task_slug": "t1", "create": ["x.py"]},
+            on_exit=on_exit,
+        )
+    )
+    kwargs = cast(dict[str, object], captured.get("kwargs", {}))
+    return cast(dict[str, object], kwargs["env"]), exits
+
+
 def _make_test_task(
     slug: str = "t1",
     summary: str = "test",
@@ -380,29 +408,8 @@ def test_run_headless_worker_env_omits_unrelated_parent_var(
     monkeypatch.setenv("TMPDIR", "/tmp/tmpdir-leak")
     monkeypatch.setenv("DGOV_RUN_SOURCE", "test-run")
     monkeypatch.setenv("LANG", "C.UTF-8")
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        asyncio,
-        "create_subprocess_exec",
-        _make_mock_subprocess_exec(exit_code=0, capture=captured),
-    )
-    exits, on_exit = _make_exit_recorder()
 
-    asyncio.run(
-        run_headless_worker(
-            project_root=str(tmp_path),
-            plan_name="plan-1",
-            task_slug="t1",
-            pane_slug="pane-1",
-            worktree_path=tmp_path,
-            task=task,
-            task_scope={"task_slug": "t1", "create": ["x.py"]},
-            on_exit=on_exit,
-        )
-    )
-
-    kwargs = cast(dict[str, object], captured.get("kwargs", {}))
-    env = cast(dict[str, object], kwargs["env"])
+    env, exits = _run_headless_and_capture_env(tmp_path, monkeypatch, task)
     assert "UNRELATED_VAR" not in env
     assert "HOME" not in env
     assert "USER" not in env
@@ -437,29 +444,8 @@ api_key_env = "OPENAI_API_KEY"
     task = _make_test_task(provider="openai")
     monkeypatch.setenv("FIREWORKS_API_KEY", "fw-secret")
     monkeypatch.setenv("OPENAI_API_KEY", "oa-secret")
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        asyncio,
-        "create_subprocess_exec",
-        _make_mock_subprocess_exec(exit_code=0, capture=captured),
-    )
-    exits, on_exit = _make_exit_recorder()
 
-    asyncio.run(
-        run_headless_worker(
-            project_root=str(tmp_path),
-            plan_name="plan-1",
-            task_slug="t1",
-            pane_slug="pane-1",
-            worktree_path=tmp_path,
-            task=task,
-            task_scope={"task_slug": "t1", "create": ["x.py"]},
-            on_exit=on_exit,
-        )
-    )
-
-    kwargs = cast(dict[str, object], captured.get("kwargs", {}))
-    env = cast(dict[str, object], kwargs["env"])
+    env, exits = _run_headless_and_capture_env(tmp_path, monkeypatch, task)
     assert "FIREWORKS_API_KEY" not in env
     assert env.get("OPENAI_API_KEY") == "oa-secret"
     assert exits == [(0, "", 0, 0)]
