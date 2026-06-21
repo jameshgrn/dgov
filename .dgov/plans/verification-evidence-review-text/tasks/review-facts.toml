@@ -1,0 +1,32 @@
+[tasks.review-facts]
+summary = "Render settlement command facts in text plan review"
+commit_message = "Show settlement command facts in plan review"
+role = "worker"
+iteration_budget = 25
+files.edit = [
+  "src/dgov/cli/plan.py",
+  "tests/test_cli_plan_review.py",
+]
+files.read = [
+  "src/dgov/plan_review.py",
+  "src/dgov/command_facts.py",
+]
+test_cmd = "uv run pytest -q -m unit tests/test_cli_plan_review.py -k \"settlement_phase\""
+prompt = """
+Orient:
+- Read `src/dgov/cli/plan.py` around `_format_phase_timings`, `_render_deployed_unit`, `_render_failed_unit`, and `_render_active_unit`.
+- Read the settlement phase review tests in `tests/test_cli_plan_review.py`.
+- Read `src/dgov/plan_review.py` only to confirm the shape of `SettlementPhaseTiming.facts`.
+- Ledger debt #253 is about first-class verification evidence and mechanically surfaced exclusions. This task is only the small surfacing slice: text `dgov plan review` should expose already-persisted settlement command facts without changing settlement, event schemas, JSON output, provider configuration, or verification recipe parsing.
+
+Edit:
+1. In `src/dgov/cli/plan.py`, add a compact human formatter for non-empty command fact payloads on `unit.phase_timings`. Keep the existing `phases` summary line unchanged.
+2. Render the formatted fact lines in human `plan review` output for deployed, failed, and active unit blocks when facts exist. Include the phase, gate, source, outcome, exit code or timeout when present, warning count when present, and the command. Do not render anything when no facts exist.
+3. In `tests/test_cli_plan_review.py`, add focused coverage proving normal text review output includes a persisted settlement command fact and still omits the new section when phase timings have no facts.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_cli_plan_review.py -k "settlement_phase"`
+- `uv run ruff check src/dgov/cli/plan.py tests/test_cli_plan_review.py`
+- `uv run ruff format --check src/dgov/cli/plan.py tests/test_cli_plan_review.py`
+- `uv run ty check`
+"""
