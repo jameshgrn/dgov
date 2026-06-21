@@ -346,6 +346,23 @@ async def _wait_for_worker_exit(
     return True
 
 
+async def _start_worker_for_task(
+    *,
+    project_root: str,
+    worktree_path: Path,
+    task: DagTaskSpec,
+    task_scope: Mapping[str, object],
+) -> asyncio.subprocess.Process:
+    cmd = _worker_command(
+        project_root=project_root,
+        worktree_path=worktree_path,
+        task=task,
+        task_scope=task_scope,
+    )
+    env = _build_worker_env(project_root, task)
+    return await _launch_worker_subprocess(cmd, project_root, env)
+
+
 async def run_headless_worker(
     project_root: str,
     plan_name: str,
@@ -358,17 +375,15 @@ async def run_headless_worker(
     on_event: Callable[[str, str, object], None] | None = None,
 ) -> None:
     """Execute the headless worker lifecycle."""
-    cmd = _worker_command(
-        project_root=project_root,
-        worktree_path=worktree_path,
-        task=task,
-        task_scope=task_scope,
-    )
     process: asyncio.subprocess.Process | None = None
 
     try:
-        env = _build_worker_env(project_root, task)
-        process = await _launch_worker_subprocess(cmd, project_root, env)
+        process = await _start_worker_for_task(
+            project_root=project_root,
+            worktree_path=worktree_path,
+            task=task,
+            task_scope=task_scope,
+        )
         exit_code, last_error, prompt_tokens, completion_tokens = await _worker_subprocess_result(
             process,
             project_root=project_root,
