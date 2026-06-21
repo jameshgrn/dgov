@@ -277,6 +277,19 @@ def _coverage_worktree(tmp_path: Path, baseline_percent: float) -> tuple[Path, P
     return project_root, worktree_path
 
 
+def _coverage_fact_project(tmp_path: Path) -> tuple[list[str], ProjectConfig]:
+    changed_files = ["tests/test_ok.py"]
+    payload = _coverage_payload(changed_files[0], 100.0)
+    coverage_dir = tmp_path / ".coverage-baseline"
+    coverage_dir.mkdir()
+    (coverage_dir / "coverage.json").write_text(payload)
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_ok.py").write_text("def test_ok():\n    assert True\n")
+    config = ProjectConfig(coverage_cmd=_coverage_cmd(payload), test_cmd="")
+    return changed_files, config
+
+
 def _retry_worktree_with_claimed(tmp_path: Path) -> Path:
     """Create a retry worktree with claimed.py tracked and modified."""
     worktree = tmp_path / "worktree_retry"
@@ -1679,37 +1692,12 @@ class TestExecutionFacts:
         """A coverage measurement command should append its execution fact."""
         from dgov.settlement import _run_coverage_gate
 
-        coverage_dir = tmp_path / ".coverage-baseline"
-        coverage_dir.mkdir()
-        coverage_payload = {
-            "files": {
-                "tests/test_ok.py": {
-                    "summary": {
-                        "percent_covered": 100,
-                    }
-                }
-            }
-        }
-        (coverage_dir / "coverage.json").write_text(json.dumps(coverage_payload))
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        (tests_dir / "test_ok.py").write_text("def test_ok():\n    assert True\n")
-        script = tmp_path / "write_cov.py"
-        script.write_text(
-            "import json, pathlib, sys\n"
-            f"pathlib.Path(sys.argv[1]).write_text({json.dumps(json.dumps(coverage_payload))})\n"
-        )
-
-        py = shlex.quote(sys.executable)
-        config = ProjectConfig(
-            coverage_cmd=f"{py} {shlex.quote(str(script))} {{output}}",
-            test_cmd="",
-        )
+        changed_files, config = _coverage_fact_project(tmp_path)
         facts = []
 
         result = _run_coverage_gate(
             tmp_path,
-            ["tests/test_ok.py"],
+            changed_files,
             str(tmp_path),
             config,
             facts=facts,
