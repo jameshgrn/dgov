@@ -101,6 +101,10 @@ def _serialize_command_facts(
             payload["exit_code"] = fact.exit_code
         if fact.timeout_s is not None:
             payload["timeout_s"] = fact.timeout_s
+        if fact.log_path is not None:
+            payload["log_path"] = fact.log_path
+        if fact.warning_count is not None:
+            payload["warning_count"] = fact.warning_count
         result.append(payload)
     return tuple(result)
 

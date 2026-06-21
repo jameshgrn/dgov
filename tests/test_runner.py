@@ -2477,6 +2477,48 @@ class TestSettlementPhaseBoundaries:
             assert iv_event.facts == facts
 
     @pytest.mark.unit
+    def test_serialize_command_facts_preserves_optional_fields(self):
+        """Verify that _serialize_command_facts preserves log_path and warning_count."""
+        from dgov.command_facts import CommandExecutionFact
+        from dgov.settlement_flow import _serialize_command_facts
+
+        facts = (
+            CommandExecutionFact(
+                gate="lint",
+                source="ruff",
+                command="ruff check .",
+                outcome="completed",
+                duration_s=1.2,
+                exit_code=0,
+                log_path="/tmp/lint.log",
+                warning_count=5,
+            ),
+            CommandExecutionFact(
+                gate="test",
+                source="pytest",
+                command="pytest",
+                outcome="completed",
+                duration_s=2.0,
+                exit_code=0,
+            ),
+        )
+
+        serialized = _serialize_command_facts(facts)
+
+        assert len(serialized) == 2
+        # First fact
+        assert serialized[0]["gate"] == "lint"
+        assert serialized[0]["log_path"] == "/tmp/lint.log"
+        assert serialized[0]["warning_count"] == 5
+        assert "exit_code" in serialized[0]
+
+        # Second fact
+        assert serialized[1]["gate"] == "test"
+        assert "log_path" not in serialized[1]
+        assert "warning_count" not in serialized[1]
+        assert "exit_code" in serialized[1]
+
+    @pytest.mark.unit
     def test_isolated_validation_pass_carries_facts(self):
         """Passing isolated_validation should include facts on its completed event."""
         from unittest.mock import MagicMock, patch
