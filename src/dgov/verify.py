@@ -145,6 +145,36 @@ def _log_file_for_recipe(log_dir: Path, recipe: VerifyRecipe) -> Path:
     return log_file
 
 
+def _verify_completed_fact(
+    recipe: VerifyRecipe,
+    start: float,
+    exit_code: int,
+) -> CommandExecutionFact:
+    return CommandExecutionFact(
+        gate="verify",
+        source=f"verify.{recipe.name}",
+        command=recipe.command,
+        outcome="completed",
+        exit_code=exit_code,
+        duration_s=time.monotonic() - start,
+    )
+
+
+def _verify_timeout_fact(
+    recipe: VerifyRecipe,
+    start: float,
+    timeout: float,
+) -> CommandExecutionFact:
+    return CommandExecutionFact(
+        gate="verify",
+        source=f"verify.{recipe.name}",
+        command=recipe.command,
+        outcome="timed_out",
+        timeout_s=timeout,
+        duration_s=time.monotonic() - start,
+    )
+
+
 def _execute_verify_command(
     root: Path,
     recipe: VerifyRecipe,
@@ -163,37 +193,15 @@ def _execute_verify_command(
         )
         stdout, stderr = proc.communicate(timeout=timeout)
         exit_code = proc.returncode if proc.returncode is not None else -1
-        fact = CommandExecutionFact(
-            gate="verify",
-            source=f"verify.{recipe.name}",
-            command=recipe.command,
-            outcome="completed",
-            exit_code=exit_code,
-            duration_s=time.monotonic() - start,
-        )
-        return exit_code, stdout + stderr, fact
+        return exit_code, stdout + stderr, _verify_completed_fact(recipe, start, exit_code)
     except subprocess.TimeoutExpired:
         kill_process_group(proc)
         stdout, stderr = proc.communicate()
-        fact = CommandExecutionFact(
-            gate="verify",
-            source=f"verify.{recipe.name}",
-            command=recipe.command,
-            outcome="timed_out",
-            timeout_s=timeout,
-            duration_s=time.monotonic() - start,
-        )
-        return -1, stdout + stderr + f"\n[verify] timed out after {timeout}s\n", fact
+        output = stdout + stderr + f"\n[verify] timed out after {timeout}s\n"
+        return -1, output, _verify_timeout_fact(recipe, start, timeout)
     except OSError as exc:
-        fact = CommandExecutionFact(
-            gate="verify",
-            source=f"verify.{recipe.name}",
-            command=recipe.command,
-            outcome="completed",
-            exit_code=-1,
-            duration_s=time.monotonic() - start,
-        )
-        return -1, f"\n[verify] failed to execute: {exc}\n", fact
+        output = f"\n[verify] failed to execute: {exc}\n"
+        return -1, output, _verify_completed_fact(recipe, start, -1)
 
 
 def _run_single(
