@@ -1,0 +1,29 @@
+[tasks.split-analysis]
+summary = "Split scope status analysis setup into private helpers"
+prompt = """
+## Orient
+- Read `src/dgov/scope_status.py` around `analyze_scope_status` and its private helpers.
+- Read `tests/test_scope_status.py` only if you need behavior examples.
+- This is a Sentrux cleanup. Keep behavior unchanged and do not change the public `analyze_scope_status` signature.
+- Do not edit tests or other modules.
+- Use `grep` before broad reads. If output is clipped, narrow the next read immediately.
+
+## Edit
+1. In `src/dgov/scope_status.py`, extract private helper structure so `analyze_scope_status` no longer owns all setup details inline.
+2. Keep the helpers private, small, and near the existing `_TransientScope` / `_build_scope_status` helpers.
+3. Preserve the existing `ScopeStatus` fields and blocking failure behavior exactly.
+4. Do not add dynamic imports or indirection just to hide Sentrux metrics.
+
+## Verify
+- Use the test tool, not raw shell, for `uv run pytest -q tests/test_scope_status.py`.
+"""
+commit_message = "Split scope status analysis helpers"
+role = "worker"
+timeout_s = 500
+iteration_budget = 12
+test_cmd = "uv run pytest -q tests/test_scope_status.py"
+max_fork_depth = 0
+
+[tasks.split-analysis.files]
+edit = ["src/dgov/scope_status.py"]
+read = ["tests/test_scope_status.py"]
