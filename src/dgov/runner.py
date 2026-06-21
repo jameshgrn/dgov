@@ -1697,16 +1697,10 @@ class EventDagRunner:
         """Hash the worker SOP bundle loaded for this dispatch."""
         return effective_sop_set_hash(self.session_root)
 
-    def _mint_dispatch_run(
+    def _dispatch_run_lineage(
         self,
-        *,
-        task_slug: str,
-        wt: Worktree,
-        agent: str,
         ctx: TaskContext,
-    ) -> DispatchRun:
-        effective_sop_set_hash = self._effective_sop_set_hash()
-        plan_hash = self.dag.sop_set_hash or None
+    ) -> tuple[str | None, str | None, int, int]:
         retried_from: str | None = None
         forked_from: str | None = None
         retry_index = 0
@@ -1720,6 +1714,19 @@ class EventDagRunner:
                 fork_depth = ctx.fork_depth
             case None:
                 pass
+        return retried_from, forked_from, retry_index, fork_depth
+
+    def _mint_dispatch_run(
+        self,
+        *,
+        task_slug: str,
+        wt: Worktree,
+        agent: str,
+        ctx: TaskContext,
+    ) -> DispatchRun:
+        effective_sop_set_hash = self._effective_sop_set_hash()
+        plan_hash = self.dag.sop_set_hash or None
+        retried_from, forked_from, retry_index, fork_depth = self._dispatch_run_lineage(ctx)
         dispatch_run = DispatchRun(
             from_plan_id=self.dag.name,
             unit_slug=task_slug,
