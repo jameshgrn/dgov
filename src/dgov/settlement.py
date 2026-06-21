@@ -1619,6 +1619,45 @@ def _type_check_failure(
     return None
 
 
+def _run_type_check_diagnostics(
+    source: str,
+    type_check_cmd: str,
+    cwd: Path,
+    timeout: int,
+) -> tuple[
+    subprocess.CompletedProcess[str] | None,
+    CommandExecutionFact,
+    set[tuple[str, str]] | None,
+]:
+    result, fact = _run_cmd_with_fact(
+        "type_check",
+        source,
+        type_check_cmd,
+        [],
+        cwd,
+        timeout=timeout,
+    )
+    if result is None:
+        return None, fact, None
+    output = _type_check_output(result)
+    return result, fact, parse_diagnostic_identities(output, cwd)
+
+
+def _type_check_timeout_failure(
+    label: str,
+    timeout: int,
+    facts: tuple[CommandExecutionFact, ...],
+) -> tuple[GateResult, tuple[CommandExecutionFact, ...]]:
+    return (
+        GateResult(
+            passed=False,
+            error=f"Type check {label} command timed out after {timeout}s",
+            facts=facts,
+        ),
+        facts,
+    )
+
+
 def _type_check_gate(
     type_check_cmd: str,
     worktree_path: Path,
@@ -1637,46 +1676,31 @@ def _type_check_gate(
     # pass a detached baseline worktree so diagnostics are compared against the
     # merge base instead of the already-mutated feature branch.
     baseline_cwd = baseline_path or Path(project_root)
-    baseline_res, baseline_fact = _run_cmd_with_fact(
-        "type_check",
+    baseline_res, baseline_fact, baseline_ids = _run_type_check_diagnostics(
         "project.type_check_cmd:baseline",
         type_check_cmd,
-        [],
         baseline_cwd,
-        timeout=timeout,
+        timeout,
     )
     if baseline_res is None:
-        return (
-            GateResult(
-                passed=False,
-                error=f"Type check baseline command timed out after {timeout}s",
-                facts=(baseline_fact,),
-            ),
-            (baseline_fact,),
-        )
-    baseline_output = _type_check_output(baseline_res)
-    baseline_ids = parse_diagnostic_identities(baseline_output, baseline_cwd)
+        return _type_check_timeout_failure("baseline", timeout, (baseline_fact,))
+    assert baseline_ids is not None
 
     # Worktree: run against worker's changes
-    worktree_res, worktree_fact = _run_cmd_with_fact(
-        "type_check",
+    worktree_res, worktree_fact, worktree_ids = _run_type_check_diagnostics(
         "project.type_check_cmd:worktree",
         type_check_cmd,
-        [],
         worktree_path,
-        timeout=timeout,
+        timeout,
     )
     if worktree_res is None:
-        return (
-            GateResult(
-                passed=False,
-                error=f"Type check worktree command timed out after {timeout}s",
-                facts=(baseline_fact, worktree_fact),
-            ),
+        return _type_check_timeout_failure(
+            "worktree",
+            timeout,
             (baseline_fact, worktree_fact),
         )
+    assert worktree_ids is not None
     worktree_output = _type_check_output(worktree_res)
-    worktree_ids = parse_diagnostic_identities(worktree_output, worktree_path)
 
     # Compare identity sets: new diagnostics are those in worktree but not baseline
     new_ids = worktree_ids - baseline_ids
