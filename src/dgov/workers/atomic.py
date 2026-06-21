@@ -85,6 +85,7 @@ _RIPGREP_ALLOWED_FLAG_RE = re.compile(
     r"null|no-null|null-data|print0"
     r"))$"
 )
+_RIPGREP_SHELL_META_RE = re.compile(r"[;|&<>$()`\n\\]")
 
 _NETWORK_TOOLS = frozenset({
     "curl",
@@ -99,6 +100,88 @@ _NETWORK_TOOLS = frozenset({
     "ftp",
 })
 _GIT_NETWORK_SUBCOMMANDS = frozenset({"clone", "fetch", "pull", "push", "ls-remote"})
+
+
+def _ripgrep_flag_error(token: str) -> str | None:
+    if _RIPGREP_SHELL_META_RE.search(token):
+        return f"Error: Invalid flag contains shell metacharacters: {token}"
+    if not token.startswith("-"):
+        return f"Error: Invalid flag token: {token}"
+    if not _RIPGREP_ALLOWED_FLAG_RE.match(token):
+        return f"Error: Unknown or disallowed flag: {token}"
+    return None
+
+
+def _ripgrep_base_flag(token: str) -> tuple[str, bool, str | None]:
+    if token.startswith("--"):
+        return token[2:], False, None
+    if len(token) <= 2:
+        return token, False, None
+    if token[:2] in _RIPGREP_ARG_SHORT_FLAGS:
+        return token[:2], False, None
+    if token[1] in _RIPGREP_SIMPLE_SHORT_FLAGS:
+        invalid = next((ch for ch in token[1:] if ch not in _RIPGREP_SIMPLE_SHORT_FLAGS), None)
+        if invalid is not None:
+            return token, False, f"Error: Unknown or disallowed flag: -{invalid}"
+        return token, True, None
+    return token, False, None
+
+
+def _ripgrep_flag_requires_argument(base_flag: str) -> bool:
+    return base_flag in _RIPGREP_ARG_SHORT_FLAGS or base_flag in _RIPGREP_ARG_LONG_FLAGS
+
+
+def _ripgrep_flag_argument_error(arg: str) -> str | None:
+    if _RIPGREP_SHELL_META_RE.search(arg):
+        return f"Error: Invalid flag argument contains shell metacharacters: {arg}"
+    return None
+
+
+def _consume_ripgrep_argument(
+    tokens: list[str],
+    index: int,
+    token: str,
+    result: list[str],
+) -> tuple[int, str | None]:
+    arg_index = index + 1
+    if arg_index >= len(tokens):
+        return arg_index, f"Error: Flag {token} requires an argument"
+    arg = tokens[arg_index]
+    if error := _ripgrep_flag_argument_error(arg):
+        return arg_index, error
+    result.append(arg)
+    return arg_index + 1, None
+
+
+def _consume_ripgrep_token(
+    tokens: list[str],
+    index: int,
+    result: list[str],
+) -> tuple[int, str | None]:
+    token = tokens[index]
+    if error := _ripgrep_flag_error(token):
+        return index, error
+    result.append(token)
+
+    base_flag, flag_consumed, error = _ripgrep_base_flag(token)
+    if error:
+        return index, error
+    if flag_consumed:
+        return index + 1, None
+    if _ripgrep_flag_requires_argument(base_flag):
+        return _consume_ripgrep_argument(tokens, index, token, result)
+    return index + 1, None
+
+
+def _validate_ripgrep_tokens(tokens: list[str]) -> list[str] | str:
+    result: list[str] = []
+    index = 0
+    while index < len(tokens):
+        index, error = _consume_ripgrep_token(tokens, index, result)
+        if error:
+            return error
+    return result
+
 
 _UV_RUN_OPTIONS_WITH_VALUE = frozenset({
     "-C",
@@ -1286,41 +1369,7 @@ class AtomicTools:
             tokens = shlex.split(flags)
         except ValueError as e:
             return f"Error: Invalid flags syntax: {e}"
-        shell_metacharacters = re.compile(r"[;|&<>$()`\n\\]")
-        result = []
-        i = 0
-        while i < len(tokens):
-            token = tokens[i]
-            if shell_metacharacters.search(token):
-                return f"Error: Invalid flag contains shell metacharacters: {token}"
-            if not token.startswith("-"):
-                return f"Error: Invalid flag token: {token}"
-            if not _RIPGREP_ALLOWED_FLAG_RE.match(token):
-                return f"Error: Unknown or disallowed flag: {token}"
-            result.append(token)
-
-            base_flag = token
-            if token.startswith("--"):
-                base_flag = token[2:]
-            elif len(token) > 2:
-                if token[:2] in _RIPGREP_ARG_SHORT_FLAGS:
-                    base_flag = token[:2]
-                elif token[1] in _RIPGREP_SIMPLE_SHORT_FLAGS:
-                    for ch in token[1:]:
-                        if ch not in _RIPGREP_SIMPLE_SHORT_FLAGS:
-                            return f"Error: Unknown or disallowed flag: -{ch}"
-                    i += 1
-                    continue
-            if base_flag in _RIPGREP_ARG_SHORT_FLAGS or base_flag in _RIPGREP_ARG_LONG_FLAGS:
-                i += 1
-                if i >= len(tokens):
-                    return f"Error: Flag {token} requires an argument"
-                arg = tokens[i]
-                if shell_metacharacters.search(arg):
-                    return f"Error: Invalid flag argument contains shell metacharacters: {arg}"
-                result.append(arg)
-            i += 1
-        return result
+        return _validate_ripgrep_tokens(tokens)
 
     def ripgrep(self, pattern: str, path: str = ".", flags: str = "") -> str:
         """Fast regex search via rg. Supports flags like -i, -l, -C3, --type py."""
