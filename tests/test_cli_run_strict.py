@@ -100,6 +100,43 @@ def _commit_all(repo: Path, message: str = "add files") -> None:
     subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
 
 
+def _git_status(repo: Path, *extra_args: str) -> str:
+    return subprocess.run(
+        ["git", "status", "--porcelain", *extra_args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+def _commit_dgov_run_metadata_state(tmp_path: Path) -> tuple[Path, Path, Path, str]:
+    _init_committed_repo(tmp_path)
+    sentrux_dir = tmp_path / ".sentrux"
+    plan_dir = tmp_path / ".dgov" / "sops" / "plan_hello"
+    deployed_log = tmp_path / ".dgov" / "plans" / "deployed.jsonl"
+    compiled_plan = plan_dir / "_compiled.toml"
+    deployed_log.parent.mkdir(parents=True)
+    plan_dir.mkdir(parents=True)
+    sentrux_dir.mkdir()
+    (sentrux_dir / "baseline.json").write_text('{"quality": 90}\n')
+    deployed_log.write_text('{"plan":"hello","unit":"old","sha":"abc","ts":"old"}\n')
+    compiled_plan.write_text('[plan]\nname = "hello"\n')
+    subprocess.run(
+        [
+            "git",
+            "add",
+            ".sentrux/baseline.json",
+            ".dgov/plans/deployed.jsonl",
+            ".dgov/sops/plan_hello/_compiled.toml",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(["git", "commit", "-q", "-m", "save dgov state"], cwd=tmp_path, check=True)
+    return sentrux_dir, deployed_log, compiled_plan, _git_head(tmp_path)
+
+
 def test_dirty_worker_files_counts_rename_source_into_dgov(tmp_path: Path) -> None:
     from dgov.cli.run import _dirty_worker_files
 
@@ -931,30 +968,9 @@ def test_refresh_sentrux_baseline_after_clean_run_allows_dgov_run_metadata(
 ) -> None:
     from dgov.sentrux_baseline import refresh_sentrux_baseline_after_clean_run
 
-    _init_committed_repo(tmp_path)
-    sentrux_dir = tmp_path / ".sentrux"
-    plan_dir = tmp_path / ".dgov" / "sops" / "plan_hello"
-    deployed_log = tmp_path / ".dgov" / "plans" / "deployed.jsonl"
-    compiled_plan = plan_dir / "_compiled.toml"
-    deployed_log.parent.mkdir(parents=True)
-    plan_dir.mkdir(parents=True)
-    sentrux_dir.mkdir()
-    (sentrux_dir / "baseline.json").write_text('{"quality": 90}\n')
-    deployed_log.write_text('{"plan":"hello","unit":"old","sha":"abc","ts":"old"}\n')
-    compiled_plan.write_text('[plan]\nname = "hello"\n')
-    subprocess.run(
-        [
-            "git",
-            "add",
-            ".sentrux/baseline.json",
-            ".dgov/plans/deployed.jsonl",
-            ".dgov/sops/plan_hello/_compiled.toml",
-        ],
-        cwd=tmp_path,
-        check=True,
+    sentrux_dir, deployed_log, compiled_plan, accepted_head = _commit_dgov_run_metadata_state(
+        tmp_path
     )
-    subprocess.run(["git", "commit", "-q", "-m", "save dgov state"], cwd=tmp_path, check=True)
-    accepted_head = _git_head(tmp_path)
     deployed_log.write_text(deployed_log.read_text() + '{"plan":"hello","unit":"new"}\n')
     compiled_plan.write_text('[plan]\nname = "hello"\nsource_mtime_max = "now"\n')
     captured: dict[str, object] = {}
@@ -969,13 +985,7 @@ def test_refresh_sentrux_baseline_after_clean_run_allows_dgov_run_metadata(
     metadata = json.loads((sentrux_dir / "dgov-baseline.json").read_text())
     assert metadata["accepted_head"] == accepted_head
     assert _latest_commit_subject(tmp_path) == "Refresh sentrux baseline"
-    status = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
+    status = _git_status(tmp_path)
     assert "M .dgov/plans/deployed.jsonl" in status
     assert "M .dgov/sops/plan_hello/_compiled.toml" in status
 
