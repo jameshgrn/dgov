@@ -745,6 +745,53 @@ def filter_unclaimed_non_ignored(
     )
 
 
+def _unclaimed_transient_paths(
+    transient_paths: set[str],
+    claimed: frozenset[str],
+    scope_ignore_files: Sequence[str],
+) -> list[str]:
+    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = split_ignore_entries(
+        scope_ignore_files
+    )
+    return filter_unclaimed_non_ignored(
+        transient_paths,
+        claimed,
+        ignored_exact,
+        ignored_prefix_dirs,
+        ignored_named_dirs,
+        ignored_globs,
+    )
+
+
+def _transient_reserved_failure(
+    transient_paths: set[str],
+    actual_files: frozenset[str],
+) -> ReviewResult | None:
+    reserved = sorted(path for path in transient_paths if _is_reserved_path(path))
+    if not reserved:
+        return None
+    return ReviewResult(
+        passed=False,
+        verdict="reserved_path",
+        actual_files=actual_files,
+        error=(f"Transiently touched governor-owned files via worker tools: {reserved}"),
+    )
+
+
+def _transient_unclaimed_failure(
+    unclaimed: list[str],
+    actual_files: frozenset[str],
+) -> ReviewResult | None:
+    if not unclaimed:
+        return None
+    return ReviewResult(
+        passed=False,
+        verdict="scope_violation",
+        actual_files=actual_files,
+        error=(f"Transiently touched unclaimed files via worker tools: {unclaimed}"),
+    )
+
+
 def check_transient_scope(
     session_root: str | None,
     task_slug: str | None,
@@ -765,37 +812,13 @@ def check_transient_scope(
         return None
 
     claimed = frozenset(claimed_files)
-    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = split_ignore_entries(
-        scope_ignore_files
-    )
-
     transient_paths = collect_transient_write_paths(session_root, task_slug, pane_slug)
-    reserved = sorted(path for path in transient_paths if _is_reserved_path(path))
-    if reserved:
-        return ReviewResult(
-            passed=False,
-            verdict="reserved_path",
-            actual_files=actual_files,
-            error=(f"Transiently touched governor-owned files via worker tools: {reserved}"),
-        )
-
-    unclaimed = filter_unclaimed_non_ignored(
-        transient_paths,
-        claimed,
-        ignored_exact,
-        ignored_prefix_dirs,
-        ignored_named_dirs,
-        ignored_globs,
-    )
-
-    if not unclaimed:
-        return None
-
-    return ReviewResult(
-        passed=False,
-        verdict="scope_violation",
-        actual_files=actual_files,
-        error=(f"Transiently touched unclaimed files via worker tools: {unclaimed}"),
+    failure = _transient_reserved_failure(transient_paths, actual_files)
+    if failure is not None:
+        return failure
+    return _transient_unclaimed_failure(
+        _unclaimed_transient_paths(transient_paths, claimed, scope_ignore_files),
+        actual_files,
     )
 
 
