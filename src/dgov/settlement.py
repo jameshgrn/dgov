@@ -1658,6 +1658,40 @@ def _type_check_timeout_failure(
     )
 
 
+@dataclass(frozen=True)
+class _TypeCheckDiagnosticRun:
+    result: subprocess.CompletedProcess[str]
+    fact: CommandExecutionFact
+    ids: set[tuple[str, str]]
+
+
+def _type_check_diagnostic_run(
+    *,
+    label: str,
+    source: str,
+    type_check_cmd: str,
+    cwd: Path,
+    timeout: int,
+    prior_facts: tuple[CommandExecutionFact, ...] = (),
+) -> tuple[
+    _TypeCheckDiagnosticRun | None,
+    GateResult | None,
+    tuple[CommandExecutionFact, ...],
+]:
+    result, fact, diagnostic_ids = _run_type_check_diagnostics(
+        source,
+        type_check_cmd,
+        cwd,
+        timeout,
+    )
+    facts = (*prior_facts, fact)
+    if result is None:
+        failure, facts = _type_check_timeout_failure(label, timeout, facts)
+        return None, failure, facts
+    assert diagnostic_ids is not None
+    return _TypeCheckDiagnosticRun(result, fact, diagnostic_ids), None, facts
+
+
 def _type_check_gate(
     type_check_cmd: str,
     worktree_path: Path,
@@ -1665,52 +1699,37 @@ def _type_check_gate(
     timeout: int = 120,
     baseline_path: Path | None = None,
 ) -> tuple[GateResult | None, tuple[CommandExecutionFact, ...]]:
-    """Run type checker with baseline comparison.
-
-    Runs the type checker in both the project root (baseline) and the
-    worktree. Only fails if the worktree introduces NEW diagnostic identities
-    (file, error_code pairs) that don't exist in the baseline — pre-existing
-    errors are not the worker's fault, even if line numbers shift.
-    """
-    # Baseline: run in project root by default. Branch-level verification can
-    # pass a detached baseline worktree so diagnostics are compared against the
-    # merge base instead of the already-mutated feature branch.
+    """Run type checker with baseline comparison."""
     baseline_cwd = baseline_path or Path(project_root)
-    baseline_res, baseline_fact, baseline_ids = _run_type_check_diagnostics(
-        "project.type_check_cmd:baseline",
-        type_check_cmd,
-        baseline_cwd,
-        timeout,
+    baseline, failure, facts = _type_check_diagnostic_run(
+        label="baseline",
+        source="project.type_check_cmd:baseline",
+        type_check_cmd=type_check_cmd,
+        cwd=baseline_cwd,
+        timeout=timeout,
     )
-    if baseline_res is None:
-        return _type_check_timeout_failure("baseline", timeout, (baseline_fact,))
-    assert baseline_ids is not None
-
-    # Worktree: run against worker's changes
-    worktree_res, worktree_fact, worktree_ids = _run_type_check_diagnostics(
-        "project.type_check_cmd:worktree",
-        type_check_cmd,
-        worktree_path,
-        timeout,
-    )
-    if worktree_res is None:
-        return _type_check_timeout_failure(
-            "worktree",
-            timeout,
-            (baseline_fact, worktree_fact),
-        )
-    assert worktree_ids is not None
-    worktree_output = _type_check_output(worktree_res)
-
-    # Compare identity sets: new diagnostics are those in worktree but not baseline
-    new_ids = worktree_ids - baseline_ids
-    failure = _type_check_failure(worktree_res, worktree_output, new_ids, worktree_ids)
     if failure is not None:
-        return replace(failure, facts=(baseline_fact, worktree_fact)), (
-            baseline_fact,
-            worktree_fact,
-        )
-    return None, (baseline_fact, worktree_fact)
+        return failure, facts
+    assert baseline is not None
+
+    worktree, failure, facts = _type_check_diagnostic_run(
+        label="worktree",
+        source="project.type_check_cmd:worktree",
+        type_check_cmd=type_check_cmd,
+        cwd=worktree_path,
+        timeout=timeout,
+        prior_facts=facts,
+    )
+    if failure is not None:
+        return failure, facts
+    assert worktree is not None
+
+    worktree_output = _type_check_output(worktree.result)
+    new_ids = worktree.ids - baseline.ids
+    failure = _type_check_failure(worktree.result, worktree_output, new_ids, worktree.ids)
+    if failure is not None:
+        return replace(failure, facts=facts), facts
+    return None, facts
 
 
 def _sentrux_is_warn_only(output: str) -> bool:
