@@ -30,6 +30,21 @@ _RESEARCHER_SCRIPT = Path(__file__).resolve().parent.parent / "researcher.py"
 _PLANNER_SCRIPT = Path(__file__).resolve().parent.parent / "planner.py"
 _WORKER_TERMINATE_GRACE_S = 3.0
 _WORKER_KILL_GRACE_S = 3.0
+_CLAUDE_CODE_ENV_KEYS = (
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "CLAUDE_CODE_BIN",
+    "CLAUDE_CONFIG_DIR",
+    "ANTHROPIC_API_KEY",
+    "DGOV_CLAUDE_CODE_RUNNER",
+    "INVOKE_CLAUDE_MODEL_LIBRARY",
+    "INVOKE_CLAUDE_MODEL_PROFILE",
+    "INVOKE_CLAUDE_MODEL",
+    "INVOKE_CLAUDE_TIMEOUT_SECONDS",
+    "XDG_CONFIG_HOME",
+)
 
 
 def _script_for_role(role: str) -> Path:
@@ -170,10 +185,12 @@ def _resolved_tool_bin_dirs(names: tuple[str, ...]) -> list[str]:
 def _build_worker_env(project_root: str, task: DagTaskSpec) -> dict[str, str]:
     """Build a minimal, explicit environment for the worker subprocess."""
     from dgov.config import load_project_config
+    from dgov.workers.config import is_claude_code_provider_url
 
     config = load_project_config(project_root)
-    _, api_key_env = config.llm_runtime_settings(task.provider)
-    tool_bin_dirs = _resolved_tool_bin_dirs(("uv", "sg"))
+    provider = config.provider_config(task.provider)
+    api_key_env = provider.api_key_env
+    tool_bin_dirs = _resolved_tool_bin_dirs(("uv", "sg", "claude"))
 
     env: dict[str, str] = {
         "PATH": os.pathsep.join(
@@ -195,6 +212,11 @@ def _build_worker_env(project_root: str, task: DagTaskSpec) -> dict[str, str]:
     api_key_value = os.environ.get(api_key_env)
     if api_key_value is not None:
         env[api_key_env] = api_key_value
+    if is_claude_code_provider_url(provider.base_url):
+        for key in _CLAUDE_CODE_ENV_KEYS:
+            value = os.environ.get(key)
+            if value is not None:
+                env[key] = value
 
     return env
 

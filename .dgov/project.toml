@@ -34,6 +34,14 @@ base_url = "http://localhost:8080/v1"
 api_key_env = "LOCAL_LLM_API_KEY"
 max_tokens = 262144
 
+[providers.claude-haiku-worker]
+default_agent = "haiku"
+base_url = "claude-code://fast?preset=edit"
+
+[providers.claude-sonnet-review]
+default_agent = "sonnet"
+base_url = "claude-code://daily?preset=review"
+
 [tool_policy]
 restrict_run_bash = true
 require_wrapped_verify_tools = true
@@ -51,6 +59,8 @@ stale_days = 14
 kimi = "accounts/fireworks/routers/kimi-k2p6-turbo"
 "kimi-k2.6" = "accounts/fireworks/routers/kimi-k2p6-turbo"
 "gemma-4-26b-a4b" = "unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit"
+"claude-haiku" = "haiku"
+"claude-sonnet" = "sonnet"
 
 [conventions]
 test_framework = "pytest"

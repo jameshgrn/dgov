@@ -1016,6 +1016,52 @@ def test_run_worker_uses_configured_iteration_budget(
     assert str(events[-1][1]).startswith("Exceeded max iterations (2)")
 
 
+def test_run_worker_allows_claude_code_provider_without_api_key_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    created: dict[str, object] = {}
+
+    class _DoneProvider:
+        def create_chat_completion(self, **_kwargs):
+            tool_call = SimpleNamespace(
+                id="call-1",
+                function=SimpleNamespace(
+                    name="done",
+                    arguments=json.dumps({"summary": "claude finished"}),
+                ),
+            )
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(message=_make_fake_message([tool_call]), finish_reason="stop")
+                ],
+                usage=None,
+            )
+
+    def _create_provider(**kwargs):
+        created.update(kwargs)
+        return _DoneProvider()
+
+    monkeypatch.setattr("dgov.worker.create_provider", _create_provider)
+    _capture_events(monkeypatch, events)
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_worker(
+            "do it",
+            tmp_path,
+            "haiku",
+            _provider_payload(
+                llm_provider="claude-haiku-worker",
+                llm_base_url="claude-code://fast?preset=edit",
+                llm_api_key_env="",
+            ),
+        )
+
+    assert excinfo.value.code == 0
+    assert created["api_key"] == ""
+    assert ("done", "claude finished") in events
+
+
 def test_run_worker_reports_invalid_project_config_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

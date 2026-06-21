@@ -61,6 +61,51 @@ class _CaptureProvider:
         return object()
 
 
+class _DoneToolCallMessage:
+    content = None
+
+    def __init__(self) -> None:
+        self.tool_calls = [
+            SimpleNamespace(
+                id="call-1",
+                function=SimpleNamespace(
+                    name="done",
+                    arguments=json.dumps({"summary": "review finished"}),
+                ),
+            )
+        ]
+
+    def model_dump(self, exclude_none: bool = True) -> dict[str, object]:
+        return {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "done",
+                        "arguments": json.dumps({"summary": "review finished"}),
+                    },
+                }
+            ],
+        }
+
+
+class _DoneToolCallProvider:
+    def create_chat_completion(self, **_kwargs: Any) -> object:
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=_DoneToolCallMessage(), finish_reason="stop")]
+        )
+
+
+def _capture_done_provider_factory(created: dict[str, object]):
+    def _create_provider(**kwargs: object) -> _DoneToolCallProvider:
+        created.update(kwargs)
+        return _DoneToolCallProvider()
+
+    return _create_provider
+
+
 def test_researcher_completion_uses_configured_provider_max_tokens() -> None:
     provider = _CaptureProvider()
 
@@ -233,6 +278,38 @@ def test_run_researcher_uses_configured_iteration_budget(
     assert excinfo.value.code == 1
     assert provider.call_count == 2
     assert events[-1] == ("error", "Exceeded max iterations (2)")
+
+
+def test_run_researcher_allows_claude_code_provider_without_api_key_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    created: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "dgov.researcher.create_provider",
+        _capture_done_provider_factory(created),
+    )
+    monkeypatch.setattr(
+        "dgov.workers.runtime.WorkerEvent.emit",
+        lambda self: events.append((self.type, self.content)),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_researcher(
+            "review it",
+            tmp_path,
+            "sonnet",
+            json.dumps({
+                "llm_provider": "claude-sonnet-review",
+                "llm_base_url": "claude-code://daily?preset=review",
+                "llm_api_key_env": "",
+            }),
+        )
+
+    assert excinfo.value.code == 0
+    assert created["api_key"] == ""
+    assert ("done", "review finished") in events
 
 
 def test_run_researcher_reports_invalid_project_config_json(

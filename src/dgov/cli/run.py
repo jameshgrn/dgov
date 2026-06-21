@@ -6,8 +6,7 @@ import asyncio
 import json
 import os
 import subprocess
-import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,14 +14,19 @@ from typing import cast
 
 import click
 
-from dgov.archive import archive_plan
-from dgov.cli import _output, cli, load_project_config_or_exit, run_checks, want_json
+from dgov.cli import (
+    _output,
+    cli,
+    load_project_config_or_exit,
+    run_checks,
+    run_git,
+    run_lifecycle,
+    run_output,
+    run_record,
+    want_json,
+)
 from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition
-from dgov.deploy_log import is_plan_complete
-from dgov.event_types import RunCompleted
-from dgov.git_status import porcelain_status_paths
-from dgov.persistence.events import emit_event
 from dgov.plan import PlanSpec, compile_plan, parse_plan_file
 from dgov.project_root import ProjectPathError, resolve_project_path, resolve_project_root
 from dgov.run_source import current_run_source
@@ -31,8 +35,34 @@ from dgov.runner import EventDagRunner
 _clean_head_worktree = run_checks._clean_head_worktree
 _normalize_sentrux_assessment = run_checks._normalize_sentrux_assessment
 
-_DIRTY_WORKTREE_STATUS = "blocked_by_dirty_worktree"
-_DIRTY_PATH_LIMIT = 10
+
+def sentrux_available() -> bool:
+    """Check if sentrux binary is available."""
+    try:
+        subprocess.run(
+            ["sentrux", "--version"],
+            capture_output=True,
+            timeout=5.0,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
+def run_sentrux(
+    args: list[str], cwd: str | None = None, timeout: float = 30.0, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    """Run sentrux command."""
+    result = subprocess.run(
+        ["sentrux", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=check,
+    )
+    return result
 
 
 @cli.command(name="run")
@@ -78,7 +108,7 @@ def run_cmd(
     """
     project_root_path, plan_dir = _resolve_run_plan_dir(plan)
     project_root = str(project_root_path)
-    _block_dirty_committed_worktree(project_root)
+    run_git.block_dirty_committed_worktree(project_root)
     compile_plan_for_run(plan_dir)
     plan_file = plan_dir / "_compiled.toml"
     run_compiled_plan(
@@ -132,293 +162,12 @@ def compile_plan_for_run(plan_dir: Path) -> None:
     compile_plan_dir(plan_dir, dry_run=False, recompile_sops=False, graph=False)
 
 
-def _parse_quality(line: str) -> int | None:
-    """Extract quality value from a 'Quality: N' or 'Quality: A -> B' line.
-
-    Supports both integer scores (e.g. 6922) and float signals (e.g. 0.69)
-    by scaling signals (x10000) to match the sentrux check scale.
-    """
-    if not line.startswith("Quality:"):
-        return None
-    rest = line.split(":", 1)[1].strip()
-    token = rest.split("->")[-1].strip() if "->" in rest else rest
-    try:
-        return int(token)
-    except ValueError:
-        try:
-            val = float(token)
-            if val <= 1.0:
-                return int(val * 10000)
-            return int(val)
-        except ValueError:
-            return None
-
-
-def sentrux_available() -> bool:
-    """Check if sentrux binary is available."""
-    try:
-        subprocess.run(
-            ["sentrux", "--version"],
-            capture_output=True,
-            timeout=5.0,
-            check=True,
-        )
-        return True
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        return False
-
-
-def run_sentrux(
-    args: list[str], cwd: str | None = None, timeout: float = 30.0, check: bool = True
-) -> subprocess.CompletedProcess[str]:
-    """Run sentrux command."""
-    result = subprocess.run(
-        ["sentrux", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=check,
-    )
-    return result
-
-
-def _git_env(cwd: str | None = None) -> dict[str, str]:
-    """Return clean git environment for local repo operations."""
-    env = os.environ.copy()
-    env.pop("GIT_DIR", None)
-    env.pop("GIT_WORK_TREE", None)
-    if cwd is not None:
-        env["PWD"] = cwd
-    return env
-
-
-def _git_stdout(project_root: str, args: list[str]) -> str | None:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=project_root,
-        capture_output=True,
-        text=True,
-        env=_git_env(project_root),
-        check=False,
-    )
-    if result.returncode != 0:
-        return None
-    return result.stdout.rstrip("\n")
-
-
-def _working_tree_files(project_root: str) -> list[str]:
-    """Return changed/untracked paths for a repo without assuming HEAD exists."""
-    result = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=all"],
-        cwd=project_root,
-        capture_output=True,
-        text=True,
-        env=_git_env(project_root),
-        check=False,
-    )
-    return list(porcelain_status_paths(result.stdout, include_rename_sources=True))
-
-
-def _create_bootstrap_commit(project_root: str, files: list[str]) -> None:
-    """Create an initial snapshot commit for a repo that has no HEAD yet."""
-    env = _git_env(project_root)
-    env["GIT_AUTHOR_NAME"] = "dgov-bootstrap"
-    env["GIT_AUTHOR_EMAIL"] = "bootstrap@dgov.local"
-    env["GIT_COMMITTER_NAME"] = "dgov-bootstrap"
-    env["GIT_COMMITTER_EMAIL"] = "bootstrap@dgov.local"
-
-    try:
-        subprocess.run(
-            ["git", "add", "-A"],
-            cwd=project_root,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "commit", "-m", "chore: bootstrap repo for dgov"],
-            cwd=project_root,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        details = (exc.stderr or exc.stdout or str(exc)).strip()
-        click.echo("Error: failed to create bootstrap commit.", err=True)
-        if details:
-            click.echo(details, err=True)
-        raise click.exceptions.Exit(code=1) from exc
-
-    click.echo(f"Created bootstrap commit from current working tree ({len(files)} file(s)).")
-
-
-def _require_git_repo(project_root: str) -> None:
-    if not _is_git_repo(project_root):
-        click.echo("Error: dgov run requires a git repository.", err=True)
-        click.echo("Fix: run `git init` in this project first.", err=True)
-        raise click.exceptions.Exit(code=1)
-
-
-def _is_git_repo(project_root: str) -> bool:
-    repo_check = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd=project_root,
-        capture_output=True,
-        text=True,
-    )
-    return repo_check.returncode == 0
-
-
-def _has_git_head(project_root: str) -> bool:
-    head_check = subprocess.run(
-        ["git", "rev-parse", "--verify", "HEAD"],
-        cwd=project_root,
-        capture_output=True,
-        text=True,
-    )
-    return head_check.returncode == 0
-
-
-def _raise_no_bootstrap_files() -> None:
-    click.echo(
-        "Error: repository has no commits and nothing to snapshot for dgov.",
-        err=True,
-    )
-    click.echo("Fix: run `dgov init` or add files, then try again.", err=True)
-    raise click.exceptions.Exit(code=1)
-
-
-def _confirm_bootstrap_commit(files: Sequence[str]) -> bool:
-    return click.confirm(
-        (
-            "Repository has no commits. Create a bootstrap commit from the current working "
-            f"tree ({len(files)} file(s))?"
-        ),
-        default=True,
-    )
-
-
-def _raise_bootstrap_declined() -> None:
-    click.echo(
-        "Error: repository has no commits. dgov needs an initial snapshot before it can "
-        "create worktrees.",
-        err=True,
-    )
-    click.echo("Fix: create a bootstrap commit or commit manually, then try again.", err=True)
-    raise click.exceptions.Exit(code=1)
-
-
-def _ensure_bootstrap_commit(project_root: str, yes: bool) -> None:
-    files = _working_tree_files(project_root)
-    if not files:
-        _raise_no_bootstrap_files()
-
-    if all(path.startswith(".dgov/") for path in files):
-        _create_bootstrap_commit(project_root, files)
-        return
-
-    if yes or not sys.stdin.isatty():
-        _create_bootstrap_commit(project_root, files)
-        return
-
-    if _confirm_bootstrap_commit(files):
-        _create_bootstrap_commit(project_root, files)
-        return
-    _raise_bootstrap_declined()
-
-
-def _is_dispatch_compatible_path(path: str) -> bool:
-    """Return True for generated/runtime dgov paths that may be dirty during dispatch."""
-    return (
-        path == ".dgov/plans/deployed.jsonl"
-        or path == ".dgov/runs.log"
-        or path.startswith(".dgov/state.db")
-        or path.startswith(".dgov/out/")
-        or path.startswith(".dgov/runtime/")
-        or (path.startswith(".dgov/") and path.endswith("/_compiled.toml"))
-    )
-
-
-def _dirty_worker_files(project_root: str) -> list[str]:
-    dirty = _working_tree_files(project_root)
-    return [f for f in dirty if not _is_dispatch_compatible_path(f)]
-
-
-def _dirty_worktree_block_data(dirty: Sequence[str]) -> dict[str, object]:
-    dirty_paths = list(dirty[:_DIRTY_PATH_LIMIT])
-    # Emit both keys: `status` for generic JSON consumers, `dispatch_status`
-    # for tooling that scans for the dispatch-phase outcome specifically.
-    return {
-        "status": _DIRTY_WORKTREE_STATUS,
-        "dispatch_status": _DIRTY_WORKTREE_STATUS,
-        "dirty_count": len(dirty),
-        "dirty_paths": dirty_paths,
-        "dirty_omitted": max(0, len(dirty) - len(dirty_paths)),
-    }
-
-
-def _raise_dirty_worktree(dirty: Sequence[str]) -> None:
-    block = _dirty_worktree_block_data(dirty)
-    if want_json():
-        _output(block)
-        raise click.exceptions.Exit(code=1)
-
-    click.echo("Error: working tree has uncommitted changes.", err=True)
-    click.echo(f"dispatch_status: {block['dispatch_status']}", err=True)
-    click.echo(f"dirty_count: {block['dirty_count']}", err=True)
-    click.echo(
-        "Worktrees branch from HEAD — uncommitted files cause merge conflicts.",
-        err=True,
-    )
-    click.echo("dirty_paths:", err=True)
-    for f in cast(list[str], block["dirty_paths"]):
-        click.echo(f"  {f}", err=True)
-    click.echo(f"dirty_omitted: {block['dirty_omitted']}", err=True)
-    click.echo("Fix: commit or stash your changes, then retry.", err=True)
-    raise click.exceptions.Exit(code=1)
-
-
-def _ensure_git_ready(project_root: str, yes: bool = False) -> None:
-    """Fail fast unless the current directory is a git repo with a clean working tree."""
-    _require_git_repo(project_root)
-    if not _has_git_head(project_root):
-        _ensure_bootstrap_commit(project_root, yes)
-        return
-
-    dirty = _dirty_worker_files(project_root)
-    if dirty:
-        _raise_dirty_worktree(dirty)
-
-
-def _block_dirty_committed_worktree(project_root: str) -> None:
-    if not _is_git_repo(project_root) or not _has_git_head(project_root):
-        return
-    dirty = _dirty_worker_files(project_root)
-    if dirty:
-        _raise_dirty_worktree(dirty)
-
-
-def _sentrux_baseline_path(project_root: str) -> Path:
-    return run_checks.sentrux_baseline_path(project_root)
-
-
-def _read_sentrux_baseline_quality(project_root: str) -> int | None:
-    return run_checks.read_sentrux_baseline_quality(project_root)
-
-
 def _require_sentrux_baseline(project_root: str) -> int | None:
     return run_checks.require_sentrux_baseline(
         project_root,
         run_sentrux=run_sentrux,
         sentrux_available=sentrux_available,
     )
-
-
-def _parse_sentrux_gate_output(output: str) -> tuple[bool, int | None]:
-    return run_checks.parse_sentrux_gate_output(output)
 
 
 def _sentrux_compare(
@@ -437,10 +186,6 @@ def _sentrux_compare(
     )
 
 
-def _branch_verification_gate(project_root: str, config: object) -> dict[str, object]:
-    return run_checks.branch_verification_gate(project_root, config, git_stdout=_git_stdout)
-
-
 def _branch_verification_gate_from_base(
     project_root: str,
     config: object,
@@ -450,12 +195,8 @@ def _branch_verification_gate_from_base(
         project_root,
         config,
         base_ref,
-        git_stdout=_git_stdout,
+        git_stdout=run_git.git_stdout,
     )
-
-
-def _branch_verification_failed(branch_result: dict[str, object]) -> bool:
-    return branch_result.get("status") == "failed"
 
 
 def _make_worker_event_callback(stream: bool = False) -> Callable[[str, str, object], None]:
@@ -535,28 +276,6 @@ def _emit_run_start(dag_name: str, baseline_quality: int | None) -> None:
     click.echo(f"[sentrux] Baseline quality: {baseline_quality}")
 
 
-def _emit_run_completed(
-    project_root: str,
-    plan_name: str,
-    run_status: str,
-    duration: timedelta,
-    gate_result: dict[str, object],
-    run_source: str,
-) -> None:
-    """Emit run_completed event with final status and Sentrux gate result."""
-    emit_event(
-        project_root,
-        RunCompleted(
-            pane=plan_name,
-            plan_name=plan_name,
-            run_status=run_status,
-            duration_s=round(duration.total_seconds(), 2),
-            sentrux=json.dumps(gate_result, default=str),
-            run_source=run_source,
-        ),
-    )
-
-
 def _run_plan_runner(runner: EventDagRunner) -> tuple[dict[str, str], timedelta]:
     try:
         start_time = datetime.now(UTC)
@@ -566,330 +285,6 @@ def _run_plan_runner(runner: EventDagRunner) -> tuple[dict[str, str], timedelta]
     except KeyboardInterrupt:
         _output({"status": "interrupted"})
         raise click.exceptions.Exit(code=130) from None
-
-
-def _classify_task_results(
-    results: dict[str, str],
-) -> tuple[list[str], list[str], list[str], list[str]]:
-    failed = [slug for slug, status in results.items() if status == "failed"]
-    abandoned = [slug for slug, status in results.items() if status in ("abandoned", "timed_out")]
-    skipped = [slug for slug, status in results.items() if status == "skipped"]
-    succeeded = [slug for slug, status in results.items() if status == "merged"]
-    return failed, abandoned, skipped, succeeded
-
-
-def _sentrux_failed(gate_result: dict[str, object]) -> bool:
-    return bool(gate_result.get("degradation")) or bool(gate_result.get("error"))
-
-
-def _derive_run_status(
-    *,
-    failed: list[str],
-    abandoned: list[str],
-    succeeded: list[str],
-    sentrux_failed: bool,
-) -> str:
-    if not failed and not abandoned and not sentrux_failed:
-        return "complete"
-    if sentrux_failed and not failed and not abandoned:
-        return "degraded"
-    if succeeded:
-        return "partial"
-    return "failed"
-
-
-def _stale_run_state(
-    *,
-    duration: timedelta,
-    failed: list[str],
-    skipped: list[str],
-    succeeded: list[str],
-    task_errors: dict[str, str],
-) -> bool:
-    return bool(
-        duration.total_seconds() < 1.0
-        and bool(failed or skipped)
-        and not succeeded
-        and not task_errors
-    )
-
-
-def _emit_stale_run_warning() -> None:
-    click.echo(
-        "No tasks were dispatched — prior run state is still in the database.",
-        err=True,
-    )
-    click.echo("  To retry failed tasks:  dgov run --continue <plan>", err=True)
-    click.echo("  To start fresh:         dgov run --restart <plan>", err=True)
-
-
-def _emit_sentrux_warning(gate_result: dict[str, object]) -> None:
-    sentrux_message = gate_result.get("error") or "Architectural degradation detected."
-    click.echo(f"  sentrux: {sentrux_message}", err=True)
-    offenders = gate_result.get("structural_offenders")
-    if isinstance(offenders, dict):
-        report = run_checks.format_offender_report(cast("dict[object, object]", offenders))
-        click.echo(report, err=True)
-
-
-def _run_log_status(
-    *,
-    failed: list[str],
-    abandoned: list[str],
-    gate_result: dict[str, object],
-    branch_result: dict[str, object],
-) -> str:
-    post_run_failed = _sentrux_failed(gate_result) or _branch_verification_failed(branch_result)
-    if post_run_failed and not failed and not abandoned:
-        return "warn"
-    return "ok" if not failed and not abandoned else "fail"
-
-
-def _append_task_error_lines(lines: list[str], task_errors: dict[str, str] | None) -> None:
-    if not task_errors:
-        return
-    for slug, err in task_errors.items():
-        lines.append(f"    error[{slug}]: {err[:200]}")
-
-
-def _append_task_duration_line(lines: list[str], task_durations: dict[str, float] | None) -> None:
-    if not task_durations:
-        return
-    dur_str = ", ".join(f"{slug}: {duration}s" for slug, duration in task_durations.items())
-    lines.append(f"  durations: {dur_str}")
-
-
-def _format_token_totals(prompt_tokens: int, completion_tokens: int) -> str:
-    return f"{prompt_tokens:,} prompt + {completion_tokens:,} completion"
-
-
-def _append_token_usage_lines(
-    lines: list[str],
-    prompt_tokens: int,
-    completion_tokens: int,
-) -> None:
-    lines.append(f"  prompt_tokens: {prompt_tokens:,}")
-    lines.append(f"  completion_tokens: {completion_tokens:,}")
-
-
-def _append_sentrux_log_lines(lines: list[str], gate_result: dict[str, object]) -> None:
-    quality_before = gate_result.get("quality_before")
-    quality_after = gate_result.get("quality_after")
-    if quality_before is not None:
-        lines.append(f"  sentrux: {quality_before} -> {quality_after}")
-    if gate_result.get("degradation"):
-        lines.append("  sentrux_status: degradation")
-    if gate_result.get("error"):
-        lines.append(f"  sentrux_error: {str(gate_result['error'])[:200]}")
-    offenders = gate_result.get("structural_offenders")
-    if not isinstance(offenders, dict):
-        return
-    summary = run_checks.format_offender_report(cast("dict[object, object]", offenders)).replace(
-        "\n", " | "
-    )
-    lines.append(f"  sentrux_offenders: {summary[:400]}")
-
-
-def _append_branch_verification_log_lines(
-    lines: list[str],
-    branch_result: dict[str, object],
-) -> None:
-    status = branch_result.get("status")
-    if not status:
-        return
-    lines.append(f"  branch_verification_status: {status}")
-    if branch_result.get("changed_files") is not None:
-        lines.append(f"  branch_verification_changed_files: {branch_result['changed_files']}")
-    if branch_result.get("error"):
-        lines.append(f"  branch_verification_error: {str(branch_result['error'])[:400]}")
-
-
-def _run_status_and_summary(
-    results: dict[str, str],
-    task_errors: dict[str, str],
-    gate_result: dict[str, object],
-    branch_result: dict[str, object],
-    duration: timedelta,
-) -> tuple[str, list[str], list[str], list[str], list[str], bool]:
-    failed, abandoned, skipped, succeeded = _classify_task_results(results)
-    sentrux_failure = _sentrux_failed(gate_result) or _branch_verification_failed(branch_result)
-    run_status = _derive_run_status(
-        failed=failed,
-        abandoned=abandoned,
-        succeeded=succeeded,
-        sentrux_failed=sentrux_failure,
-    )
-    stale_state = _stale_run_state(
-        duration=duration,
-        failed=failed,
-        skipped=skipped,
-        succeeded=succeeded,
-        task_errors=task_errors,
-    )
-    return run_status, failed, abandoned, skipped, succeeded, stale_state
-
-
-def _emit_run_warnings(
-    *,
-    failed: list[str],
-    abandoned: list[str],
-    skipped: list[str],
-    succeeded: list[str],
-    task_errors: dict[str, str],
-    gate_result: dict[str, object],
-    branch_result: dict[str, object],
-    duration: timedelta,
-) -> None:
-    if want_json():
-        return
-    if _stale_run_state(
-        duration=duration,
-        failed=failed,
-        skipped=skipped,
-        succeeded=succeeded,
-        task_errors=task_errors,
-    ):
-        _emit_stale_run_warning()
-    for slug, err in task_errors.items():
-        click.echo(f"  {slug}: {err[:200]}")
-    if abandoned:
-        click.echo(
-            f"  {len(abandoned)} task(s) abandoned from a prior crashed run. "
-            "Use `dgov run --continue` to retry them.",
-            err=True,
-        )
-    if _sentrux_failed(gate_result):
-        _emit_sentrux_warning(gate_result)
-    if _branch_verification_failed(branch_result):
-        click.echo(
-            f"  branch verification: {branch_result.get('error', 'failed')}",
-            err=True,
-        )
-
-
-def _emit_verbose_task_durations(
-    *,
-    verbose: bool,
-    task_durations: dict[str, float],
-    token_usage: dict[str, tuple[int, int]],
-    results: dict[str, str],
-) -> None:
-    if not verbose or want_json() or not task_durations:
-        return
-    click.echo("  per-task:", err=True)
-    for slug in sorted(task_durations):
-        status = results.get(slug, "?")
-        line = f"    {slug}: {task_durations[slug]}s"
-        if slug in token_usage:
-            prompt_tokens, completion_tokens = token_usage[slug]
-            line = f"{line}  ({prompt_tokens:,} + {completion_tokens:,} tokens)"
-        click.echo(f"{line}  {status}", err=True)
-
-
-def _emit_post_run_hint(
-    *,
-    stream: bool,
-    plan_dir: Path | None,
-    plan_file: str,
-) -> None:
-    if stream or want_json():
-        return
-    hint_target = str(plan_dir) if plan_dir is not None else plan_file
-    click.echo(
-        f"  Live stream: dgov watch   |   Debrief: dgov plan review {hint_target}",
-        err=True,
-    )
-
-
-def _refresh_sentrux_baseline_after_clean_run(project_root: str) -> None:
-    root = Path(project_root).resolve()
-    root_str = str(root)
-    if not want_json():
-        click.echo("[sentrux] Refreshing accepted baseline after clean run...")
-
-    committed = run_checks.refresh_accepted_sentrux_baseline(root_str, run_sentrux=run_sentrux)
-
-    if not want_json():
-        status = "committed" if committed else "already current"
-        click.echo(f"[sentrux] Accepted baseline refreshed ({status}).")
-
-
-def _should_refresh_sentrux_baseline(
-    *,
-    summary: PlanRunSummary,
-    artifacts: PlanRunArtifacts,
-    only: str | None,
-    plan_dir: Path | None,
-    project_root: str,
-    dag: DagDefinition,
-) -> bool:
-    root = str(Path(project_root).resolve())
-    return (
-        summary.run_status == "complete"
-        and only is None
-        and plan_dir is not None
-        and not _sentrux_failed(artifacts.gate_result)
-        and not _branch_verification_failed(artifacts.branch_result)
-        and is_plan_complete(root, dag.name, set(dag.tasks))
-    )
-
-
-def _maybe_refresh_sentrux_baseline(
-    *,
-    summary: PlanRunSummary,
-    artifacts: PlanRunArtifacts,
-    only: str | None,
-    plan_dir: Path | None,
-    project_root: str,
-    dag: DagDefinition,
-) -> None:
-    root = str(Path(project_root).resolve())
-    if not _should_refresh_sentrux_baseline(
-        summary=summary,
-        artifacts=artifacts,
-        only=only,
-        plan_dir=plan_dir,
-        project_root=root,
-        dag=dag,
-    ):
-        return
-    _refresh_sentrux_baseline_after_clean_run(root)
-
-
-def _maybe_archive_completed_plan(
-    *,
-    run_status: str,
-    only: str | None,
-    plan_dir: Path | None,
-    project_root: str,
-    dag: DagDefinition,
-) -> None:
-    root = str(Path(project_root).resolve())
-    if (
-        run_status != "complete"
-        or only is not None
-        or plan_dir is None
-        or not is_plan_complete(root, dag.name, set(dag.tasks))
-    ):
-        return
-    dest = archive_plan(plan_dir)
-    if not want_json():
-        click.echo(f"Plan fully deployed → archived to {dest}")
-        _warn_if_archive_left_git_changes(root)
-
-
-def _warn_if_archive_left_git_changes(project_root: str) -> None:
-    changes = _git_stdout(
-        project_root,
-        ["status", "--porcelain", "--untracked-files=all", "--", ".dgov/plans"],
-    )
-    if not changes:
-        return
-    click.echo(
-        "  archive git changes: plan source was moved under .dgov/plans/archive; "
-        "review and commit the archive move when appropriate.",
-        err=True,
-    )
 
 
 def _compile_dag_for_run(plan_file: str, pc: ProjectConfig, only: str | None) -> DagDefinition:
@@ -911,54 +306,6 @@ def _compile_dag_for_run(plan_file: str, pc: ProjectConfig, only: str | None) ->
     except (ConstitutionalViolation, PlanValidationError) as exc:
         raise click.ClickException(str(exc)) from None
     return _filter_dag_to_task(dag, only)
-
-
-def _run_token_totals(token_usage: dict[str, tuple[int, int]]) -> tuple[int, int]:
-    total_prompt_tokens = sum(prompt for prompt, _ in token_usage.values())
-    total_completion_tokens = sum(completion for _, completion in token_usage.values())
-    return total_prompt_tokens, total_completion_tokens
-
-
-def _run_output_data(
-    *,
-    run_status: str,
-    succeeded: list[str],
-    failed: list[str],
-    abandoned: list[str],
-    skipped: list[str],
-    task_errors: dict[str, str],
-    gate_result: dict[str, object],
-    branch_result: dict[str, object],
-    duration: timedelta,
-    total_prompt_tokens: int,
-    total_completion_tokens: int,
-) -> dict[str, object]:
-    return {
-        "status": run_status,
-        "succeeded": len(succeeded),
-        "failed": len(failed),
-        "abandoned": len(abandoned) if abandoned else None,
-        "skipped": len(skipped) if skipped else None,
-        "failed_tasks": failed if failed else None,
-        "abandoned_tasks": abandoned if abandoned else None,
-        "task_errors": task_errors if task_errors else None,
-        "sentrux": gate_result,
-        "branch_verification": branch_result,
-        "duration_s": round(duration.total_seconds(), 2),
-        "total_prompt_tokens": total_prompt_tokens,
-        "total_completion_tokens": total_completion_tokens,
-    }
-
-
-def _emit_run_output_data(output_data: dict[str, object]) -> None:
-    if want_json():
-        _output(output_data)
-        return
-    hidden_human_fields = {"total_prompt_tokens", "total_completion_tokens"}
-    _output({k: v for k, v in output_data.items() if k not in hidden_human_fields})
-    prompt_tokens = cast(int, output_data["total_prompt_tokens"])
-    completion_tokens = cast(int, output_data["total_completion_tokens"])
-    click.echo(f"tokens: {_format_token_totals(prompt_tokens, completion_tokens)}")
 
 
 def _make_event_runner(
@@ -1019,12 +366,12 @@ def _execute_plan_with_gates(
         continue_failed=continue_failed,
     )
     _emit_run_start(dag.name, baseline_quality)
-    pre_run_head = _git_stdout(project_root, ["rev-parse", "HEAD"])
+    pre_run_head = run_git.git_stdout(project_root, ["rev-parse", "HEAD"])
     results, duration = _run_plan_runner(runner)
     gate_result = _sentrux_compare(project_root, baseline_quality, pre_run_head, pc)
     branch_result = _branch_verification_gate_from_base(project_root, pc, pre_run_head)
     token_usage = cast(dict[str, tuple[int, int]], getattr(runner, "token_usage", {}))
-    total_prompt_tokens, total_completion_tokens = _run_token_totals(token_usage)
+    total_prompt_tokens, total_completion_tokens = run_output.run_token_totals(token_usage)
     return PlanRunArtifacts(
         runner=runner,
         results=results,
@@ -1061,14 +408,15 @@ def _record_run_completion(
         artifacts.total_prompt_tokens,
         artifacts.total_completion_tokens,
     )
-    _maybe_archive_completed_plan(
+    run_lifecycle.maybe_archive_completed_plan(
         run_status=summary.run_status,
         only=only,
         plan_dir=plan_dir,
         project_root=project_root,
-        dag=dag,
+        plan_name=dag.name,
+        task_slugs=set(dag.tasks),
     )
-    _emit_run_completed(
+    run_record.emit_run_completed(
         project_root=project_root,
         plan_name=dag.name,
         run_status=summary.run_status,
@@ -1106,7 +454,7 @@ def _emit_run_summary_output(
     plan_dir: Path | None,
     plan_file: str,
 ) -> None:
-    output_data = _run_output_data(
+    output_data = run_output.run_output_data(
         run_status=run_status,
         succeeded=succeeded,
         failed=failed,
@@ -1119,14 +467,14 @@ def _emit_run_summary_output(
         total_prompt_tokens=total_prompt_tokens,
         total_completion_tokens=total_completion_tokens,
     )
-    _emit_run_output_data(output_data)
-    _emit_verbose_task_durations(
+    run_output.emit_run_output_data(output_data)
+    run_output.emit_verbose_task_durations(
         verbose=verbose,
         task_durations=runner.task_durations,
         token_usage=token_usage,
         results=results,
     )
-    _emit_post_run_hint(stream=stream, plan_dir=plan_dir, plan_file=plan_file)
+    run_output.emit_post_run_hint(stream=stream, plan_dir=plan_dir, plan_file=plan_file)
 
 
 def _summarize_plan_run(artifacts: PlanRunArtifacts) -> PlanRunSummary:
@@ -1134,7 +482,7 @@ def _summarize_plan_run(artifacts: PlanRunArtifacts) -> PlanRunSummary:
     task_errors = {
         slug: err for slug, err in artifacts.runner.task_errors.items() if slug in failed_now
     }
-    run_status, failed, abandoned, skipped, succeeded, _ = _run_status_and_summary(
+    run_status, failed, abandoned, skipped, succeeded, _ = run_output.run_status_and_summary(
         artifacts.results,
         task_errors,
         artifacts.gate_result,
@@ -1160,7 +508,7 @@ def _emit_plan_run_summary(
     plan_dir: Path | None,
     plan_file: str,
 ) -> None:
-    _emit_run_warnings(
+    run_output.emit_run_warnings(
         failed=summary.failed,
         abandoned=summary.abandoned,
         skipped=summary.skipped,
@@ -1214,7 +562,7 @@ def _record_plan_run(
 
 
 def _raise_on_unsuccessful_run(run_status: str, branch_result: dict[str, object]) -> None:
-    if run_status in ("failed", "partial") or _branch_verification_failed(branch_result):
+    if run_status in ("failed", "partial") or run_output.branch_verification_failed(branch_result):
         raise click.exceptions.Exit(code=1)
 
 
@@ -1231,13 +579,16 @@ def _finalize_plan_run(
 ) -> str:
     """Summarize, emit, record, and validate a completed plan run."""
     summary = _summarize_plan_run(artifacts)
-    _maybe_refresh_sentrux_baseline(
-        summary=summary,
-        artifacts=artifacts,
+    run_lifecycle.maybe_refresh_sentrux_baseline(
+        run_status=summary.run_status,
+        gate_result=artifacts.gate_result,
+        branch_result=artifacts.branch_result,
         only=only,
         plan_dir=plan_dir,
         project_root=project_root,
-        dag=dag,
+        plan_name=dag.name,
+        task_slugs=set(dag.tasks),
+        run_sentrux=run_sentrux,
     )
     _emit_plan_run_summary(
         summary=summary,
@@ -1280,7 +631,7 @@ def run_compiled_plan(
     project_root = str(project_root_path)
     pc = load_project_config_or_exit(project_root)
     dag = _compile_dag_for_run(str(resolved_plan_file), pc, only)
-    _ensure_git_ready(project_root, yes=yes)
+    run_git.ensure_git_ready(project_root, yes=yes)
     baseline_quality = _require_sentrux_baseline(project_root)
     artifacts = _execute_plan_with_gates(
         dag=dag,
@@ -1339,8 +690,8 @@ def _append_run_log(
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
-    failed, abandoned, _, merged = _classify_task_results(results)
-    status = _run_log_status(
+    failed, abandoned, _, merged = run_output.classify_task_results(results)
+    status = run_output.run_log_status(
         failed=failed,
         abandoned=abandoned,
         gate_result=gate_result,
@@ -1356,11 +707,11 @@ def _append_run_log(
         lines.append(f"  failed: {', '.join(failed)}")
     if abandoned:
         lines.append(f"  abandoned: {', '.join(abandoned)}")
-    _append_task_error_lines(lines, task_errors)
-    _append_token_usage_lines(lines, prompt_tokens, completion_tokens)
-    _append_task_duration_line(lines, task_durations)
-    _append_sentrux_log_lines(lines, gate_result)
-    _append_branch_verification_log_lines(lines, branch_result)
+    run_output.append_task_error_lines(lines, task_errors)
+    run_output.append_token_usage_lines(lines, prompt_tokens, completion_tokens)
+    run_output.append_task_duration_line(lines, task_durations)
+    run_output.append_sentrux_log_lines(lines, gate_result)
+    run_output.append_branch_verification_log_lines(lines, branch_result)
     lines.append("")
 
     with log_path.open("a") as f:

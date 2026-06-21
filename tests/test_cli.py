@@ -2035,7 +2035,7 @@ class _RunOnlyFakeRunner:
 
 def _patch_run_only_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch dependencies for run --only tests (git, sentrux, runner, logging)."""
-    monkeypatch.setattr("dgov.cli.run._ensure_git_ready", lambda *args, **kwargs: None)
+    monkeypatch.setattr("dgov.cli.run_git.ensure_git_ready", lambda *args, **kwargs: None)
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda *_: 100)
     monkeypatch.setattr(
         "dgov.cli.run._sentrux_compare",

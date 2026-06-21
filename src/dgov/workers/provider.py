@@ -3,17 +3,35 @@
 from __future__ import annotations
 
 import json
+import os
 import random
+import re
+import subprocess
+import sys
 import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
+from urllib.parse import parse_qs, unquote, urlparse
 
 from openai import OpenAI
 
 RATE_LIMIT_BACKOFF_S = (5.0, 30.0, 90.0)
 _JITTER_FRACTION = 0.2
 _PROVIDER_TOKEN_LIMIT_MARKER = "Provider token limit exceeded"
+CLAUDE_CODE_PROVIDER_SCHEME = "claude-code"
+_DEFAULT_CLAUDE_CODE_RUNNER = (
+    Path.home() / ".codex" / "skills" / "invoke-claude" / "scripts" / "run_claude_code.py"
+)
+_DEFAULT_CLAUDE_CODE_PROFILE = "daily"
+_DEFAULT_CLAUDE_CODE_PRESET = "review"
+_DEFAULT_CLAUDE_CODE_TIMEOUT_S = 600.0
+_WORKTREE_PATTERNS = (
+    re.compile(r"git worktree:\s*([^\)\n]+)"),
+    re.compile(r"project root:\s*([^\)\n]+)"),
+)
 
 
 @dataclass(frozen=True)
@@ -376,6 +394,310 @@ class OpenAICompatibleProvider:
         )
 
 
+@dataclass(frozen=True)
+class _ToolFunctionCall:
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class _ToolCall:
+    id: str
+    function: _ToolFunctionCall
+    type: str = "function"
+
+
+@dataclass(frozen=True)
+class _AssistantMessage:
+    content: str | None
+    tool_calls: list[_ToolCall]
+
+    def model_dump(self, exclude_none: bool = True) -> dict[str, Any]:
+        data: dict[str, Any] = {"role": "assistant"}
+        if self.content is not None or not exclude_none:
+            data["content"] = self.content
+        if self.tool_calls:
+            data["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": call.type,
+                    "function": {
+                        "name": call.function.name,
+                        "arguments": call.function.arguments,
+                    },
+                }
+                for call in self.tool_calls
+            ]
+        return data
+
+
+@dataclass(frozen=True)
+class _ClaudeCodeSettings:
+    model_profile: str
+    preset: str
+    runner: Path
+    timeout_seconds: float
+    passthrough: Mapping[str, tuple[str, ...]]
+
+
+@dataclass(frozen=True)
+class ClaudeCodeProvider:
+    """Provider adapter for the local invoke-claude skill wrapper."""
+
+    settings: _ClaudeCodeSettings
+    name: str = ""
+
+    def create_chat_completion(self, **kwargs: Any) -> Any:
+        terminal_tool = _terminal_tool_name(kwargs.get("tools"))
+        if terminal_tool != "done":
+            raise RuntimeError(
+                "claude-code providers currently require a worker/researcher role "
+                "that exposes the terminal `done` tool"
+            )
+        prompt = _claude_code_prompt(kwargs)
+        output = _run_claude_code(
+            settings=self.settings,
+            prompt=prompt,
+            model=str(kwargs.get("model") or "").strip(),
+            cwd=_worktree_from_messages(kwargs.get("messages", [])),
+        )
+        message = _AssistantMessage(
+            content=None,
+            tool_calls=[
+                _ToolCall(
+                    id="call_claude_code_done",
+                    function=_ToolFunctionCall(
+                        name="done",
+                        arguments=json.dumps({"summary": output}),
+                    ),
+                )
+            ],
+        )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message, finish_reason="stop")],
+            usage=None,
+        )
+
+
+def is_claude_code_provider_url(base_url: str) -> bool:
+    return base_url.strip().lower().startswith(f"{CLAUDE_CODE_PROVIDER_SCHEME}:")
+
+
+def _terminal_tool_name(tools: object) -> str:
+    names = _tool_names(tools)
+    if "done" in names:
+        return "done"
+    if "emit_plan" in names:
+        return "emit_plan"
+    return ""
+
+
+def _tool_names(tools: object) -> set[str]:
+    if not isinstance(tools, list):
+        return set()
+    names: set[str] = set()
+    for item in tools:
+        if not isinstance(item, dict):
+            continue
+        item_map = cast("dict[str, Any]", item)
+        function = item_map.get("function")
+        if not isinstance(function, dict):
+            continue
+        function_map = cast("dict[str, Any]", function)
+        name = function_map.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
+
+
+def _claude_code_prompt(kwargs: Mapping[str, Any]) -> str:
+    messages = kwargs.get("messages", [])
+    sections = [
+        "DGOV provider adapter instructions:",
+        "- You are running under Claude Code, not dgov's OpenAI-compatible tool-call transport.",
+        "- Treat dgov tool instructions as workflow guidance; do not emit tool-call JSON.",
+        "- Use Claude Code's allowed local tools according to the selected preset.",
+        "- Finish with a concise governor-facing summary of edits, verification, or blockers.",
+        "",
+        "DGOV conversation:",
+        _render_messages(messages),
+    ]
+    return "\n".join(sections).strip() + "\n"
+
+
+def _render_messages(messages: object) -> str:
+    if not isinstance(messages, list):
+        return str(messages)
+    rendered: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            rendered.append(str(message))
+            continue
+        message_map = cast("dict[str, Any]", message)
+        role = str(message_map.get("role", "unknown"))
+        content = _message_content_as_text(message_map.get("content", ""))
+        rendered.append(f"## {role}\n{content}".rstrip())
+        tool_calls = message_map.get("tool_calls")
+        if tool_calls:
+            rendered.append(f"tool_calls: {json.dumps(tool_calls, sort_keys=True)}")
+    return "\n\n".join(rendered)
+
+
+def _message_content_as_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, sort_keys=True)
+
+
+def _worktree_from_messages(messages: object) -> Path | None:
+    if not isinstance(messages, list):
+        return None
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_map = cast("dict[str, Any]", message)
+        content = message_map.get("content")
+        if not isinstance(content, str):
+            continue
+        path = _worktree_from_text(content)
+        if path is not None:
+            return path
+    return None
+
+
+def _worktree_from_text(text: str) -> Path | None:
+    for pattern in _WORKTREE_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        value = match.group(1).strip().rstrip(".")
+        if value:
+            return Path(value)
+    return None
+
+
+def _run_claude_code(
+    *,
+    settings: _ClaudeCodeSettings,
+    prompt: str,
+    model: str,
+    cwd: Path | None,
+) -> str:
+    command = _claude_code_command(settings=settings, model=model, cwd=cwd)
+    completed = subprocess.run(
+        command,
+        input=prompt,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=settings.timeout_seconds + 5,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(_claude_code_error(completed))
+    return completed.stdout.strip()
+
+
+def _claude_code_command(
+    *,
+    settings: _ClaudeCodeSettings,
+    model: str,
+    cwd: Path | None,
+) -> list[str]:
+    command = [
+        sys.executable,
+        str(settings.runner),
+        "--preset",
+        settings.preset,
+        "--model-profile",
+        settings.model_profile,
+        "--output-format",
+        "json",
+        "--extract-result",
+        "--timeout-seconds",
+        _format_timeout(settings.timeout_seconds),
+    ]
+    if model:
+        command.extend(["--model", model])
+    if cwd is not None:
+        command.extend(["--cwd", str(cwd)])
+    for option, values in settings.passthrough.items():
+        for value in values:
+            command.extend([option, value])
+    return command
+
+
+def _format_timeout(timeout_seconds: float) -> str:
+    if timeout_seconds.is_integer():
+        return str(int(timeout_seconds))
+    return str(timeout_seconds)
+
+
+def _claude_code_error(completed: subprocess.CompletedProcess[str]) -> str:
+    parts = [f"Claude Code provider exited with status {completed.returncode}."]
+    stdout = completed.stdout.strip()
+    stderr = completed.stderr.strip()
+    if stdout:
+        parts.append(f"stdout:\n{stdout}")
+    if stderr:
+        parts.append(f"stderr:\n{stderr}")
+    return "\n".join(parts)
+
+
+def _claude_code_settings(base_url: str) -> _ClaudeCodeSettings:
+    parsed = urlparse(base_url)
+    query = parse_qs(parsed.query, keep_blank_values=False)
+    return _ClaudeCodeSettings(
+        model_profile=_query_one(query, "profile") or _profile_from_url(parsed),
+        preset=_query_one(query, "preset") or _DEFAULT_CLAUDE_CODE_PRESET,
+        runner=_runner_from_query(query),
+        timeout_seconds=_timeout_from_query(query),
+        passthrough=_passthrough_options(query),
+    )
+
+
+def _profile_from_url(parsed: Any) -> str:
+    profile = parsed.netloc or parsed.path.strip("/")
+    return unquote(profile) if profile else _DEFAULT_CLAUDE_CODE_PROFILE
+
+
+def _runner_from_query(query: Mapping[str, list[str]]) -> Path:
+    configured = _query_one(query, "runner") or os.environ.get("DGOV_CLAUDE_CODE_RUNNER", "")
+    return Path(configured).expanduser() if configured else _DEFAULT_CLAUDE_CODE_RUNNER
+
+
+def _timeout_from_query(query: Mapping[str, list[str]]) -> float:
+    raw = _query_one(query, "timeout")
+    if not raw:
+        return _DEFAULT_CLAUDE_CODE_TIMEOUT_S
+    try:
+        timeout = float(raw)
+    except ValueError as exc:
+        raise ValueError("claude-code provider timeout must be numeric") from exc
+    if timeout <= 0:
+        raise ValueError("claude-code provider timeout must be > 0")
+    return timeout
+
+
+def _passthrough_options(query: Mapping[str, list[str]]) -> Mapping[str, tuple[str, ...]]:
+    allowed = {
+        "add_dir": "--add-dir",
+        "max_budget_usd": "--max-budget-usd",
+        "tools": "--tools",
+        "disallowed_tools": "--disallowed-tools",
+    }
+    options: dict[str, tuple[str, ...]] = {}
+    for query_key, option in allowed.items():
+        values = tuple(value for value in query.get(query_key, []) if value)
+        if values:
+            options[option] = values
+    return options
+
+
+def _query_one(query: Mapping[str, list[str]], key: str) -> str:
+    values = query.get(key, [])
+    return values[-1].strip() if values else ""
+
+
 def _token_limit_policy_from_config(
     *,
     label: str,
@@ -402,7 +724,9 @@ def create_provider(
     token_limit_label: str = "",
     prompt_token_limit_header: str = "",
     generated_token_limit_header: str = "",
-) -> OpenAICompatibleProvider:
+) -> OpenAICompatibleProvider | ClaudeCodeProvider:
+    if is_claude_code_provider_url(base_url):
+        return ClaudeCodeProvider(_claude_code_settings(base_url), name=name)
     client = OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
     token_limit_policy = _token_limit_policy_from_config(
         label=token_limit_label,

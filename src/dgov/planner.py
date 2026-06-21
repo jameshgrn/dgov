@@ -25,7 +25,7 @@ if str(_project_root / "src") not in sys.path:
     sys.path.append(str(_project_root / "src"))
 
 from dgov.workers.atomic import AtomicTools, get_allowed_tool_names, get_tool_spec  # noqa: E402
-from dgov.workers.config import completion_budget_kwargs  # noqa: E402
+from dgov.workers.config import completion_budget_kwargs, provider_requires_api_key  # noqa: E402
 from dgov.workers.provider import create_provider  # noqa: E402
 from dgov.workers.runtime import (  # noqa: E402
     WorkerEvent,
@@ -212,15 +212,24 @@ def _planner_config_and_provider(worktree: Path, project_config_json: str) -> tu
     except ValueError as exc:
         WorkerEvent("error", f"Project configuration error: {exc}").emit()
         sys.exit(1)
-    if not config.llm_provider or not config.llm_base_url or not config.llm_api_key_env:
+    if not config.llm_provider or not config.llm_base_url:
         WorkerEvent(
             "error",
             "Provider configuration missing: set [project].provider and "
-            "[providers.<name>].base_url/api_key_env in .dgov/project.toml",
+            "[providers.<name>].base_url in .dgov/project.toml",
         ).emit()
         sys.exit(1)
-    api_key = os.environ.get(config.llm_api_key_env)
-    if not api_key:
+    api_key = ""
+    if provider_requires_api_key(config.llm_base_url):
+        if not config.llm_api_key_env:
+            WorkerEvent(
+                "error",
+                "Provider configuration missing: set "
+                "[providers.<name>].api_key_env in .dgov/project.toml",
+            ).emit()
+            sys.exit(1)
+        api_key = os.environ.get(config.llm_api_key_env, "")
+    if config.llm_api_key_env and not api_key:
         WorkerEvent(
             "error",
             f"{config.llm_api_key_env} missing for provider {config.llm_provider!r}",

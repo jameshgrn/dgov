@@ -734,20 +734,6 @@ def _changed_symbol_infos_since_base(
     return changed
 
 
-def _changed_symbols_since_base(
-    base_symbols: dict[str, _SymbolInfo],
-    derived_symbols: dict[str, _SymbolInfo],
-) -> dict[str, _SymbolInfo]:
-    """Return changed symbols keyed by bare name for legacy tests and callers."""
-    return {
-        symbol.name: symbol
-        for symbol in _changed_symbol_infos_since_base(
-            base_symbols.values(),
-            derived_symbols.values(),
-        ).values()
-    }
-
-
 def _symbol_in_touched_files(symbol: _SymbolInfo, touched_files: set[str]) -> bool:
     rel_path = Path(symbol.file_path).name
     return rel_path in touched_files or symbol.file_path in touched_files

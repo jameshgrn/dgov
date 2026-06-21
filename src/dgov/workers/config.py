@@ -11,6 +11,17 @@ from dgov.tool_policy import ToolPolicy, parse_tool_policy
 DEFAULT_LLM_PROVIDER = ""
 DEFAULT_LLM_BASE_URL = ""
 DEFAULT_LLM_API_KEY_ENV = ""
+CLAUDE_CODE_PROVIDER_SCHEME = "claude-code"
+
+
+def is_claude_code_provider_url(base_url: str) -> bool:
+    """Return whether a provider endpoint delegates to the local Claude Code wrapper."""
+    return base_url.strip().lower().startswith(f"{CLAUDE_CODE_PROVIDER_SCHEME}:")
+
+
+def provider_requires_api_key(base_url: str) -> bool:
+    """Return whether the provider endpoint needs an API key env var."""
+    return not is_claude_code_provider_url(base_url)
 
 
 @dataclass(frozen=True)
@@ -25,6 +36,9 @@ class ProviderConfig:
     token_limit_label: str = ""
     prompt_token_limit_header: str = ""
     generated_token_limit_header: str = ""
+
+    def requires_api_key(self) -> bool:
+        return provider_requires_api_key(self.base_url)
 
 
 @dataclass(frozen=True)
@@ -146,10 +160,14 @@ def _optional_int_field(data: Mapping[str, Any], key: str, *, context: str) -> i
 
 def _provider_from_table(name: str, data: Mapping[str, Any]) -> ProviderConfig:
     context = f"[providers.{name}]"
+    base_url = _string_field(data, "base_url", context=context)
+    api_key_env = _string_field(data, "api_key_env", context=context, required=False)
+    if provider_requires_api_key(base_url) and not api_key_env:
+        raise ValueError(f".dgov/project.toml {context}.api_key_env must be a non-empty string")
     return ProviderConfig(
         name=name,
-        base_url=_string_field(data, "base_url", context=context),
-        api_key_env=_string_field(data, "api_key_env", context=context),
+        base_url=base_url,
+        api_key_env=api_key_env,
         default_agent=_string_field(
             data,
             "default_agent",

@@ -449,3 +449,40 @@ api_key_env = "OPENAI_API_KEY"
     assert "FIREWORKS_API_KEY" not in env
     assert env.get("OPENAI_API_KEY") == "oa-secret"
     assert exits == [(0, "", 0, 0)]
+
+
+def test_run_headless_worker_env_allows_claude_code_provider_vars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup_project_toml(
+        tmp_path,
+        """
+[project]
+provider = "claude-haiku-worker"
+
+[providers.claude-haiku-worker]
+default_agent = "haiku"
+base_url = "claude-code://fast?preset=edit"
+""",
+    )
+    task = _make_test_task()
+    monkeypatch.setenv("HOME", "/tmp/claude-home")
+    monkeypatch.setenv("USER", "claude-user")
+    monkeypatch.setenv("LOGNAME", "claude-logname")
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", "/tmp/run_claude_code.py")
+    monkeypatch.setenv("CLAUDE_CODE_BIN", "/tmp/claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
+    monkeypatch.setenv("UNRELATED_VAR", "should-not-pass")
+
+    env, exits = _run_headless_and_capture_env(tmp_path, monkeypatch, task)
+
+    assert env.get("HOME") == "/tmp/claude-home"
+    assert env.get("USER") == "claude-user"
+    assert env.get("LOGNAME") == "claude-logname"
+    assert env.get("SHELL") == "/bin/zsh"
+    assert env.get("DGOV_CLAUDE_CODE_RUNNER") == "/tmp/run_claude_code.py"
+    assert env.get("CLAUDE_CODE_BIN") == "/tmp/claude"
+    assert env.get("ANTHROPIC_API_KEY") == "anthropic-secret"
+    assert "UNRELATED_VAR" not in env
+    assert exits == [(0, "", 0, 0)]

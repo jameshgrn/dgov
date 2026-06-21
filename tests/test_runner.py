@@ -25,7 +25,8 @@ from dgov.persistence import (
     get_dispatch_run,
     save_dispatch_run,
 )
-from dgov.runner import EventDagRunner, _ForkProvenance, _test_failure_command
+from dgov.runner import EventDagRunner
+from dgov.runner_support import ForkProvenance, parse_test_failure_command
 from dgov.settlement import GateResult
 from dgov.types import TaskState, WorkerExit, Worktree
 
@@ -772,7 +773,7 @@ class TestDispatchRunRecording:
             ctx=ctx,
         )
 
-        ctx.provenance = _ForkProvenance(first.id)
+        ctx.provenance = ForkProvenance(first.id)
         ctx.fork_depth = 1
         second = runner._mint_dispatch_run(
             task_slug="a",
@@ -916,6 +917,36 @@ api_key_env = "OPENAI_API_KEY"
         runner = EventDagRunner(dag, session_root=str(tmp_path))
         monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        asyncio.run(runner._check_model_env())
+
+    def test_preflight_skips_api_key_for_claude_code_provider(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            """
+[project]
+provider = "local"
+
+[providers.local]
+base_url = "http://localhost:8080/v1"
+api_key_env = "LOCAL_LLM_API_KEY"
+
+[providers.claude-sonnet-review]
+default_agent = "sonnet"
+base_url = "claude-code://daily?preset=review"
+"""
+        )
+        dag = DagDefinition(
+            name="preflight",
+            dag_file="test.toml",
+            project_root=str(tmp_path),
+            session_root=str(tmp_path),
+            tasks={"a": _task("a", provider="claude-sonnet-review")},
+        )
+        runner = EventDagRunner(dag, session_root=str(tmp_path))
+        monkeypatch.delenv("LOCAL_LLM_API_KEY", raising=False)
         asyncio.run(runner._check_model_env())
 
 
@@ -1358,12 +1389,12 @@ class TestVerificationScope:
 
     def test_test_failure_command_parses_settlement_error(self):
         assert (
-            _test_failure_command(
+            parse_test_failure_command(
                 "Test failure from `uv run pytest tests/test_a.py -q`:\nFAILED test_a"
             )
             == "uv run pytest tests/test_a.py -q"
         )
-        assert _test_failure_command("Lint failure:\nE501") is None
+        assert parse_test_failure_command("Lint failure:\nE501") is None
 
     def test_settlement_retry_requires_successful_tests_after_test_failure(self, tmp_path: Path):
         """Settlement retry sets required test verification when tests previously failed."""

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,6 +22,7 @@ from dgov.workers.provider import (
     _get_headers_from_exc,
     _jittered_delay,
     call_with_rate_limit_backoff,
+    create_provider,
 )
 
 pytestmark = pytest.mark.unit
@@ -481,3 +485,76 @@ def test_token_limit_within_limits_allows_retry() -> None:
     assert result == "ok"
     assert calls == 2
     assert len(sleeps) == 1  # Retried once
+
+
+def test_claude_code_provider_invokes_skill_runner(monkeypatch, tmp_path) -> None:
+    runner = tmp_path / "run_claude_code.py"
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(runner))
+
+    def _fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(command, 0, stdout="changed x.py\n", stderr="")
+
+    monkeypatch.setattr("dgov.workers.provider.subprocess.run", _fake_run)
+
+    provider = create_provider(
+        name="claude",
+        base_url="claude-code://fast?preset=edit&timeout=12",
+        api_key="",
+    )
+    response = provider.create_chat_completion(
+        model="haiku",
+        messages=[
+            {"role": "system", "content": f"Sandbox (a git worktree: {worktree})."},
+            {"role": "user", "content": "touch x.py"},
+        ],
+        tools=[{"type": "function", "function": {"name": "done"}}],
+    )
+
+    command = cast(list[str], captured["command"])
+    assert command[1] == str(runner)
+    assert command[command.index("--model-profile") + 1] == "fast"
+    assert command[command.index("--preset") + 1] == "edit"
+    assert command[command.index("--model") + 1] == "haiku"
+    assert command[command.index("--cwd") + 1] == str(worktree)
+    assert command[command.index("--timeout-seconds") + 1] == "12"
+    kwargs = cast(dict[str, Any], captured["kwargs"])
+    prompt = cast(str, kwargs["input"])
+    assert "DGOV provider adapter instructions" in prompt
+    tool_call = response.choices[0].message.tool_calls[0]
+    assert tool_call.function.name == "done"
+    assert json.loads(tool_call.function.arguments) == {"summary": "changed x.py"}
+
+
+def test_claude_code_provider_reports_runner_failure(monkeypatch, tmp_path) -> None:
+    runner = tmp_path / "run_claude_code.py"
+    monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(runner))
+
+    def _fake_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 2, stdout="partial", stderr="failed")
+
+    monkeypatch.setattr("dgov.workers.provider.subprocess.run", _fake_run)
+    provider = create_provider(name="claude", base_url="claude-code://daily", api_key="")
+
+    with pytest.raises(RuntimeError, match="Claude Code provider exited with status 2"):
+        provider.create_chat_completion(
+            model="sonnet",
+            messages=[{"role": "user", "content": "review"}],
+            tools=[{"type": "function", "function": {"name": "done"}}],
+        )
+
+
+def test_claude_code_provider_rejects_planner_tool_surface(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(tmp_path / "run_claude_code.py"))
+    provider = create_provider(name="claude", base_url="claude-code://daily", api_key="")
+
+    with pytest.raises(RuntimeError, match="terminal `done` tool"):
+        provider.create_chat_completion(
+            model="sonnet",
+            messages=[{"role": "user", "content": "plan"}],
+            tools=[{"type": "function", "function": {"name": "emit_plan"}}],
+        )

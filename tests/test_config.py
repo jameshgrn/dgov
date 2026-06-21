@@ -352,6 +352,30 @@ class TestLoadProjectConfig:
             "openrouter": "openrouter/test",
         }
 
+    def test_loads_claude_code_provider_without_api_key_env(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            """
+[project]
+provider = "claude-haiku-worker"
+
+[providers.claude-haiku-worker]
+default_agent = "haiku"
+base_url = "claude-code://fast?preset=edit"
+"""
+        )
+
+        pc = load_project_config(tmp_path)
+
+        provider = pc.provider_config("claude-haiku-worker")
+        assert provider.base_url == "claude-code://fast?preset=edit"
+        assert provider.api_key_env == ""
+        assert provider.requires_api_key() is False
+        assert pc.llm_api_key_env == ""
+        payload = pc.to_worker_payload("claude-haiku-worker")
+        assert payload["llm_api_key_env"] == ""
+
     def test_source_repo_config_wires_local_gemma_provider(self):
         pc = load_project_config(Path(__file__).resolve().parents[1])
 
@@ -385,12 +409,40 @@ class TestLoadProjectConfig:
             == fireworks.generated_token_limit_header
         )
 
+        haiku = pc.provider_config("claude-haiku-worker")
+        assert haiku.default_agent == "haiku"
+        assert haiku.base_url == "claude-code://fast?preset=edit"
+        assert haiku.api_key_env == ""
+        assert haiku.requires_api_key() is False
+
+        sonnet = pc.provider_config("claude-sonnet-review")
+        assert sonnet.default_agent == "sonnet"
+        assert sonnet.base_url == "claude-code://daily?preset=review"
+        assert sonnet.api_key_env == ""
+        assert sonnet.requires_api_key() is False
+
     def test_rejects_unknown_selected_provider(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"
         dgov_dir.mkdir()
         (dgov_dir / "project.toml").write_text('[project]\nprovider = "openai"\n')
 
         with pytest.raises(ValueError, match=r"\[providers\.openai\]"):
+            load_project_config(tmp_path)
+
+    def test_rejects_openai_compatible_provider_without_api_key_env(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            """
+[project]
+provider = "fireworks"
+
+[providers.fireworks]
+base_url = "https://api.fireworks.ai/inference/v1"
+"""
+        )
+
+        with pytest.raises(ValueError, match=r"\[providers\.fireworks\]\.api_key_env"):
             load_project_config(tmp_path)
 
     @pytest.mark.parametrize(
