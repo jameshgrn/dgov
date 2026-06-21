@@ -39,7 +39,6 @@ from dgov.dag_parser import DagDefinition, DagTaskSpec
 from dgov.dispatch_run import (
     DispatchRun,
     DispatchRunState,
-    _dispatch_run_from_row_dict,
     derive_drift_evidence,
 )
 from dgov.event_types import (
@@ -73,11 +72,6 @@ from dgov.persistence import (
     record_runtime_artifact,
     update_runtime_artifact_state,
 )
-from dgov.persistence.dispatch_runs import (
-    get_dispatch_run,
-    list_dispatch_runs,
-    save_dispatch_run,
-)
 from dgov.persistence.schema import TaskState, WorkerTask
 from dgov.prompt_builder import PromptBuilder, build_baseline_diag_note, load_review_sop_blocks
 from dgov.runner_support import (
@@ -86,9 +80,12 @@ from dgov.runner_support import (
     deployed_units,
     effective_sop_set_hash,
     latest_deploy_record_for_units,
+    latest_dispatch_run_id,
     latest_runner_run_start_ids,
+    load_runner_dispatch_run,
     load_runner_project_config,
     reset_runner_plan_state,
+    save_runner_dispatch_run,
     summarize_runner_evidence,
 )
 from dgov.settlement import ReviewResult, review_sandbox
@@ -416,13 +413,13 @@ class EventDagRunner:
     def _rehydrate_dispatch_run_contexts(self) -> None:
         """Restore latest DispatchRun ids for retry/fork lineage after process restart."""
         for slug in self.dag.tasks:
-            rows = list_dispatch_runs(
+            latest_id = latest_dispatch_run_id(
                 self.session_root,
                 plan_id=self.dag.name,
                 unit_slug=slug,
             )
-            if rows:
-                self._ctx(slug).current_dispatch_run_id = rows[-1]["id"]
+            if latest_id is not None:
+                self._ctx(slug).current_dispatch_run_id = latest_id
 
     def _apply_rehydrate_event(self, event: DgovEvent) -> None:
         """Apply a single event during rehydration. Extracted for testability."""
@@ -1744,7 +1741,7 @@ class EventDagRunner:
             dispatched_by=self._dispatched_by,
             dispatched_at=datetime.now(UTC),
         ).start_active()
-        save_dispatch_run(self.session_root, dispatch_run)
+        save_runner_dispatch_run(self.session_root, dispatch_run)
         ctx.current_dispatch_run_id = dispatch_run.id
         ctx.provenance = None
         return dispatch_run
@@ -1766,15 +1763,12 @@ class EventDagRunner:
             state=state,
             terminated_at=datetime.now(UTC),
         )
-        save_dispatch_run(self.session_root, terminal)
+        save_runner_dispatch_run(self.session_root, terminal)
 
     def _current_dispatch_run(self, ctx: TaskContext) -> DispatchRun | None:
         if ctx.current_dispatch_run_id is None:
             return None
-        current_dispatch_run = get_dispatch_run(self.session_root, ctx.current_dispatch_run_id)
-        if current_dispatch_run is None:
-            return None
-        return _dispatch_run_from_row_dict(current_dispatch_run)
+        return load_runner_dispatch_run(self.session_root, ctx.current_dispatch_run_id)
 
     def _complete_terminal_dispatch_run(
         self,
