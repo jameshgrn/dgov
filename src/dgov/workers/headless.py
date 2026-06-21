@@ -363,6 +363,25 @@ async def _start_worker_for_task(
     return await _launch_worker_subprocess(cmd, project_root, env)
 
 
+async def _cancel_started_worker(
+    process: asyncio.subprocess.Process | None,
+    *,
+    task_slug: str,
+) -> None:
+    if process is not None:
+        await _terminate_worker_process(process, task_slug=task_slug)
+
+
+def _report_headless_start_failure(
+    on_exit: Callable[[str, str, int, str, int, int], None],
+    task_slug: str,
+    pane_slug: str,
+    exc: Exception,
+) -> None:
+    logger.error("Headless worker [%s] failed to start: %s", task_slug, exc)
+    _report_exit(on_exit, task_slug, pane_slug, 1, str(exc), 0, 0)
+
+
 async def run_headless_worker(
     project_root: str,
     plan_name: str,
@@ -402,9 +421,7 @@ async def run_headless_worker(
             completion_tokens,
         )
     except asyncio.CancelledError:
-        if process is not None:
-            await _terminate_worker_process(process, task_slug=task_slug)
+        await _cancel_started_worker(process, task_slug=task_slug)
         raise
     except Exception as exc:
-        logger.error("Headless worker [%s] failed to start: %s", task_slug, exc)
-        _report_exit(on_exit, task_slug, pane_slug, 1, str(exc), 0, 0)
+        _report_headless_start_failure(on_exit, task_slug, pane_slug, exc)
