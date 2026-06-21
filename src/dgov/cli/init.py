@@ -47,6 +47,7 @@ out/
 runtime/
 plans/deployed.jsonl
 plans/*/_compiled.toml
+plans/archive/*/_compiled.toml
 """
 
 _SENTRUX_GITIGNORE = """\

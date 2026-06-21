@@ -522,6 +522,7 @@ def _emit_tool_result(
     }
     if status == "failed":
         content["error_kind"] = _classify_tool_error(result)
+        content["result_excerpt"] = clipped_result
     WorkerEvent("result", content).emit()
     return clipped_result
 

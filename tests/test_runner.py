@@ -1349,7 +1349,7 @@ class TestInterruptHandling:
         assert event.reason == "shutdown"
 
     def test_adaptive_rate_limit_fails_fast_even_with_retries_remaining(self):
-        """Fireworks adaptive TPM errors should fail immediately, not retry."""
+        """Configured provider token-limit errors should fail immediately, not retry."""
         from dgov.actions import GovernorAction
         from dgov.event_types import GovernorResumed
 
@@ -1358,8 +1358,9 @@ class TestInterruptHandling:
             runner.kernel.task_states["a"] = TaskState.ACTIVE
             runner._ctx("a").attempts = 0  # retries remaining
             runner._ctx("a").error = (
-                "Fireworks adaptive serverless TPM: prompt token limit exceeded. "
-                "Estimated prompt tokens: 50000, observed limit: 10000."
+                "Provider token limit exceeded (Fireworks adaptive serverless TPM): "
+                "prompt token limit exceeded. Estimated prompt tokens: 50000, "
+                "observed limit: 10000."
             )
 
             actions = runner._handle_interrupt(InterruptGovernor("a", "pane-a", "rate limited"))
@@ -1409,7 +1410,7 @@ class TestInterruptHandling:
         assert event.action == GovernorAction.RETRY.value
 
     def test_generated_token_rate_limit_also_fails_fast(self):
-        """Fireworks adaptive TPM for generated tokens should also fail fast."""
+        """Configured provider generated-token limits should also fail fast."""
         from dgov.actions import GovernorAction
         from dgov.event_types import GovernorResumed
 
@@ -1418,8 +1419,9 @@ class TestInterruptHandling:
             runner.kernel.task_states["a"] = TaskState.ACTIVE
             runner._ctx("a").attempts = 0
             runner._ctx("a").error = (
-                "Fireworks adaptive serverless TPM: generated token limit exceeded. "
-                "Estimated generated tokens: 25000, observed limit: 5000."
+                "Provider token limit exceeded (Fireworks adaptive serverless TPM): "
+                "generated token limit exceeded. Estimated generated tokens: 25000, "
+                "observed limit: 5000."
             )
 
             actions = runner._handle_interrupt(InterruptGovernor("a", "pane-a", "rate limited"))

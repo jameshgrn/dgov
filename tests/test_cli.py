@@ -800,7 +800,9 @@ def test_init_creates_bootstrap_files(
         assert config.exists()
         assert governor.exists()
         assert sops_dir.is_dir()
-        assert "plans/archive/" not in Path(td, ".dgov", ".gitignore").read_text()
+        gitignore = Path(td, ".dgov", ".gitignore").read_text()
+        assert "plans/archive/\n" not in gitignore
+        assert "plans/archive/*/_compiled.toml" in gitignore
         content = config.read_text()
         assert 'language = "python"' in content
         assert 'src_dir = "src/"' in content

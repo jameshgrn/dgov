@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import click
@@ -78,9 +79,11 @@ def verify_run(name: str, root: str) -> None:
                     "warning_count": r.warning_count,
                     "log_path": r.log_path,
                     "summary": r.summary,
+                    "fact": asdict(r.fact) if r.fact is not None else None,
                 }
                 for r in result.results
             ],
+            "facts": [asdict(fact) for fact in result.facts],
         }
         click.echo(json.dumps(payload, indent=2))
     else:

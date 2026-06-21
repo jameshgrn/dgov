@@ -22,7 +22,7 @@ sys.modules.setdefault("openai", type(sys)("openai"))
 sys.modules["openai"].OpenAI = object  # type: ignore
 
 from dgov.tool_policy import ToolPolicy  # noqa: E402
-from dgov.worker import _build_system_prompt, run_worker  # noqa: E402
+from dgov.worker import _build_system_prompt, _create_worker_completion, run_worker  # noqa: E402
 from dgov.workers.atomic import AtomicTools, get_tool_spec  # noqa: E402
 from dgov.workers.config import AtomicConfig  # noqa: E402
 from dgov.workers.headless import _build_worker_env, run_headless_worker  # noqa: E402
@@ -38,6 +38,30 @@ from dgov.workers.runtime import (  # noqa: E402
 )
 
 pytestmark = pytest.mark.unit
+
+
+class _CaptureProvider:
+    def __init__(self) -> None:
+        self.kwargs: dict[str, Any] = {}
+
+    def create_chat_completion(self, **kwargs: Any) -> object:
+        self.kwargs = kwargs
+        return object()
+
+
+def test_worker_completion_uses_configured_provider_max_tokens() -> None:
+    provider = _CaptureProvider()
+
+    _create_worker_completion(
+        provider,
+        model="provider/model",
+        messages=[{"role": "user", "content": "hi"}],
+        iteration=0,
+        budget=1,
+        config=AtomicConfig(llm_max_tokens=8192),
+    )
+
+    assert provider.kwargs["max_tokens"] == 8192
 
 
 @pytest.fixture()
@@ -701,6 +725,7 @@ def test_execute_tool_call_emits_success_telemetry(
     assert result_event["result_chars"] == len(result)
     assert result_event["raw_result_chars"] == len(result)
     assert result_event["result_clipped"] is False
+    assert "result_excerpt" not in result_event
     assert isinstance(result_event["duration_ms"], float)
     assert result_event["duration_ms"] >= 0
 
@@ -732,6 +757,7 @@ def test_execute_tool_call_emits_failed_telemetry(
     assert result_event["role"] == "worker"
     assert result_event["turn_index"] == 1
     assert result_event["tool_index"] == 3
+    assert result_event["result_excerpt"] == result
 
 
 def test_execute_tool_call_reports_invalid_json_arguments(
@@ -762,6 +788,7 @@ def test_execute_tool_call_reports_invalid_json_arguments(
     assert call_event["arg_keys"] == []
     assert result_event["status"] == "failed"
     assert result_event["error_kind"] == "validation_failed"
+    assert result_event["result_excerpt"] == result
 
 
 def test_execute_tool_call_rejects_non_object_json_arguments(
@@ -871,6 +898,7 @@ def test_done_is_blocked_until_required_retry_tests_pass(
     assert result_event["tool"] == "done"
     assert result_event["status"] == "failed"
     assert result_event["error_kind"] == "validation_failed"
+    assert result_event["result_excerpt"] == result
 
 
 def test_successful_retry_tests_unlock_done(tmp_path: Path) -> None:

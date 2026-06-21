@@ -9,6 +9,7 @@ from typing import cast
 
 import pytest
 
+from dgov.command_facts import CommandExecutionFact
 from dgov.verify import (
     VerifyCommandResult,
     VerifyRecipe,
@@ -53,7 +54,26 @@ class TestVerifyCommandResult:
 
 class TestVerifyRunResult:
     def test_frozen(self):
-        result = VerifyRunResult(status="pass", results=())
+        fact = CommandExecutionFact(
+            gate="verify",
+            source="verify.lint",
+            command="ruff check src/",
+            outcome="completed",
+            duration_s=0.5,
+            exit_code=0,
+        )
+        command_result = VerifyCommandResult(
+            recipe_name="lint",
+            command="ruff check src/",
+            exit_code=0,
+            duration_s=0.5,
+            log_path=None,
+            warning_count=0,
+            summary="ok",
+            fact=fact,
+        )
+        result = VerifyRunResult(status="pass", results=(command_result,))
+        assert result.facts == (fact,)
         with pytest.raises(AttributeError):
             setattr(result, "status", "fail")  # noqa: B010
 
@@ -172,6 +192,15 @@ class TestRunVerifyRecipe:
         content = log.read_text()
         assert "hello" in content
         assert "world" in content
+        assert isinstance(r.fact, CommandExecutionFact)
+        assert r.fact.gate == "verify"
+        assert r.fact.source == "verify.hello"
+        assert r.fact.command == recipe.command
+        assert r.fact.outcome == "completed"
+        assert r.fact.exit_code == 0
+        assert r.fact.log_path == r.log_path
+        assert r.fact.warning_count == 0
+        assert result.facts == (r.fact,)
 
     def test_counts_warnings(self, tmp_path):
         script = self._write_script(
@@ -209,6 +238,11 @@ class TestRunVerifyRecipe:
         result = run_verify_recipe(tmp_path, recipe, timeout=0.1)
         r = result.results[0]
         assert r.exit_code == -1
+        assert r.fact is not None
+        assert r.fact.outcome == "timed_out"
+        assert r.fact.timeout_s == 0.1
+        assert r.fact.exit_code is None
+        assert r.fact.log_path == r.log_path
         assert r.log_path is not None
         assert "timed out" in r.summary or "timed out" in Path(r.log_path).read_text()
 

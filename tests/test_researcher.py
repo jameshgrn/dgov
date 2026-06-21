@@ -17,6 +17,7 @@ sys.modules["openai"].OpenAI = object  # type: ignore
 
 from dgov.researcher import (  # noqa: E402
     _build_system_prompt,
+    _create_completion,
     run_researcher,
 )
 from dgov.workers.atomic import (  # noqa: E402
@@ -49,6 +50,28 @@ class _LengthFinishProvider:
         return SimpleNamespace(
             choices=[SimpleNamespace(message=_LengthFinishMessage(), finish_reason="length")]
         )
+
+
+class _CaptureProvider:
+    def __init__(self) -> None:
+        self.kwargs: dict[str, Any] = {}
+
+    def create_chat_completion(self, **kwargs: Any) -> object:
+        self.kwargs = kwargs
+        return object()
+
+
+def test_researcher_completion_uses_configured_provider_max_tokens() -> None:
+    provider = _CaptureProvider()
+
+    _create_completion(
+        provider,
+        model="provider/model",
+        messages=[{"role": "user", "content": "hi"}],
+        config=AtomicConfig(llm_max_tokens=8192),
+    )
+
+    assert provider.kwargs["max_tokens"] == 8192
 
 
 def test_researcher_prompt_uses_configured_budget_and_repo_map(tmp_path: Path) -> None:
@@ -177,6 +200,7 @@ def test_researcher_execution_rejects_disallowed_tool(tmp_path: Path) -> None:
     result_event = cast(dict[str, Any], result_event)
     assert result_event["status"] == "failed"
     assert result_event["error_kind"] == "policy_blocked"
+    assert result_event["result_excerpt"] == result
     assert result_event["duration_ms"] >= 0
 
 

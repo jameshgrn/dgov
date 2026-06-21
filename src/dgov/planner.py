@@ -25,6 +25,7 @@ if str(_project_root / "src") not in sys.path:
     sys.path.append(str(_project_root / "src"))
 
 from dgov.workers.atomic import AtomicTools, get_allowed_tool_names, get_tool_spec  # noqa: E402
+from dgov.workers.config import completion_budget_kwargs  # noqa: E402
 from dgov.workers.provider import create_provider  # noqa: E402
 from dgov.workers.runtime import (  # noqa: E402
     WorkerEvent,
@@ -229,6 +230,9 @@ def _planner_config_and_provider(worktree: Path, project_config_json: str) -> tu
         name=config.llm_provider,
         base_url=config.llm_base_url,
         api_key=api_key,
+        token_limit_label=config.llm_token_limit_label,
+        prompt_token_limit_header=config.llm_prompt_token_limit_header,
+        generated_token_limit_header=config.llm_generated_token_limit_header,
     )
     return config, provider
 
@@ -251,12 +255,14 @@ def _create_planner_completion(
     model: str,
     messages: list[Any],
     interactive: bool,
+    config: Any,
 ) -> Any:
     return provider.create_chat_completion(
         model=model,
         messages=messages,
         tools=get_tool_spec("planner", interactive=interactive),
         tool_choice="auto",
+        **completion_budget_kwargs(config),
     )
 
 
@@ -367,6 +373,7 @@ def _run_planner_iteration(
     provider: Any,
     model: str,
     messages: list[Any],
+    config: Any,
     interactive: bool,
     actuators: AtomicTools,
     allowed_tools: frozenset[str],
@@ -382,6 +389,7 @@ def _run_planner_iteration(
             model=model,
             messages=messages,
             interactive=interactive,
+            config=config,
         )
     except Exception as exc:
         WorkerEvent("error", f"API Failure: {exc!s}").emit()
@@ -413,7 +421,7 @@ def run_planner(
     interactive: bool = False,
 ) -> None:
     """Run the planner agent loop."""
-    _config, provider, actuators, cleanup, ask_fn, messages, nudged, allowed_tools, budget = (
+    config, provider, actuators, cleanup, ask_fn, messages, nudged, allowed_tools, budget = (
         _build_planner_runtime(goal, worktree, project_config_json, interactive)
     )
 
@@ -422,6 +430,7 @@ def run_planner(
             provider,
             model,
             messages,
+            config,
             interactive,
             actuators,
             allowed_tools,

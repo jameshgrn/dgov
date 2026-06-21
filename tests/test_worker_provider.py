@@ -8,12 +8,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from dgov.workers.provider import (
-    FireworksRateLimitError,
     OpenAICompatibleProvider,
+    ProviderRateLimitError,
+    TokenLimitPolicy,
     _estimate_request_tokens,
     _estimate_tokens_from_length,
-    _extract_fireworks_limits,
     _extract_retry_after,
+    _extract_token_limits,
     _get_header,
     _get_headers_from_exc,
     _jittered_delay,
@@ -21,6 +22,12 @@ from dgov.workers.provider import (
 )
 
 pytestmark = pytest.mark.unit
+
+_TOKEN_POLICY = TokenLimitPolicy(
+    label="test provider token limits",
+    prompt_header="x-ratelimit-limit-tokens-prompt",
+    generated_header="x-ratelimit-limit-tokens-generated",
+)
 
 
 class _RateLimitError(Exception):
@@ -33,8 +40,8 @@ class _ResponseRateLimitError(Exception):
         self.response = SimpleNamespace(status_code=429)
 
 
-class _FireworksRateLimitError(Exception):
-    """Simulates Fireworks 429 with TPM limit headers."""
+class _ProviderRateLimitError(Exception):
+    """Simulates configured token-limit 429 with TPM limit headers."""
 
     def __init__(
         self,
@@ -50,7 +57,7 @@ class _FireworksRateLimitError(Exception):
             headers["X-Ratelimit-Limit-Tokens-Generated"] = str(generated_limit)
         if retry_after is not None:
             headers["Retry-After"] = retry_after
-        # Fireworks returns headers on the response object
+        # The provider returns headers on the response object
         self.response = SimpleNamespace(status_code=429, headers=headers)
 
 
@@ -136,11 +143,8 @@ def test_jittered_delay_applies_bounded_twenty_percent_jitter() -> None:
     assert _jittered_delay(10.0, lambda lo, _hi: lo) == pytest.approx(8.0)
 
 
-# === New Fireworks-specific tests ===
-
-
 def test_generic_429_still_retries_on_5_30_90_schedule() -> None:
-    """Generic 429 without Fireworks headers uses the standard backoff schedule."""
+    """Generic 429 without configured token-limit headers uses the standard backoff."""
     sleeps: list[float] = []
     calls = 0
 
@@ -162,6 +166,32 @@ def test_generic_429_still_retries_on_5_30_90_schedule() -> None:
     assert sleeps == [5.0, 30.0, 90.0]
 
 
+def test_token_limit_headers_are_ignored_without_policy() -> None:
+    sleeps: list[float] = []
+    calls = 0
+
+    def _call() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise _ProviderRateLimitError(prompt_limit=1, generated_limit=1)
+        return "ok"
+
+    result = call_with_rate_limit_backoff(
+        _call,
+        sleep_fn=sleeps.append,
+        jitter_fn=lambda _lo, _hi: 0.0,
+        _kwargs_for_classification={
+            "messages": [{"role": "user", "content": "x" * 100}],
+            "max_tokens": 50,
+        },
+    )
+
+    assert result == "ok"
+    assert calls == 2
+    assert sleeps == [5.0]
+
+
 def test_retry_after_header_controls_first_sleep() -> None:
     """Retry-After header value is used instead of the first static backoff slot."""
     sleeps: list[float] = []
@@ -171,7 +201,7 @@ def test_retry_after_header_controls_first_sleep() -> None:
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise _FireworksRateLimitError(retry_after="15")
+            raise _ProviderRateLimitError(retry_after="15")
         return "ok"
 
     result = call_with_rate_limit_backoff(
@@ -187,7 +217,7 @@ def test_retry_after_header_controls_first_sleep() -> None:
     assert sleeps[0] == pytest.approx(15.0)
 
 
-def test_fireworks_prompt_limit_below_estimated_request_size_fails_fast() -> None:
+def test_token_prompt_limit_below_estimated_request_size_fails_fast() -> None:
     """When prompt limit is below estimated tokens, fail immediately without retry."""
     sleeps: list[float] = []
 
@@ -195,14 +225,15 @@ def test_fireworks_prompt_limit_below_estimated_request_size_fails_fast() -> Non
     # Using 400+ chars to exceed 100 tokens at 4 chars/token
     long_content = "x" * 400  # 100 tokens at 4 chars/token
 
-    error = _FireworksRateLimitError(prompt_limit=50)
+    error = _ProviderRateLimitError(prompt_limit=50)
 
-    with pytest.raises(FireworksRateLimitError) as exc_info:
+    with pytest.raises(ProviderRateLimitError) as exc_info:
         call_with_rate_limit_backoff(
             lambda: (_ for _ in ()).throw(error),
             sleep_fn=sleeps.append,
             jitter_fn=lambda _lo, _hi: 0.0,
             _kwargs_for_classification={"messages": [{"role": "user", "content": long_content}]},
+            token_limit_policy=_TOKEN_POLICY,
         )
 
     # Should fail immediately with no sleep
@@ -210,17 +241,17 @@ def test_fireworks_prompt_limit_below_estimated_request_size_fails_fast() -> Non
     assert exc_info.value.limit_type == "prompt"
     assert exc_info.value.estimated_tokens >= 100
     assert exc_info.value.observed_limit == 50
-    assert "Fireworks adaptive serverless TPM" in str(exc_info.value)
+    assert "Provider token limit exceeded" in str(exc_info.value)
     assert "Suggested actions:" in str(exc_info.value)
 
 
-def test_fireworks_generated_limit_below_max_tokens_fails_fast() -> None:
+def test_token_generated_limit_below_max_tokens_fails_fast() -> None:
     """When generated limit is below max_tokens, fail immediately without retry."""
     sleeps: list[float] = []
 
-    error = _FireworksRateLimitError(generated_limit=100)
+    error = _ProviderRateLimitError(generated_limit=100)
 
-    with pytest.raises(FireworksRateLimitError) as exc_info:
+    with pytest.raises(ProviderRateLimitError) as exc_info:
         call_with_rate_limit_backoff(
             lambda: (_ for _ in ()).throw(error),
             sleep_fn=sleeps.append,
@@ -229,6 +260,7 @@ def test_fireworks_generated_limit_below_max_tokens_fails_fast() -> None:
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 500,  # Exceeds 100 limit
             },
+            token_limit_policy=_TOKEN_POLICY,
         )
 
     # Should fail immediately with no sleep
@@ -236,7 +268,7 @@ def test_fireworks_generated_limit_below_max_tokens_fails_fast() -> None:
     assert exc_info.value.limit_type == "generated"
     assert exc_info.value.estimated_tokens == 500
     assert exc_info.value.observed_limit == 100
-    assert "Fireworks adaptive serverless TPM" in str(exc_info.value)
+    assert "Provider token limit exceeded" in str(exc_info.value)
 
 
 def test_header_lookup_works_case_insensitively() -> None:
@@ -256,24 +288,24 @@ def test_header_lookup_works_case_insensitively() -> None:
     assert _get_header(headers, "nonexistent") is None
 
 
-def test_extract_fireworks_limits_parses_headers() -> None:
-    """_extract_fireworks_limits correctly parses Fireworks TPM limit headers."""
+def test_extract_token_limits_parses_headers() -> None:
+    """_extract_token_limits correctly parses provider token limit headers."""
     headers = {
         "X-Ratelimit-Limit-Tokens-Prompt": "1000",
         "x-ratelimit-limit-tokens-generated": "500",
     }
 
-    prompt_limit, generated_limit = _extract_fireworks_limits(headers)
+    prompt_limit, generated_limit = _extract_token_limits(headers, _TOKEN_POLICY)
 
     assert prompt_limit == 1000
     assert generated_limit == 500
 
 
-def test_extract_fireworks_limits_returns_none_for_missing() -> None:
-    """_extract_fireworks_limits returns None for missing headers."""
+def test_extract_token_limits_returns_none_for_missing() -> None:
+    """_extract_token_limits returns None for missing headers."""
     headers: dict[str, str] = {}
 
-    prompt_limit, generated_limit = _extract_fireworks_limits(headers)
+    prompt_limit, generated_limit = _extract_token_limits(headers, _TOKEN_POLICY)
 
     assert prompt_limit is None
     assert generated_limit is None
@@ -289,7 +321,7 @@ def test_extract_retry_after_parses_header() -> None:
 
 def test_get_headers_from_exc_extracts_from_response() -> None:
     """_get_headers_from_exc extracts headers from exc.response.headers."""
-    error = _FireworksRateLimitError(prompt_limit=100)
+    error = _ProviderRateLimitError(prompt_limit=100)
     headers = _get_headers_from_exc(error)
 
     assert "X-Ratelimit-Limit-Tokens-Prompt" in headers
@@ -385,11 +417,11 @@ def test_estimate_request_tokens_with_tool_calls_in_messages() -> None:
 
 def test_provider_create_chat_completion_passes_kwargs_for_classification() -> None:
     mock_client = MagicMock()
-    provider = OpenAICompatibleProvider(mock_client)
-    error = _FireworksRateLimitError(prompt_limit=10)
+    provider = OpenAICompatibleProvider(mock_client, token_limit_policy=_TOKEN_POLICY)
+    error = _ProviderRateLimitError(prompt_limit=10)
     mock_client.chat.completions.create.side_effect = error
 
-    with pytest.raises(FireworksRateLimitError):
+    with pytest.raises(ProviderRateLimitError):
         provider.create_chat_completion(
             messages=[{"role": "user", "content": "x" * 100}],  # Will estimate > 10 tokens
             max_tokens=100,
@@ -401,13 +433,13 @@ def test_provider_create_chat_completion_passes_kwargs_for_classification() -> N
     )
 
 
-def test_fireworks_limit_exceeded_does_not_retry_other_limits() -> None:
+def test_token_limit_exceeded_does_not_retry_other_limits() -> None:
     """When prompt limit exceeded but generated limit OK, only prompt error is raised."""
     sleeps: list[float] = []
 
-    error = _FireworksRateLimitError(prompt_limit=10, generated_limit=1000)
+    error = _ProviderRateLimitError(prompt_limit=10, generated_limit=1000)
 
-    with pytest.raises(FireworksRateLimitError) as exc_info:
+    with pytest.raises(ProviderRateLimitError) as exc_info:
         call_with_rate_limit_backoff(
             lambda: (_ for _ in ()).throw(error),
             sleep_fn=sleeps.append,
@@ -416,14 +448,15 @@ def test_fireworks_limit_exceeded_does_not_retry_other_limits() -> None:
                 "messages": [{"role": "user", "content": "x" * 100}],  # ~25 tokens
                 "max_tokens": 50,  # Under 1000 limit
             },
+            token_limit_policy=_TOKEN_POLICY,
         )
 
     assert len(sleeps) == 0
     assert exc_info.value.limit_type == "prompt"
 
 
-def test_fireworks_within_limits_allows_retry() -> None:
-    """When request is within Fireworks limits, normal retry behavior occurs."""
+def test_token_limit_within_limits_allows_retry() -> None:
+    """When request is within configured token limits, normal retry behavior occurs."""
     sleeps: list[float] = []
     calls = 0
 
@@ -431,8 +464,7 @@ def test_fireworks_within_limits_allows_retry() -> None:
         nonlocal calls
         calls += 1
         if calls == 1:
-            # Rate limit error but within TPM limits (so should retry)
-            raise _FireworksRateLimitError(prompt_limit=1000, generated_limit=1000)
+            raise _ProviderRateLimitError(prompt_limit=1000, generated_limit=1000)
         return "ok"
 
     result = call_with_rate_limit_backoff(
@@ -443,6 +475,7 @@ def test_fireworks_within_limits_allows_retry() -> None:
             "messages": [{"role": "user", "content": "hi"}],  # Small prompt
             "max_tokens": 50,  # Small generation request
         },
+        token_limit_policy=_TOKEN_POLICY,
     )
 
     assert result == "ok"

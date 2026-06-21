@@ -25,6 +25,7 @@ if str(_project_root / "src") not in sys.path:
     sys.path.append(str(_project_root / "src"))
 
 from dgov.workers.atomic import AtomicTools, get_allowed_tool_names, get_tool_spec  # noqa: E402
+from dgov.workers.config import completion_budget_kwargs  # noqa: E402
 from dgov.workers.provider import create_provider  # noqa: E402
 from dgov.workers.runtime import (  # noqa: E402
     WorkerEvent,
@@ -206,12 +207,13 @@ def _initial_messages(
     ]
 
 
-def _create_completion(provider: Any, *, model: str, messages: list[Any]) -> Any:
+def _create_completion(provider: Any, *, model: str, messages: list[Any], config: Any) -> Any:
     return provider.create_chat_completion(
         model=model,
         messages=messages,
         tools=get_tool_spec("researcher"),
         tool_choice="auto",
+        **completion_budget_kwargs(config),
     )
 
 
@@ -319,6 +321,9 @@ def _provider_or_exit(config: Any) -> Any:
         name=config.llm_provider,
         base_url=config.llm_base_url,
         api_key=api_key,
+        token_limit_label=config.llm_token_limit_label,
+        prompt_token_limit_header=config.llm_prompt_token_limit_header,
+        generated_token_limit_header=config.llm_generated_token_limit_header,
     )
 
 
@@ -355,14 +360,14 @@ def run_researcher(
     task_scope_json: str = "",
 ) -> None:
     """Run the research worker loop."""
-    _, provider, actuators, _, cleanup, messages, allowed_tools, budget = _build_runtime_state(
-        goal, worktree, project_config_json, task_scope_json
+    config, provider, actuators, _, cleanup, messages, allowed_tools, budget = (
+        _build_runtime_state(goal, worktree, project_config_json, task_scope_json)
     )
 
     nudged = False
     for iteration in range(budget):
         try:
-            resp = _create_completion(provider, model=model, messages=messages)
+            resp = _create_completion(provider, model=model, messages=messages, config=config)
         except Exception as exc:
             WorkerEvent("error", f"API Failure: {exc!s}").emit()
             cleanup()

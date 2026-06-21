@@ -1500,15 +1500,10 @@ class EventDagRunner:
         "Agent stopped without calling 'done'",
     })
 
-    _PROVIDER_RATE_LIMIT_MARKER = "Fireworks adaptive serverless TPM"
+    _PROVIDER_RATE_LIMIT_MARKER = "Provider token limit exceeded"
 
     def _is_non_retryable_provider_rate_limit(self, error_detail: str) -> bool:
-        """Check if error is a non-retryable provider rate limit.
-
-        Fireworks adaptive serverless TPM limits are infrastructure/provider
-        throughput constraints, not worker-fixable issues. These should fail
-        fast without wasting retry budget.
-        """
+        """Check if error is a non-retryable configured provider token limit."""
         return self._PROVIDER_RATE_LIMIT_MARKER in error_detail
 
     def _abandon_interrupted_task(

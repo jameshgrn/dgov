@@ -25,8 +25,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from typing import cast
 
+from dgov.command_facts import CommandExecutionFact
 from dgov.config import ProjectConfig, load_project_config
 from dgov.git_status import git_path_output_paths, porcelain_status_paths
 from dgov.persistence import read_events
@@ -48,34 +49,6 @@ _WRITE_ACTIVITY_KINDS = frozenset({
     "run_bash",
 })
 _WRITE_ACTIVITY_MODES = frozenset({"create", "edit", "patch", "revert"})
-
-
-@dataclass(frozen=True)
-class CommandExecutionFact:
-    """Objective record of a command executed by a settlement gate."""
-
-    gate: str
-    source: str
-    command: str
-    outcome: Literal["completed", "timed_out"]
-    duration_s: float
-    exit_code: int | None = None
-    timeout_s: float | None = None
-
-    def __post_init__(self) -> None:
-        if self.outcome == "completed":
-            if self.exit_code is None:
-                raise ValueError("CommandExecutionFact: completed outcome requires exit_code")
-            if self.timeout_s is not None:
-                raise ValueError("CommandExecutionFact: completed outcome cannot set timeout_s")
-            return
-        if self.outcome == "timed_out":
-            if self.exit_code is not None:
-                raise ValueError("CommandExecutionFact: timed_out outcome cannot set exit_code")
-            if self.timeout_s is None:
-                raise ValueError("CommandExecutionFact: timed_out outcome requires timeout_s")
-            return
-        raise ValueError(f"CommandExecutionFact: unknown outcome {self.outcome!r}")
 
 
 @dataclass(frozen=True)

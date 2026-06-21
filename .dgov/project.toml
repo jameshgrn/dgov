@@ -24,6 +24,15 @@ review_hooks = [
 default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
 base_url = "https://api.fireworks.ai/inference/v1"
 api_key_env = "FIREWORKS_API_KEY"
+token_limit_label = "Fireworks adaptive serverless TPM"
+prompt_token_limit_header = "x-ratelimit-limit-tokens-prompt"
+generated_token_limit_header = "x-ratelimit-limit-tokens-generated"
+
+[providers.local]
+default_agent = "unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit"
+base_url = "http://localhost:8080/v1"
+api_key_env = "LOCAL_LLM_API_KEY"
+max_tokens = 262144
 
 [tool_policy]
 restrict_run_bash = true
@@ -41,6 +50,7 @@ stale_days = 14
 [agents]
 kimi = "accounts/fireworks/routers/kimi-k2p6-turbo"
 "kimi-k2.6" = "accounts/fireworks/routers/kimi-k2p6-turbo"
+"gemma-4-26b-a4b" = "unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit"
 
 [conventions]
 test_framework = "pytest"

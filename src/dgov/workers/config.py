@@ -21,6 +21,10 @@ class ProviderConfig:
     base_url: str
     api_key_env: str
     default_agent: str = ""
+    max_tokens: int | None = None
+    token_limit_label: str = ""
+    prompt_token_limit_header: str = ""
+    generated_token_limit_header: str = ""
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,10 @@ class AtomicConfig:
     llm_provider: str = DEFAULT_LLM_PROVIDER
     llm_base_url: str = DEFAULT_LLM_BASE_URL
     llm_api_key_env: str = DEFAULT_LLM_API_KEY_ENV
+    llm_max_tokens: int | None = None
+    llm_token_limit_label: str = ""
+    llm_prompt_token_limit_header: str = ""
+    llm_generated_token_limit_header: str = ""
     test_cmd: str = "python -m pytest {test_dir} -q --tb=short"
     lint_cmd: str = "python -m ruff check {file}"
     format_cmd: str = "python -m ruff format {file}"
@@ -125,6 +133,17 @@ def _string_field(
     return value
 
 
+def _optional_int_field(data: Mapping[str, Any], key: str, *, context: str) -> int | None:
+    raw = data.get(key)
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(f".dgov/project.toml {context}.{key} must be an integer")
+    if raw <= 0:
+        raise ValueError(f".dgov/project.toml {context}.{key} must be > 0")
+    return raw
+
+
 def _provider_from_table(name: str, data: Mapping[str, Any]) -> ProviderConfig:
     context = f"[providers.{name}]"
     return ProviderConfig(
@@ -134,6 +153,25 @@ def _provider_from_table(name: str, data: Mapping[str, Any]) -> ProviderConfig:
         default_agent=_string_field(
             data,
             "default_agent",
+            context=context,
+            required=False,
+        ),
+        max_tokens=_optional_int_field(data, "max_tokens", context=context),
+        token_limit_label=_string_field(
+            data,
+            "token_limit_label",
+            context=context,
+            required=False,
+        ),
+        prompt_token_limit_header=_string_field(
+            data,
+            "prompt_token_limit_header",
+            context=context,
+            required=False,
+        ),
+        generated_token_limit_header=_string_field(
+            data,
+            "generated_token_limit_header",
             context=context,
             required=False,
         ),
@@ -214,6 +252,13 @@ def atomic_config_to_payload(config: AtomicConfig) -> dict[str, object]:
     return payload
 
 
+def completion_budget_kwargs(config: AtomicConfig) -> dict[str, int]:
+    """Return provider-specific completion budget kwargs for OpenAI-compatible calls."""
+    if config.llm_max_tokens is None:
+        return {}
+    return {"max_tokens": config.llm_max_tokens}
+
+
 def worker_payload_from_project_toml(raw: dict[str, Any]) -> dict[str, object]:
     """Normalize raw project.toml data into the worker payload shape."""
     proj = _table(raw, "project")
@@ -222,6 +267,10 @@ def worker_payload_from_project_toml(raw: dict[str, Any]) -> dict[str, object]:
     flat["llm_provider"] = provider.name
     flat["llm_base_url"] = provider.base_url
     flat["llm_api_key_env"] = provider.api_key_env
+    flat["llm_max_tokens"] = provider.max_tokens
+    flat["llm_token_limit_label"] = provider.token_limit_label
+    flat["llm_prompt_token_limit_header"] = provider.prompt_token_limit_header
+    flat["llm_generated_token_limit_header"] = provider.generated_token_limit_header
     flat["conventions"] = _table(raw, "conventions")
     flat["tool_policy"] = _table(raw, "tool_policy")
     flat["verify_commands"] = _verify_commands_from_project_toml(raw)

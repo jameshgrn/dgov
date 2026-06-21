@@ -5,10 +5,11 @@ from __future__ import annotations
 import subprocess
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
+from dgov.command_facts import CommandExecutionFact
 from dgov.process_util import kill_process_group
 
 
@@ -30,12 +31,17 @@ class VerifyCommandResult:
     log_path: str | None
     warning_count: int
     summary: str
+    fact: CommandExecutionFact | None = None
 
 
 @dataclass(frozen=True)
 class VerifyRunResult:
     status: Literal["pass", "fail"]
     results: tuple[VerifyCommandResult, ...]
+
+    @property
+    def facts(self) -> tuple[CommandExecutionFact, ...]:
+        return tuple(result.fact for result in self.results if result.fact is not None)
 
 
 _KNOWN_FIELDS = {"command", "description", "log_name", "parser"}
@@ -143,7 +149,8 @@ def _execute_verify_command(
     root: Path,
     recipe: VerifyRecipe,
     timeout: float,
-) -> tuple[int, str]:
+) -> tuple[int, str, CommandExecutionFact]:
+    start = time.monotonic()
     try:
         proc = subprocess.Popen(
             recipe.command,
@@ -155,13 +162,38 @@ def _execute_verify_command(
             start_new_session=True,
         )
         stdout, stderr = proc.communicate(timeout=timeout)
-        return proc.returncode, stdout + stderr
+        exit_code = proc.returncode if proc.returncode is not None else -1
+        fact = CommandExecutionFact(
+            gate="verify",
+            source=f"verify.{recipe.name}",
+            command=recipe.command,
+            outcome="completed",
+            exit_code=exit_code,
+            duration_s=time.monotonic() - start,
+        )
+        return exit_code, stdout + stderr, fact
     except subprocess.TimeoutExpired:
         kill_process_group(proc)
         stdout, stderr = proc.communicate()
-        return -1, stdout + stderr + f"\n[verify] timed out after {timeout}s\n"
+        fact = CommandExecutionFact(
+            gate="verify",
+            source=f"verify.{recipe.name}",
+            command=recipe.command,
+            outcome="timed_out",
+            timeout_s=timeout,
+            duration_s=time.monotonic() - start,
+        )
+        return -1, stdout + stderr + f"\n[verify] timed out after {timeout}s\n", fact
     except OSError as exc:
-        return -1, f"\n[verify] failed to execute: {exc}\n"
+        fact = CommandExecutionFact(
+            gate="verify",
+            source=f"verify.{recipe.name}",
+            command=recipe.command,
+            outcome="completed",
+            exit_code=-1,
+            duration_s=time.monotonic() - start,
+        )
+        return -1, f"\n[verify] failed to execute: {exc}\n", fact
 
 
 def _run_single(
@@ -173,11 +205,11 @@ def _run_single(
     log_file = _log_file_for_recipe(log_dir, recipe)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    start = time.monotonic()
-    exit_code, output = _execute_verify_command(root, recipe, timeout)
-    duration = time.monotonic() - start
+    exit_code, output, fact = _execute_verify_command(root, recipe, timeout)
+    duration = fact.duration_s
     log_file.write_text(output, encoding="utf-8")
     warning_count = _count_warnings(output)
+    fact = replace(fact, log_path=str(log_file), warning_count=warning_count)
 
     summary = (
         f"exit={exit_code} in {duration:.2f}s, "
@@ -192,6 +224,7 @@ def _run_single(
         log_path=str(log_file),
         warning_count=warning_count,
         summary=summary,
+        fact=fact,
     )
 
 

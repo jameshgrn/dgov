@@ -13,25 +13,31 @@ from openai import OpenAI
 
 RATE_LIMIT_BACKOFF_S = (5.0, 30.0, 90.0)
 _JITTER_FRACTION = 0.2
+_PROVIDER_TOKEN_LIMIT_MARKER = "Provider token limit exceeded"
 
 
-class FireworksRateLimitError(Exception):
-    """Raised when a request exceeds Fireworks adaptive serverless TPM limits.
+@dataclass(frozen=True)
+class TokenLimitPolicy:
+    """Configured provider token-limit headers for fail-fast 429 handling."""
 
-    Attributes:
-        limit_type: Either "prompt" or "generated" indicating which limit was exceeded.
-        estimated_tokens: The estimated token count that exceeded the limit.
-        observed_limit: The TPM limit observed from response headers.
-    """
+    label: str
+    prompt_header: str = ""
+    generated_header: str = ""
+
+
+class ProviderRateLimitError(Exception):
+    """Raised when a request exceeds configured provider token limits."""
 
     def __init__(
         self,
         *,
+        provider_label: str,
         limit_type: str,
         estimated_tokens: int,
         observed_limit: int,
         message: str | None = None,
     ) -> None:
+        self.provider_label = provider_label
         self.limit_type = limit_type
         self.estimated_tokens = estimated_tokens
         self.observed_limit = observed_limit
@@ -46,7 +52,8 @@ class FireworksRateLimitError(Exception):
             "or use an on-demand deployment."
         )
         return (
-            f"Fireworks adaptive serverless TPM: {self.limit_type} token limit exceeded. "
+            f"{_PROVIDER_TOKEN_LIMIT_MARKER} ({self.provider_label}): "
+            f"{self.limit_type} token limit exceeded. "
             f"Estimated {self.limit_type} tokens: {self.estimated_tokens}, "
             f"observed limit: {self.observed_limit}. {actions}"
         )
@@ -104,18 +111,21 @@ def _extract_retry_after(headers: Mapping[str, str]) -> float | None:
         return None
 
 
-def _extract_fireworks_limits(
+def _extract_token_limits(
     headers: Mapping[str, str],
+    policy: TokenLimitPolicy,
 ) -> tuple[int | None, int | None]:
-    """Extract Fireworks TPM limits from headers.
+    """Extract configured prompt/generated token limits from headers.
 
     Returns:
         Tuple of (prompt_limit, generated_limit) or (None, None) if not present.
     """
     import contextlib
 
-    prompt_limit = _get_header(headers, "x-ratelimit-limit-tokens-prompt")
-    generated_limit = _get_header(headers, "x-ratelimit-limit-tokens-generated")
+    prompt_limit = _get_header(headers, policy.prompt_header) if policy.prompt_header else None
+    generated_limit = (
+        _get_header(headers, policy.generated_header) if policy.generated_header else None
+    )
 
     prompt_val: int | None = None
     generated_val: int | None = None
@@ -189,33 +199,38 @@ def _estimate_generated_tokens(kwargs: dict[str, Any]) -> int:
         return 0
 
 
-def _check_fireworks_limits(
+def _check_token_limits(
     exc: Exception,
     kwargs: dict[str, Any],
+    policy: TokenLimitPolicy | None,
 ) -> None:
-    """Check Fireworks TPM limits and raise FireworksRateLimitError if exceeded.
+    """Check configured provider token limits and raise if exceeded.
 
     This function extracts limits from response headers and compares against
     estimated request tokens. It raises immediately if limits are exceeded
     to avoid wasteful retries.
     """
+    if policy is None:
+        return
     headers = _get_headers_from_exc(exc)
-    prompt_limit, generated_limit = _extract_fireworks_limits(headers)
+    prompt_limit, generated_limit = _extract_token_limits(headers, policy)
 
     if prompt_limit is None and generated_limit is None:
-        return  # No Fireworks limits detected, let normal retry handle it
+        return  # No configured limits detected, let normal retry handle it
 
     estimated_prompt, estimated_generated = _estimate_request_tokens(kwargs)
 
     if prompt_limit is not None and estimated_prompt > prompt_limit:
-        raise FireworksRateLimitError(
+        raise ProviderRateLimitError(
+            provider_label=policy.label,
             limit_type="prompt",
             estimated_tokens=estimated_prompt,
             observed_limit=prompt_limit,
         )
 
     if generated_limit is not None and estimated_generated > generated_limit:
-        raise FireworksRateLimitError(
+        raise ProviderRateLimitError(
+            provider_label=policy.label,
             limit_type="generated",
             estimated_tokens=estimated_generated,
             observed_limit=generated_limit,
@@ -230,11 +245,14 @@ def _jittered_delay(
     return max(0.0, base_delay_s + jitter_fn(-jitter_span, jitter_span))
 
 
-def _fireworks_limit_retry_decision(
+def _token_limit_retry_decision(
     headers: Mapping[str, Any],
     kwargs: dict[str, Any],
+    policy: TokenLimitPolicy | None,
 ) -> tuple[bool, float | None] | None:
-    prompt_limit, generated_limit = _extract_fireworks_limits(headers)
+    if policy is None:
+        return None
+    prompt_limit, generated_limit = _extract_token_limits(headers, policy)
     if prompt_limit is None and generated_limit is None:
         return None
 
@@ -256,6 +274,7 @@ def _retry_after_decision(headers: Mapping[str, Any]) -> tuple[bool, float | Non
 def _classify_rate_limit_error(
     exc: Exception,
     kwargs: dict[str, Any],
+    token_limit_policy: TokenLimitPolicy | None,
 ) -> tuple[bool, float | None]:
     """Classify a rate limit error and determine retry strategy.
 
@@ -267,9 +286,9 @@ def _classify_rate_limit_error(
     if not _is_rate_limit_error(exc):
         return (False, None)
 
-    # Check Fireworks-specific limits first - fail fast if exceeded
+    # Check configured token limits first - fail fast if exceeded.
     headers = _get_headers_from_exc(exc)
-    decision = _fireworks_limit_retry_decision(headers, kwargs)
+    decision = _token_limit_retry_decision(headers, kwargs, token_limit_policy)
     if decision is not None:
         return decision
 
@@ -289,6 +308,7 @@ def call_with_rate_limit_backoff[T](
     jitter_fn: Callable[[float, float], float] = random.uniform,
     backoff_s: tuple[float, ...] = RATE_LIMIT_BACKOFF_S,
     _kwargs_for_classification: dict[str, Any] | None = None,
+    token_limit_policy: TokenLimitPolicy | None = None,
 ) -> T:
     """Call ``fn`` with slow retries for provider 429/rate-limit failures."""
     backoff_iter = iter(backoff_s)
@@ -301,6 +321,7 @@ def call_with_rate_limit_backoff[T](
                 exc,
                 kwargs_for_classification=_kwargs_for_classification,
                 backoff_iter=backoff_iter,
+                token_limit_policy=token_limit_policy,
             )
             sleep_fn(_jittered_delay(delay_s, jitter_fn))
 
@@ -310,10 +331,15 @@ def _retry_delay_for_rate_limit(
     *,
     kwargs_for_classification: dict[str, Any] | None,
     backoff_iter: Iterator[float],
+    token_limit_policy: TokenLimitPolicy | None,
 ) -> float:
-    should_retry, custom_delay = _classify_rate_limit_error(exc, kwargs_for_classification or {})
+    should_retry, custom_delay = _classify_rate_limit_error(
+        exc,
+        kwargs_for_classification or {},
+        token_limit_policy,
+    )
     if not should_retry:
-        _raise_unretryable_provider_error(exc, kwargs_for_classification)
+        _raise_unretryable_provider_error(exc, kwargs_for_classification, token_limit_policy)
     if custom_delay is not None:
         return custom_delay
     return _next_backoff_delay(backoff_iter, exc)
@@ -322,9 +348,10 @@ def _retry_delay_for_rate_limit(
 def _raise_unretryable_provider_error(
     exc: Exception,
     kwargs_for_classification: dict[str, Any] | None,
+    token_limit_policy: TokenLimitPolicy | None,
 ) -> None:
     if kwargs_for_classification is not None:
-        _check_fireworks_limits(exc, kwargs_for_classification)
+        _check_token_limits(exc, kwargs_for_classification, token_limit_policy)
     raise exc
 
 
@@ -339,14 +366,47 @@ def _next_backoff_delay(backoff_iter: Iterator[float], exc: Exception) -> float:
 class OpenAICompatibleProvider:
     client: Any
     name: str = ""
+    token_limit_policy: TokenLimitPolicy | None = None
 
     def create_chat_completion(self, **kwargs: Any) -> Any:
         return call_with_rate_limit_backoff(
             lambda: self.client.chat.completions.create(**kwargs),
             _kwargs_for_classification=kwargs,
+            token_limit_policy=self.token_limit_policy,
         )
 
 
-def create_provider(*, base_url: str, api_key: str, name: str = "") -> OpenAICompatibleProvider:
+def _token_limit_policy_from_config(
+    *,
+    label: str,
+    prompt_header: str,
+    generated_header: str,
+) -> TokenLimitPolicy | None:
+    prompt_header = prompt_header.strip()
+    generated_header = generated_header.strip()
+    label = label.strip()
+    if not prompt_header and not generated_header:
+        return None
+    return TokenLimitPolicy(
+        label=label or "configured provider token limit",
+        prompt_header=prompt_header,
+        generated_header=generated_header,
+    )
+
+
+def create_provider(
+    *,
+    base_url: str,
+    api_key: str,
+    name: str = "",
+    token_limit_label: str = "",
+    prompt_token_limit_header: str = "",
+    generated_token_limit_header: str = "",
+) -> OpenAICompatibleProvider:
     client = OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
-    return OpenAICompatibleProvider(client, name=name)
+    token_limit_policy = _token_limit_policy_from_config(
+        label=token_limit_label,
+        prompt_header=prompt_token_limit_header,
+        generated_header=generated_token_limit_header,
+    )
+    return OpenAICompatibleProvider(client, name=name, token_limit_policy=token_limit_policy)
