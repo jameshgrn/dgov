@@ -1,0 +1,31 @@
+[tasks.support-adapters]
+summary = "Add dispatch-run support adapter helpers"
+prompt = """
+## Orient
+- Read only `src/dgov/runner_support.py` first.
+- This task only adds adapter helpers in `src/dgov/runner_support.py`.
+- Do not edit the runner module or tests in this task.
+- Use `grep` before broader reads. If output is clipped, narrow the next read immediately.
+
+## Edit
+1. In `src/dgov/runner_support.py`, add these three functions after `effective_sop_set_hash` and before `summarize_runner_evidence`:
+   - `latest_dispatch_run_id(session_root: str, plan_id: str, unit_slug: str) -> str | None`
+   - `save_runner_dispatch_run(session_root: str, dispatch_run: Any) -> None`
+   - `load_runner_dispatch_run(session_root: str, dispatch_run_id: str) -> Any | None`
+2. Implement them with function-local imports:
+   - `latest_dispatch_run_id` imports `list_dispatch_runs` from `dgov.persistence.dispatch_runs`, calls it with `session_root`, `plan_id=plan_id`, `unit_slug=unit_slug`, and returns `rows[-1]["id"]` when rows exist, otherwise `None`.
+   - `save_runner_dispatch_run` imports `save_dispatch_run` from `dgov.persistence.dispatch_runs` and calls it.
+   - `load_runner_dispatch_run` imports `_dispatch_run_from_row_dict` from `dgov.dispatch_run` and `get_dispatch_run` from `dgov.persistence.dispatch_runs`; return `None` when no row exists, otherwise return `_dispatch_run_from_row_dict(row)`.
+3. Keep existing helper behavior unchanged.
+
+## Verify
+- Use the syntax tool on `src/dgov/runner_support.py`.
+"""
+commit_message = "Add runner dispatch-run support adapters"
+role = "worker"
+timeout_s = 500
+iteration_budget = 10
+max_fork_depth = 0
+
+[tasks.support-adapters.files]
+edit = ["src/dgov/runner_support.py"]

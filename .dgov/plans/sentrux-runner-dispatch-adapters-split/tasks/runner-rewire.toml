@@ -1,0 +1,40 @@
+[tasks.runner-rewire]
+summary = "Use dispatch-run support adapters in runner"
+depends_on = ["tasks/support-adapters.support-adapters"]
+prompt = """
+## Orient
+- Read `src/dgov/runner.py` import lines around 38-90.
+- Read `src/dgov/runner.py` around `_rehydrate_dispatch_run_contexts`, `_mint_dispatch_run`, `_record_terminal_dispatch_run`, and `_current_dispatch_run`.
+- Read `src/dgov/runner_support.py` only enough to see the new adapter helper names.
+- Read `tests/test_runner.py` around `TestDispatchRunRecording`.
+- This task rewires `runner.py` only. Do not edit `runner_support.py` or tests.
+- Do not move imports inside `runner.py` to hide fan-out; use the new support adapters.
+
+## Edit
+1. In `src/dgov/runner.py`, remove `_dispatch_run_from_row_dict` from the `dgov.dispatch_run` import.
+2. In `src/dgov/runner.py`, remove the direct `from dgov.persistence.dispatch_runs import (...)` block.
+3. Add these names to the existing `from dgov.runner_support import (...)` block:
+   - `latest_dispatch_run_id`
+   - `load_runner_dispatch_run`
+   - `save_runner_dispatch_run`
+4. In `_rehydrate_dispatch_run_contexts`, replace the `list_dispatch_runs(...)` code with:
+   - `latest_id = latest_dispatch_run_id(self.session_root, self.dag.name, slug)`
+   - set `current_dispatch_run_id` only if `latest_id` is not `None`.
+5. In `_mint_dispatch_run` and `_record_terminal_dispatch_run`, replace `save_dispatch_run(...)` calls with `save_runner_dispatch_run(...)`.
+6. In `_current_dispatch_run`, replace the `get_dispatch_run(...)` / `_dispatch_run_from_row_dict(...)` body with `return load_runner_dispatch_run(self.session_root, ctx.current_dispatch_run_id)` after the existing `None` guard.
+7. Preserve public method names and behavior.
+
+## Verify
+- Use the test tool, not raw shell, for `uv run pytest -q -m unit tests/test_runner.py -k "DispatchRunRecording"`.
+- Use the test tool, not raw shell, for `uv run pytest -q -m unit tests/test_boundaries.py`.
+"""
+commit_message = "Use runner dispatch-run support adapters"
+role = "worker"
+timeout_s = 650
+iteration_budget = 14
+test_cmd = "uv run pytest -q -m unit tests/test_runner.py -k \"DispatchRunRecording\""
+max_fork_depth = 0
+
+[tasks.runner-rewire.files]
+edit = ["src/dgov/runner.py"]
+read = ["src/dgov/runner_support.py", "tests/test_runner.py", "tests/test_boundaries.py"]

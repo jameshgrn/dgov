@@ -1,0 +1,6 @@
+[plan]
+name = "sentrux-runner-dispatch-adapters-split"
+summary = "Reduce runner fan-out with one-file dispatch-run adapter tasks."
+sections = ["tasks"]
+default_provider = "local"
+default_agent = "unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit"
