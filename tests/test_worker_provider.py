@@ -503,7 +503,7 @@ def test_claude_code_provider_invokes_skill_runner(monkeypatch, tmp_path) -> Non
 
     provider = create_provider(
         name="claude",
-        base_url="claude-code://fast?preset=edit&timeout=12",
+        base_url="claude-code://fast?preset=edit&timeout=12&max_turns=18",
         api_key="",
     )
     response = provider.create_chat_completion(
@@ -522,6 +522,7 @@ def test_claude_code_provider_invokes_skill_runner(monkeypatch, tmp_path) -> Non
     assert command[command.index("--model") + 1] == "haiku"
     assert command[command.index("--cwd") + 1] == str(worktree)
     assert command[command.index("--timeout-seconds") + 1] == "12"
+    assert command[command.index("--max-turns") + 1] == "18"
     kwargs = cast(dict[str, Any], captured["kwargs"])
     prompt = cast(str, kwargs["input"])
     assert "DGOV provider adapter instructions" in prompt
@@ -548,11 +549,60 @@ def test_claude_code_provider_reports_runner_failure(monkeypatch, tmp_path) -> N
         )
 
 
-def test_claude_code_provider_rejects_planner_tool_surface(monkeypatch, tmp_path) -> None:
+def test_claude_code_provider_synthesizes_emit_plan_tool_call(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(tmp_path / "run_claude_code.py"))
-    provider = create_provider(name="claude", base_url="claude-code://daily", api_key="")
+    captured: dict[str, object] = {}
 
-    with pytest.raises(RuntimeError, match="terminal `done` tool"):
+    plan_output = {
+        "name": "plan-for-local",
+        "summary": "Do a local-model task.",
+        "tasks": [
+            {
+                "slug": "edit",
+                "summary": "Edit one file",
+                "prompt": "Orient:\nRead.\n\nEdit:\n1. Change.\n\nVerify:\n- Check.",
+                "commit_message": "Edit one file",
+                "files": {"edit": ["src/example.py"]},
+            }
+        ],
+    }
+
+    def _fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(plan_output), stderr="")
+
+    monkeypatch.setattr("dgov.workers.provider.subprocess.run", _fake_run)
+    provider = create_provider(
+        name="claude", base_url="claude-code://daily?preset=plan", api_key=""
+    )
+
+    response = provider.create_chat_completion(
+        model="sonnet",
+        messages=[{"role": "user", "content": "plan"}],
+        tools=[{"type": "function", "function": {"name": "emit_plan"}}],
+    )
+
+    kwargs = cast(dict[str, Any], captured["kwargs"])
+    prompt = cast(str, kwargs["input"])
+    assert "printing only one JSON object" in prompt
+    tool_call = response.choices[0].message.tool_calls[0]
+    assert tool_call.function.name == "emit_plan"
+    assert json.loads(tool_call.function.arguments) == plan_output
+
+
+def test_claude_code_provider_rejects_invalid_emit_plan_output(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(tmp_path / "run_claude_code.py"))
+
+    def _fake_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="not json", stderr="")
+
+    monkeypatch.setattr("dgov.workers.provider.subprocess.run", _fake_run)
+    provider = create_provider(
+        name="claude", base_url="claude-code://daily?preset=plan", api_key=""
+    )
+
+    with pytest.raises(RuntimeError, match="valid emit_plan JSON"):
         provider.create_chat_completion(
             model="sonnet",
             messages=[{"role": "user", "content": "plan"}],

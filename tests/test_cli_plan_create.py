@@ -10,7 +10,11 @@ from typing import Any, cast
 import click
 import pytest
 
-from dgov.cli.plan_create import _plan_create_settings
+from dgov.cli.plan_create import (
+    _materialize_plan,
+    _plan_create_settings,
+    _planner_command,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -57,12 +61,94 @@ api_key_env = "TEST_PROVIDER_API_KEY"
         tmp_path,
         model="provider/model",
         autonomous=True,
+        provider=None,
     )
 
     payload = json.loads(config_json)
     assert agent == "provider/model"
     assert payload["llm_provider"] == "test-provider"
     assert interactive is False
+
+
+def test_plan_create_provider_override_selects_planner_provider(tmp_path: Path) -> None:
+    _write_project_toml(
+        tmp_path,
+        """
+[project]
+provider = "local"
+
+[providers.local]
+default_agent = "gemma"
+base_url = "http://localhost:8080/v1"
+api_key_env = "LOCAL_LLM_API_KEY"
+
+[providers.claude-sonnet-plan]
+default_agent = "sonnet"
+base_url = "claude-code://daily?preset=plan&max_turns=32"
+""",
+    )
+
+    agent, config_json, interactive = _plan_create_settings(
+        tmp_path,
+        model=None,
+        autonomous=True,
+        provider="claude-sonnet-plan",
+    )
+
+    payload = json.loads(config_json)
+    assert agent == "sonnet"
+    assert payload["llm_provider"] == "claude-sonnet-plan"
+    assert payload["llm_base_url"] == "claude-code://daily?preset=plan&max_turns=32"
+    assert payload["llm_api_key_env"] == ""
+    assert interactive is False
+
+
+def test_materialize_plan_writes_default_and_task_providers(tmp_path: Path) -> None:
+    plan_dir = _materialize_plan(
+        {
+            "name": "plan-for-local",
+            "summary": "Plan for local.",
+            "tasks": [
+                {
+                    "slug": "gemma-task",
+                    "summary": "Use the default local provider",
+                    "prompt": "Orient:\nRead.\n\nEdit:\n1. Change.\n\nVerify:\n- Check.",
+                    "commit_message": "Change local task",
+                    "files": {"edit": ["src/example.py"]},
+                },
+                {
+                    "slug": "haiku-task",
+                    "summary": "Override to Haiku",
+                    "prompt": "Orient:\nRead.\n\nEdit:\n1. Change.\n\nVerify:\n- Check.",
+                    "commit_message": "Change haiku task",
+                    "provider": "claude-haiku-worker",
+                    "files": {"edit": ["tests/test_example.py"]},
+                },
+            ],
+        },
+        tmp_path,
+        default_provider="local",
+    )
+
+    root_toml = (plan_dir / "_root.toml").read_text()
+    tasks_toml = (plan_dir / "tasks" / "main.toml").read_text()
+    assert 'default_provider = "local"' in root_toml
+    assert "[tasks.gemma-task]" in tasks_toml
+    assert "[tasks.haiku-task]" in tasks_toml
+    assert 'provider = "claude-haiku-worker"' in tasks_toml
+
+
+def test_planner_command_passes_target_provider() -> None:
+    command = _planner_command(
+        "/repo",
+        "make a plan",
+        "sonnet",
+        False,
+        "{}",
+        target_provider="local",
+    )
+
+    assert command[command.index("--target-provider") + 1] == "local"
 
 
 def test_plan_create_reports_missing_provider_config(tmp_path: Path) -> None:

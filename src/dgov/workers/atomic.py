@@ -1743,6 +1743,13 @@ _EMIT_PLAN_SPEC: dict[str, Any] = {
                                 "type": "string",
                                 "description": "Imperative commit message.",
                             },
+                            "provider": {
+                                "type": "string",
+                                "description": (
+                                    "Optional provider name for this task. Omit unless "
+                                    "this task should override the plan default provider."
+                                ),
+                            },
                             "files": {
                                 "type": "object",
                                 "description": "File claims for this task.",

@@ -86,6 +86,49 @@ def _assert_openrouter_provider(pc: ProjectConfig) -> None:
     assert payload["llm_generated_token_limit_header"] == "x-generated-limit"
 
 
+def _assert_source_local_provider(pc: ProjectConfig) -> None:
+    local = pc.provider_config("local")
+    assert local.name == "local"
+    assert local.base_url == "http://localhost:8080/v1"
+    assert local.api_key_env == "LOCAL_LLM_API_KEY"
+    assert local.default_agent == "unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit"
+    assert local.max_tokens == 262144
+    assert pc.provider_default_agents()["local"] == local.default_agent
+    assert pc.agents["gemma-4-26b-a4b"] == local.default_agent
+
+    payload = pc.to_worker_payload("local")
+    assert payload["llm_provider"] == "local"
+    assert payload["llm_base_url"] == local.base_url
+    assert payload["llm_api_key_env"] == local.api_key_env
+    assert payload["llm_max_tokens"] == local.max_tokens
+
+
+def _assert_source_fireworks_provider(pc: ProjectConfig) -> None:
+    fireworks = pc.provider_config("fireworks")
+    assert fireworks.token_limit_label == "Fireworks adaptive serverless TPM"
+    assert fireworks.prompt_token_limit_header == "x-ratelimit-limit-tokens-prompt"
+    assert fireworks.generated_token_limit_header == "x-ratelimit-limit-tokens-generated"
+
+    payload = pc.to_worker_payload("fireworks")
+    assert payload["llm_token_limit_label"] == fireworks.token_limit_label
+    assert payload["llm_prompt_token_limit_header"] == fireworks.prompt_token_limit_header
+    assert payload["llm_generated_token_limit_header"] == fireworks.generated_token_limit_header
+
+
+def _assert_source_claude_code_provider(
+    pc: ProjectConfig,
+    provider_name: str,
+    *,
+    agent: str,
+    base_url: str,
+) -> None:
+    provider = pc.provider_config(provider_name)
+    assert provider.default_agent == agent
+    assert provider.base_url == base_url
+    assert provider.api_key_env == ""
+    assert provider.requires_api_key() is False
+
+
 class TestProjectConfigDefaults:
     def test_defaults(self):
         pc = ProjectConfig()
@@ -379,47 +422,32 @@ base_url = "claude-code://fast?preset=edit"
     def test_source_repo_config_wires_local_gemma_provider(self):
         pc = load_project_config(Path(__file__).resolve().parents[1])
 
-        local = pc.provider_config("local")
-        assert local.name == "local"
-        assert local.base_url == "http://localhost:8080/v1"
-        assert local.api_key_env == "LOCAL_LLM_API_KEY"
-        assert local.default_agent == "unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit"
-        assert local.max_tokens == 262144
-        assert pc.provider_default_agents()["local"] == local.default_agent
-        assert pc.agents["gemma-4-26b-a4b"] == local.default_agent
-
-        payload = pc.to_worker_payload("local")
-        assert payload["llm_provider"] == "local"
-        assert payload["llm_base_url"] == local.base_url
-        assert payload["llm_api_key_env"] == local.api_key_env
-        assert payload["llm_max_tokens"] == local.max_tokens
-
-        fireworks = pc.provider_config("fireworks")
-        assert fireworks.token_limit_label == "Fireworks adaptive serverless TPM"
-        assert fireworks.prompt_token_limit_header == "x-ratelimit-limit-tokens-prompt"
-        assert fireworks.generated_token_limit_header == "x-ratelimit-limit-tokens-generated"
-        fireworks_payload = pc.to_worker_payload("fireworks")
-        assert fireworks_payload["llm_token_limit_label"] == fireworks.token_limit_label
-        assert (
-            fireworks_payload["llm_prompt_token_limit_header"]
-            == fireworks.prompt_token_limit_header
+        _assert_source_local_provider(pc)
+        _assert_source_fireworks_provider(pc)
+        _assert_source_claude_code_provider(
+            pc,
+            "claude-haiku-worker",
+            agent="haiku",
+            base_url="claude-code://fast?preset=edit&max_turns=18",
         )
-        assert (
-            fireworks_payload["llm_generated_token_limit_header"]
-            == fireworks.generated_token_limit_header
+        _assert_source_claude_code_provider(
+            pc,
+            "claude-haiku-plan",
+            agent="haiku",
+            base_url="claude-code://fast?preset=plan&max_turns=18",
         )
-
-        haiku = pc.provider_config("claude-haiku-worker")
-        assert haiku.default_agent == "haiku"
-        assert haiku.base_url == "claude-code://fast?preset=edit"
-        assert haiku.api_key_env == ""
-        assert haiku.requires_api_key() is False
-
-        sonnet = pc.provider_config("claude-sonnet-review")
-        assert sonnet.default_agent == "sonnet"
-        assert sonnet.base_url == "claude-code://daily?preset=review"
-        assert sonnet.api_key_env == ""
-        assert sonnet.requires_api_key() is False
+        _assert_source_claude_code_provider(
+            pc,
+            "claude-sonnet-review",
+            agent="sonnet",
+            base_url="claude-code://daily?preset=review&max_turns=32",
+        )
+        _assert_source_claude_code_provider(
+            pc,
+            "claude-sonnet-plan",
+            agent="sonnet",
+            base_url="claude-code://daily?preset=plan&max_turns=32",
+        )
 
     def test_rejects_unknown_selected_provider(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"

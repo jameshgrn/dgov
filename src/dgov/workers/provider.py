@@ -449,34 +449,80 @@ class ClaudeCodeProvider:
 
     def create_chat_completion(self, **kwargs: Any) -> Any:
         terminal_tool = _terminal_tool_name(kwargs.get("tools"))
-        if terminal_tool != "done":
+        if terminal_tool not in {"done", "emit_plan"}:
             raise RuntimeError(
-                "claude-code providers currently require a worker/researcher role "
-                "that exposes the terminal `done` tool"
+                "claude-code providers currently require a role that exposes "
+                "the terminal `done` or `emit_plan` tool"
             )
-        prompt = _claude_code_prompt(kwargs)
+        prompt = _claude_code_prompt(kwargs, terminal_tool=terminal_tool)
         output = _run_claude_code(
             settings=self.settings,
             prompt=prompt,
             model=str(kwargs.get("model") or "").strip(),
             cwd=_worktree_from_messages(kwargs.get("messages", [])),
         )
-        message = _AssistantMessage(
-            content=None,
-            tool_calls=[
-                _ToolCall(
-                    id="call_claude_code_done",
-                    function=_ToolFunctionCall(
-                        name="done",
-                        arguments=json.dumps({"summary": output}),
-                    ),
-                )
-            ],
-        )
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=message, finish_reason="stop")],
-            usage=None,
-        )
+        return _claude_code_response(terminal_tool, output)
+
+
+def _claude_code_response(terminal_tool: str, output: str) -> Any:
+    arguments = (
+        json.dumps({"summary": output})
+        if terminal_tool == "done"
+        else _emit_plan_arguments(output)
+    )
+    message = _AssistantMessage(
+        content=None,
+        tool_calls=[
+            _ToolCall(
+                id=f"call_claude_code_{terminal_tool}",
+                function=_ToolFunctionCall(
+                    name=terminal_tool,
+                    arguments=arguments,
+                ),
+            )
+        ],
+    )
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")],
+        usage=None,
+    )
+
+
+def _emit_plan_arguments(output: str) -> str:
+    plan = _extract_json_object(output)
+    if not isinstance(plan, dict):
+        raise RuntimeError("Claude Code provider did not return valid emit_plan JSON.")
+    plan_map = cast("dict[str, Any]", plan)
+    if not isinstance(plan_map.get("tasks"), list):
+        raise RuntimeError("Claude Code provider did not return valid emit_plan JSON.")
+    return json.dumps(plan_map)
+
+
+def _extract_json_object(output: str) -> object:
+    stripped = output.strip()
+    if stripped.startswith("```"):
+        stripped = _strip_json_fence(stripped)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        return json.loads(stripped[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+
+
+def _strip_json_fence(text: str) -> str:
+    lines = text.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
 
 
 def is_claude_code_provider_url(base_url: str) -> bool:
@@ -510,19 +556,29 @@ def _tool_names(tools: object) -> set[str]:
     return names
 
 
-def _claude_code_prompt(kwargs: Mapping[str, Any]) -> str:
+def _claude_code_prompt(kwargs: Mapping[str, Any], *, terminal_tool: str) -> str:
     messages = kwargs.get("messages", [])
     sections = [
         "DGOV provider adapter instructions:",
         "- You are running under Claude Code, not dgov's OpenAI-compatible tool-call transport.",
         "- Treat dgov tool instructions as workflow guidance; do not emit tool-call JSON.",
         "- Use Claude Code's allowed local tools according to the selected preset.",
-        "- Finish with a concise governor-facing summary of edits, verification, or blockers.",
+        _claude_code_terminal_instruction(terminal_tool),
         "",
         "DGOV conversation:",
         _render_messages(messages),
     ]
     return "\n".join(sections).strip() + "\n"
+
+
+def _claude_code_terminal_instruction(terminal_tool: str) -> str:
+    if terminal_tool == "emit_plan":
+        return (
+            "- Finish by printing only one JSON object that matches dgov's emit_plan "
+            "arguments: name, summary, tasks, and optional config_overrides. Do not "
+            "wrap it in markdown."
+        )
+    return "- Finish with a concise governor-facing summary of edits, verification, or blockers."
 
 
 def _render_messages(messages: object) -> str:
@@ -681,6 +737,7 @@ def _timeout_from_query(query: Mapping[str, list[str]]) -> float:
 def _passthrough_options(query: Mapping[str, list[str]]) -> Mapping[str, tuple[str, ...]]:
     allowed = {
         "add_dir": "--add-dir",
+        "max_turns": "--max-turns",
         "max_budget_usd": "--max-budget-usd",
         "tools": "--tools",
         "disallowed_tools": "--disallowed-tools",

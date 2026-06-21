@@ -100,9 +100,12 @@ PLANNING CONTRACT:
 - Each task must claim exactly the files it will touch. Unclaimed files cause
   scope violations at settlement (terminal, no retry).
 - Task prompts MUST follow the Orient/Edit/Verify structure:
-  Orient: Tell the worker what to read first and what patterns to look for.
-  Edit: Describe the exact changes — which functions, what logic, what to add/remove.
-  Verify: Tell the worker how to check their work (run tests, check syntax, git diff).
+  Use isolated heading lines exactly like `Orient:`, `Edit:`, and `Verify:`.
+  Do not write `Orient: read foo.py` on one line; put the instruction on the
+  following line so dgov's compiler recognizes the section header.
+  Under Orient, tell the worker what to read first and what patterns to look for.
+  Under Edit, describe the exact changes — which functions, what logic, what to add/remove.
+  Under Verify, tell the worker how to check their work (run tests, check syntax, git diff).
 - Commit messages must be imperative mood, one logical change per task.
 - Dependencies (depends_on) express real ordering constraints only.
   Independent tasks run in parallel — do not add false dependencies.
@@ -117,6 +120,41 @@ CONFIG OVERRIDES:
   lint_fix_cmd, test_cmd, language.
 - Only include overrides you have evidence for. Do not guess.
 """
+
+
+def _target_provider_section(target_provider: str) -> str:
+    target = target_provider.strip()
+    if not target:
+        return ""
+    lines = [
+        "\nTARGET EXECUTION PROVIDER:",
+        f"- The generated plan will default worker execution to provider `{target}`.",
+        (
+            "- Shape task size, prompt detail, and verification for that target executor, "
+            "not for yourself."
+        ),
+        (
+            "- Do not add per-task provider overrides unless a task genuinely needs a "
+            "different executor."
+        ),
+    ]
+    if target == "local":
+        lines.extend([
+            "- For local-model execution, prefer 1-3 patch-shaped tasks with exact file claims.",
+            (
+                "- Make prompts especially concrete: name helper functions, line targets, "
+                "and narrow tests."
+            ),
+        ])
+    elif "haiku" in target:
+        lines.extend([
+            "- For Haiku execution, keep each task compact and mechanically checkable.",
+            (
+                "- Avoid broad rewrites; split planning/review work away from implementation "
+                "when needed."
+            ),
+        ])
+    return "\n".join(lines) + "\n"
 
 
 def _planner_workflow_section(config: Any) -> str:
@@ -160,7 +198,12 @@ DO NOT:
 """
 
 
-def _build_system_prompt(worktree: Path, config: Any, interactive: bool = False) -> str:
+def _build_system_prompt(
+    worktree: Path,
+    config: Any,
+    interactive: bool = False,
+    target_provider: str = "",
+) -> str:
     """Construct the planner's system prompt."""
     repo_map = repo_map_snapshot(worktree, config, max_lines=config.worker_tree_max_lines)
 
@@ -183,6 +226,7 @@ THE DGOV WAY:
         _rules_context(worktree),
         _project_section(config),
         _planner_mode_section(interactive),
+        _target_provider_section(target_provider),
         f"\nREPO MAP:\n{repo_map}",
         _planner_contract_section(),
         _planner_workflow_section(config),
@@ -251,9 +295,18 @@ def _initial_planner_messages(
     worktree: Path,
     config: Any,
     interactive: bool,
+    target_provider: str = "",
 ) -> list[Any]:
     return [
-        {"role": "system", "content": _build_system_prompt(worktree, config, interactive)},
+        {
+            "role": "system",
+            "content": _build_system_prompt(
+                worktree,
+                config,
+                interactive,
+                target_provider=target_provider,
+            ),
+        },
         {"role": "user", "content": goal},
     ]
 
@@ -351,6 +404,7 @@ def _build_planner_runtime(
     worktree: Path,
     project_config_json: str,
     interactive: bool,
+    target_provider: str = "",
 ) -> tuple[
     Any,  # config
     Any,  # provider
@@ -370,7 +424,13 @@ def _build_planner_runtime(
         shutil.rmtree(actuators._sandbox_home, ignore_errors=True)
 
     ask_fn = _ask_user_via_stdin if interactive else None
-    messages = _initial_planner_messages(goal, worktree, config, interactive)
+    messages = _initial_planner_messages(
+        goal,
+        worktree,
+        config,
+        interactive,
+        target_provider=target_provider,
+    )
     nudged = False
     allowed_tools = get_allowed_tool_names("planner", interactive=interactive)
     budget = iteration_budget(config)
@@ -428,10 +488,17 @@ def run_planner(
     model: str,
     project_config_json: str = "",
     interactive: bool = False,
+    target_provider: str = "",
 ) -> None:
     """Run the planner agent loop."""
     config, provider, actuators, cleanup, ask_fn, messages, nudged, allowed_tools, budget = (
-        _build_planner_runtime(goal, worktree, project_config_json, interactive)
+        _build_planner_runtime(
+            goal,
+            worktree,
+            project_config_json,
+            interactive,
+            target_provider=target_provider,
+        )
     )
 
     for iteration in range(budget):
@@ -461,6 +528,7 @@ if __name__ == "__main__":
     parser.add_argument("--worktree", required=True)
     parser.add_argument("--model", default="")
     parser.add_argument("--project-config", default="", help="JSON-encoded project config")
+    parser.add_argument("--target-provider", default="", help="Provider that should execute tasks")
     parser.add_argument("--interactive", action="store_true", help="Enable ask_user tool")
     args = parser.parse_args()
     run_planner(
@@ -469,4 +537,5 @@ if __name__ == "__main__":
         args.model,
         args.project_config,
         interactive=args.interactive,
+        target_provider=args.target_provider,
     )
