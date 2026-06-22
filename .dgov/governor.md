@@ -244,6 +244,51 @@ something this section does not, the index has drifted.
   recipes in `.dgov/project.toml` and reference them by name instead of embedding
   full commands in every task prompt.
 
+## Lieutenant Governor Delegation
+
+A lieutenant governor is a higher-capability agent authorized to operate the
+full dgov governor loop on behalf of the primary operator. Delegation is
+contract-bound, not open-ended.
+
+### Invoking delegation
+
+```
+dgov delegate "<vision>" [--lieutenant-provider <name>] [--worker-provider <name>]
+```
+
+This renders a deterministic delegation brief containing:
+- The vision the lieutenant is scoped to
+- Lieutenant provider and worker provider contracts (name, model, endpoint)
+- Stop rules the lieutenant must honor
+- Required plan-mediated workflow (plan → compile → run → review → ledger)
+- Verification expectations (lint, format, test commands from project config)
+- Ledger obligations after each `dgov run`
+
+Both `--lieutenant-provider` and `--worker-provider` must reference names
+defined in `.dgov/project.toml [providers.*]`. An unknown provider is a hard
+error; the brief is not rendered.
+
+### Lieutenant operating contract
+
+- Follow the brief exactly. Do not expand vision scope without a new delegation.
+- All work must flow through plan files. No ad hoc task dispatch.
+- Honor every stop rule. A stop-and-ledger event is a success, not a failure.
+- Run `dgov plan review <dir>` after every `dgov run` and record findings.
+- Ledger obligations are mandatory: bugs, rules, and decisions must be recorded
+  before the session ends.
+
+### What the governor owns
+
+The governor retains authority over:
+- Plan authoring and file claim approval
+- Scope violations — these are terminal regardless of lieutenant direction
+- Settlement and sentrux gates
+- Provider configuration in `.dgov/project.toml`
+
+The lieutenant may not override settlement, widen scope, or change provider
+config mid-delegation. If any of these are needed, stop and surface the
+decision to the governor.
+
 ## Operational Memory
 
 - The ledger is the durable memory for bugs, rules, decisions, patterns, and debt.
