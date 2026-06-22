@@ -1981,8 +1981,10 @@ _WORKER_TOOL_SPECS: tuple[dict[str, Any], ...] = (
         "function": {
             "name": "list_dir",
             "description": (
-                "List directory contents with sizes. Use source/test/project directories; "
-                "do not inspect .git or __pycache__."
+                "List directory contents. Regular files are shown as "
+                "'<path>  (<N> bytes)'; directories are shown as '<path>/'. "
+                "Use this to check file sizes without a separate stat call. "
+                "Do not inspect .git or __pycache__."
             ),
             "parameters": {
                 "type": "object",
