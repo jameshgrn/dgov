@@ -1,0 +1,41 @@
+[tasks.delegate-command]
+summary = "Render a lieutenant-governor delegation brief"
+prompt = """
+Orient:
+- Read `.dgov/governor.md` around Governor Invocation and Task Authoring Rules.
+- Read `src/dgov/cli/__init__.py`, `src/dgov/config.py`, and existing small CLI command modules for command registration style.
+- Read the relevant CLI test helpers in `tests/test_cli.py`, but create focused tests in a new file instead of expanding the large test module.
+- The goal is a narrow v1. Do not build a background autonomous loop, do not invoke Claude or workers from the new command, and do not add provider-specific shims.
+- The command should render a factual delegation contract that a higher-capability agent can execute as a lieutenant governor through normal dgov plan/run/review/ledger operations.
+
+Edit:
+1. Add a small CLI module for `dgov delegate <vision>` that validates the configured lieutenant provider and target worker provider against `.dgov/project.toml`, then prints a deterministic brief.
+2. The rendered brief must include the vision, the lieutenant provider, the target worker provider when supplied, stop rules, required plan-mediated workflow, targeted verification expectations, and the ledger/reporting obligations after each dgov run.
+3. Register the command in the existing CLI import list and mention it in the root help usage.
+4. Update `.dgov/governor.md` with a concise Lieutenant Governor Delegation section. Keep policy in the governor charter; do not create or edit worker SOPs for this v1.
+5. Add focused unit tests for the new command, including a happy path and an unknown-provider failure.
+
+Verify:
+- `uv run pytest -q tests/test_cli_delegate.py`
+- `uv run ruff check src/dgov/cli/delegate.py src/dgov/cli/__init__.py tests/test_cli_delegate.py`
+- `uv run ruff format --check src/dgov/cli/delegate.py src/dgov/cli/__init__.py tests/test_cli_delegate.py`
+"""
+commit_message = "Add lieutenant delegation CLI"
+role = "worker"
+iteration_budget = 28
+timeout_s = 720
+max_fork_depth = 1
+files.edit = [
+  ".dgov/governor.md",
+  "src/dgov/cli/__init__.py",
+]
+files.create = [
+  "src/dgov/cli/delegate.py",
+  "tests/test_cli_delegate.py",
+]
+files.read = [
+  ".dgov/project.toml",
+  "src/dgov/config.py",
+  "tests/test_cli.py",
+]
+test_cmd = "uv run pytest -q tests/test_cli_delegate.py"

@@ -1,0 +1,5 @@
+[plan]
+name = "lieutenant-delegate-v1"
+summary = "Add a bounded lieutenant-governor delegation contract and CLI renderer."
+sections = ["tasks", "review"]
+default_provider = "claude"
