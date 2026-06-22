@@ -1,0 +1,42 @@
+[tasks.provider-stream]
+summary = "Parse Claude Code stream output into worker events"
+prompt = """
+Orient:
+- Read `src/dgov/workers/provider.py` around `ClaudeCodeProvider`, `_run_claude_code`, `_claude_code_command`, and `_claude_code_response`.
+- Read `src/dgov/workers/runtime.py` around `WorkerEvent`; provider code may emit worker events because it runs inside the worker/planner/researcher subprocess.
+- Read `tests/test_worker_provider.py` around the existing `test_claude_code_provider_*` tests.
+- Current problem: Claude-backed dgov tasks appear silent until the Claude wrapper exits. dgov has `dgov run --stream`, but the Claude provider currently calls the runner through `subprocess.run(... capture_output=True)` and requests `--output-format json --extract-result`.
+- Keep this task in core dgov only. Do not edit `/Users/jakegearon/Documents/invoke-claude` or the installed skill path in this plan.
+
+Edit:
+1. Change the Claude Code provider path so dgov requests `stream-json` output from the runner and drains the runner subprocess with `subprocess.Popen`, not `subprocess.run`.
+2. While draining stdout, parse JSON lines from Claude Code stream output. Emit useful live `WorkerEvent` records:
+   - assistant text as `thought`
+   - Claude tool uses as `call` with a dict that includes `tool`, `args`, `role`, `turn_index`, and `tool_index`
+   - do not emit raw non-JSON lines as worker events
+3. Preserve the existing final OpenAI-shaped response: `done` tasks still synthesize a `done` tool call with the final result, and planner tasks still synthesize an `emit_plan` tool call from the final result.
+4. Preserve failure behavior with stdout/stderr details and timeout handling. If the runner emits old non-stream text, fall back to the prior stdout result behavior.
+5. Capture Claude usage when stream payloads expose it. Map Claude input/cache-read/cache-create tokens to prompt tokens and output tokens to completion tokens; expose them through the synthetic response `usage` so existing worker token plumbing can report nonzero totals.
+6. Update focused provider tests. Prefer temp runner scripts or a small fake `Popen` fixture over brittle broad mocking. Cover: command requests `stream-json`, final result still becomes the correct tool call, stream assistant/tool events are emitted as worker JSON lines, usage is mapped, and nonzero runner exit reports stderr/stdout.
+
+Verify:
+- `uv run pytest -q tests/test_worker_provider.py -k "claude_code_provider"`
+- `uv run ruff check src/dgov/workers/provider.py tests/test_worker_provider.py`
+- `uv run ruff format --check src/dgov/workers/provider.py tests/test_worker_provider.py`
+"""
+commit_message = "Stream Claude provider telemetry"
+role = "worker"
+iteration_budget = 34
+timeout_s = 900
+max_fork_depth = 1
+files.edit = [
+  "src/dgov/workers/provider.py",
+  "tests/test_worker_provider.py",
+]
+files.read = [
+  "src/dgov/workers/runtime.py",
+  "src/dgov/worker.py",
+  "src/dgov/planner.py",
+  "src/dgov/researcher.py",
+]
+test_cmd = "uv run pytest -q tests/test_worker_provider.py -k \"claude_code_provider\""

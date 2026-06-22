@@ -1,0 +1,22 @@
+[tasks.review-provider-stream]
+summary = "Review Claude provider stream telemetry"
+role = "reviewer"
+provider = "claude-sonnet-review"
+depends_on = ["tasks/provider-stream.provider-stream"]
+prompt = """
+Orient:
+- Read the dependency diff for `tasks/provider-stream.provider-stream`.
+- This is a bounded review of Claude provider stream consumption only.
+- Do not run broad verification or generic test commands. Rely on the dependency diff and recorded targeted checks unless one exact command is required to confirm a blocker.
+
+Edit:
+1. Check that the provider no longer blocks behind `subprocess.run(... capture_output=True)` for Claude runner stdout.
+2. Check that stream parsing emits dgov worker events without corrupting the worker stdout JSON protocol.
+3. Check that final `done` and `emit_plan` synthetic responses retain existing behavior.
+4. Check that token usage mapping is conservative and does not double-count obvious final/result payloads.
+5. Check that failure and timeout paths preserve stdout/stderr details.
+
+Verify:
+- Verify by inspecting the dependency diff and targeted check evidence only.
+- If no blocker remains, call done with a concise approval and residual risk.
+"""
