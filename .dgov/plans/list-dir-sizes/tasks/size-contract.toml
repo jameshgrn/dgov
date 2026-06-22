@@ -2,7 +2,7 @@
 summary = "Test and document list_dir file-size output"
 commit_message = "Test list_dir file size output"
 role = "worker"
-provider = "claude-haiku-worker"
+provider = "claude"
 iteration_budget = 20
 files.edit = [
   "src/dgov/workers/atomic.py",

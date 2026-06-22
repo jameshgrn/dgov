@@ -2,4 +2,4 @@
 name = "list-dir-sizes"
 summary = "Make worker list_dir file-size output an explicit, tested contract."
 sections = ["tasks", "review"]
-default_provider = "claude-haiku-worker"
+default_provider = "claude"
