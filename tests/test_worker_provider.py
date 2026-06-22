@@ -1,9 +1,9 @@
-"""Tests for LLM provider retry backoff."""
+"""Tests for LLM provider retry backoff and Claude Code streaming."""
 
 from __future__ import annotations
 
+import io
 import json
-import subprocess
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -14,6 +14,7 @@ from dgov.workers.provider import (
     OpenAICompatibleProvider,
     ProviderRateLimitError,
     TokenLimitPolicy,
+    _claude_code_command,
     _estimate_request_tokens,
     _estimate_tokens_from_length,
     _extract_retry_after,
@@ -72,6 +73,61 @@ class _DirectHeadersRateLimitError(Exception):
         super().__init__("rate limit")
         self.status_code = 429
         self.headers = {"retry-after": "42"}
+
+
+# ---------------------------------------------------------------------------
+# Fake Popen for Claude Code provider tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeWritable:
+    def write(self, data: str) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+class _FakePopen:
+    """Minimal subprocess.Popen stand-in for provider tests."""
+
+    def __init__(
+        self,
+        stdout_text: str = "",
+        returncode: int = 0,
+        stderr_text: str = "",
+    ) -> None:
+        self.returncode = returncode
+        self.stdin: Any = _FakeWritable()
+        self.stdout: Any = io.StringIO(stdout_text)
+        self.stderr: Any = io.StringIO(stderr_text)
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode
+
+    def kill(self) -> None:
+        pass
+
+
+def _result_line(result: str, usage: dict[str, int] | None = None) -> str:
+    event: dict[str, Any] = {"type": "result", "subtype": "success", "result": result}
+    if usage is not None:
+        event["usage"] = usage
+    return json.dumps(event)
+
+
+def _assistant_line(text: str | None = None, tool_uses: list[dict[str, Any]] | None = None) -> str:
+    content: list[dict[str, Any]] = []
+    if text is not None:
+        content.append({"type": "text", "text": text})
+    for tu in tool_uses or []:
+        content.append({"type": "tool_use", **tu})
+    return json.dumps({"type": "assistant", "message": {"content": content}})
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit backoff tests (unchanged behaviour)
+# ---------------------------------------------------------------------------
 
 
 def test_rate_limit_backoff_uses_slow_schedule_with_jitter_hook() -> None:
@@ -487,6 +543,35 @@ def test_token_limit_within_limits_allows_retry() -> None:
     assert len(sleeps) == 1  # Retried once
 
 
+# ---------------------------------------------------------------------------
+# Claude Code provider tests (Popen-based)
+# ---------------------------------------------------------------------------
+
+
+def _make_popen(
+    stream_events: list[dict[str, Any]],
+    returncode: int = 0,
+    stderr_text: str = "",
+) -> _FakePopen:
+    stdout_text = "\n".join(json.dumps(e) for e in stream_events) + "\n"
+    return _FakePopen(stdout_text=stdout_text, returncode=returncode, stderr_text=stderr_text)
+
+
+def test_claude_code_provider_requests_stream_json(tmp_path) -> None:
+    """Command uses stream-json output format (not json + --extract-result)."""
+    from dgov.workers.provider import _claude_code_settings
+
+    settings = _claude_code_settings(
+        f"claude-code://fast?preset=edit&runner={tmp_path / 'run.py'}"
+    )
+    command = _claude_code_command(settings=settings, model="haiku", cwd=None)
+
+    assert "--output-format" in command
+    idx = command.index("--output-format")
+    assert command[idx + 1] == "stream-json"
+    assert "--extract-result" not in command
+
+
 def test_claude_code_provider_invokes_skill_runner(monkeypatch, tmp_path) -> None:
     runner = tmp_path / "run_claude_code.py"
     worktree = tmp_path / "repo"
@@ -494,12 +579,17 @@ def test_claude_code_provider_invokes_skill_runner(monkeypatch, tmp_path) -> Non
     captured: dict[str, object] = {}
     monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(runner))
 
-    def _fake_run(command, **kwargs):
+    popen_instance = _make_popen([
+        {"type": "result", "subtype": "success", "result": "changed x.py"}
+    ])
+
+    def _fake_popen(command, **kwargs):
         captured["command"] = command
         captured["kwargs"] = kwargs
-        return subprocess.CompletedProcess(command, 0, stdout="changed x.py\n", stderr="")
+        return popen_instance
 
-    monkeypatch.setattr("dgov.workers.provider.subprocess.run", _fake_run)
+    monkeypatch.setattr("dgov.workers.provider.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("dgov.workers.provider._emit_worker_event", lambda *_args: None)
 
     provider = create_provider(
         name="claude",
@@ -524,8 +614,7 @@ def test_claude_code_provider_invokes_skill_runner(monkeypatch, tmp_path) -> Non
     assert command[command.index("--timeout-seconds") + 1] == "12"
     assert command[command.index("--max-turns") + 1] == "18"
     kwargs = cast(dict[str, Any], captured["kwargs"])
-    prompt = cast(str, kwargs["input"])
-    assert "DGOV provider adapter instructions" in prompt
+    assert kwargs.get("text") is True
     tool_call = response.choices[0].message.tool_calls[0]
     assert tool_call.function.name == "done"
     assert json.loads(tool_call.function.arguments) == {"summary": "changed x.py"}
@@ -535,11 +624,12 @@ def test_claude_code_provider_infers_edit_preset_for_worker_prompt(monkeypatch, 
     monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(tmp_path / "run_claude_code.py"))
     captured: dict[str, object] = {}
 
-    def _fake_run(command, **_kwargs):
+    def _fake_popen(command, **_kwargs):
         captured["command"] = command
-        return subprocess.CompletedProcess(command, 0, stdout="changed x.py", stderr="")
+        return _make_popen([{"type": "result", "subtype": "success", "result": "changed x.py"}])
 
-    monkeypatch.setattr("dgov.workers.provider.subprocess.run", _fake_run)
+    monkeypatch.setattr("dgov.workers.provider.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("dgov.workers.provider._emit_worker_event", lambda *_args: None)
     provider = create_provider(
         name="claude",
         base_url="claude-code://daily?max_turns=32",
@@ -563,11 +653,12 @@ def test_claude_code_provider_infers_review_preset_for_researcher_prompt(
     monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(tmp_path / "run_claude_code.py"))
     captured: dict[str, object] = {}
 
-    def _fake_run(command, **_kwargs):
+    def _fake_popen(command, **_kwargs):
         captured["command"] = command
-        return subprocess.CompletedProcess(command, 0, stdout="reviewed", stderr="")
+        return _make_popen([{"type": "result", "subtype": "success", "result": "reviewed"}])
 
-    monkeypatch.setattr("dgov.workers.provider.subprocess.run", _fake_run)
+    monkeypatch.setattr("dgov.workers.provider.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("dgov.workers.provider._emit_worker_event", lambda *_args: None)
     provider = create_provider(name="claude", base_url="claude-code://daily", api_key="")
 
     provider.create_chat_completion(
@@ -584,10 +675,15 @@ def test_claude_code_provider_reports_runner_failure(monkeypatch, tmp_path) -> N
     runner = tmp_path / "run_claude_code.py"
     monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(runner))
 
-    def _fake_run(command, **_kwargs):
-        return subprocess.CompletedProcess(command, 2, stdout="partial", stderr="failed")
+    def _fake_popen(command, **_kwargs):
+        return _FakePopen(
+            stdout_text="partial\n",
+            returncode=2,
+            stderr_text="failed",
+        )
 
-    monkeypatch.setattr("dgov.workers.provider.subprocess.run", _fake_run)
+    monkeypatch.setattr("dgov.workers.provider.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("dgov.workers.provider._emit_worker_event", lambda *_args: None)
     provider = create_provider(name="claude", base_url="claude-code://daily", api_key="")
 
     with pytest.raises(RuntimeError, match="Claude Code provider exited with status 2"):
@@ -616,12 +712,15 @@ def test_claude_code_provider_synthesizes_emit_plan_tool_call(monkeypatch, tmp_p
         ],
     }
 
-    def _fake_run(command, **kwargs):
+    def _fake_popen(command, **kwargs):
         captured["command"] = command
         captured["kwargs"] = kwargs
-        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(plan_output), stderr="")
+        return _make_popen([
+            {"type": "result", "subtype": "success", "result": json.dumps(plan_output)}
+        ])
 
-    monkeypatch.setattr("dgov.workers.provider.subprocess.run", _fake_run)
+    monkeypatch.setattr("dgov.workers.provider.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("dgov.workers.provider._emit_worker_event", lambda *_args: None)
     provider = create_provider(name="claude", base_url="claude-code://daily", api_key="")
 
     response = provider.create_chat_completion(
@@ -632,9 +731,6 @@ def test_claude_code_provider_synthesizes_emit_plan_tool_call(monkeypatch, tmp_p
 
     command = cast(list[str], captured["command"])
     assert command[command.index("--preset") + 1] == "plan"
-    kwargs = cast(dict[str, Any], captured["kwargs"])
-    prompt = cast(str, kwargs["input"])
-    assert "printing only one JSON object" in prompt
     tool_call = response.choices[0].message.tool_calls[0]
     assert tool_call.function.name == "emit_plan"
     assert json.loads(tool_call.function.arguments) == plan_output
@@ -643,10 +739,11 @@ def test_claude_code_provider_synthesizes_emit_plan_tool_call(monkeypatch, tmp_p
 def test_claude_code_provider_rejects_invalid_emit_plan_output(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(tmp_path / "run_claude_code.py"))
 
-    def _fake_run(command, **_kwargs):
-        return subprocess.CompletedProcess(command, 0, stdout="not json", stderr="")
+    def _fake_popen(command, **_kwargs):
+        return _make_popen([{"type": "result", "subtype": "success", "result": "not json"}])
 
-    monkeypatch.setattr("dgov.workers.provider.subprocess.run", _fake_run)
+    monkeypatch.setattr("dgov.workers.provider.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("dgov.workers.provider._emit_worker_event", lambda *_args: None)
     provider = create_provider(
         name="claude", base_url="claude-code://daily?preset=plan", api_key=""
     )
@@ -657,3 +754,161 @@ def test_claude_code_provider_rejects_invalid_emit_plan_output(monkeypatch, tmp_
             messages=[{"role": "user", "content": "plan"}],
             tools=[{"type": "function", "function": {"name": "emit_plan"}}],
         )
+
+
+def test_claude_code_provider_emits_thought_events(monkeypatch, tmp_path) -> None:
+    """Stream assistant text blocks are emitted as WorkerEvent('thought', ...)."""
+    monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(tmp_path / "run_claude_code.py"))
+
+    stream = [
+        json.loads(_assistant_line(text="Thinking about the task.")),
+        json.loads(_assistant_line(text="Now I will edit the file.")),
+        {"type": "result", "subtype": "success", "result": "done"},
+    ]
+
+    def _fake_popen(command, **_kwargs):
+        return _make_popen(stream)
+
+    monkeypatch.setattr("dgov.workers.provider.subprocess.Popen", _fake_popen)
+
+    emitted: list[tuple[str, Any]] = []
+    monkeypatch.setattr(
+        "dgov.workers.provider._emit_worker_event",
+        lambda event_type, content: emitted.append((event_type, content)),
+    )
+
+    provider = create_provider(name="claude", base_url="claude-code://daily", api_key="")
+    provider.create_chat_completion(
+        model="sonnet",
+        messages=[{"role": "user", "content": "do work"}],
+        tools=[{"type": "function", "function": {"name": "done"}}],
+    )
+
+    thought_events = [(t, c) for t, c in emitted if t == "thought"]
+    assert len(thought_events) == 2
+    assert thought_events[0][1] == "Thinking about the task."
+    assert thought_events[1][1] == "Now I will edit the file."
+
+
+def test_claude_code_provider_emits_call_events(monkeypatch, tmp_path) -> None:
+    """Stream tool_use blocks are emitted as WorkerEvent('call', ...) with expected keys."""
+    monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(tmp_path / "run_claude_code.py"))
+
+    tool_use = {"id": "tu_1", "name": "read_file", "input": {"path": "src/foo.py"}}
+    stream = [
+        json.loads(_assistant_line(tool_uses=[tool_use])),
+        {"type": "result", "subtype": "success", "result": "done"},
+    ]
+
+    def _fake_popen(command, **_kwargs):
+        return _make_popen(stream)
+
+    monkeypatch.setattr("dgov.workers.provider.subprocess.Popen", _fake_popen)
+
+    emitted: list[tuple[str, Any]] = []
+    monkeypatch.setattr(
+        "dgov.workers.provider._emit_worker_event",
+        lambda event_type, content: emitted.append((event_type, content)),
+    )
+
+    provider = create_provider(name="claude", base_url="claude-code://daily", api_key="")
+    provider.create_chat_completion(
+        model="sonnet",
+        messages=[{"role": "user", "content": "do work"}],
+        tools=[{"type": "function", "function": {"name": "done"}}],
+    )
+
+    call_events = [(t, c) for t, c in emitted if t == "call"]
+    assert len(call_events) == 1
+    payload = call_events[0][1]
+    assert payload["tool"] == "read_file"
+    assert payload["args"] == {"path": "src/foo.py"}
+    assert payload["role"] == "assistant"
+    assert "turn_index" in payload
+    assert "tool_index" in payload
+
+
+def test_claude_code_provider_maps_usage_tokens(monkeypatch, tmp_path) -> None:
+    """Result event usage maps to prompt/completion tokens on response.usage."""
+    monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(tmp_path / "run_claude_code.py"))
+
+    stream = [
+        {
+            "type": "result",
+            "subtype": "success",
+            "result": "all done",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_input_tokens": 20,
+                "cache_creation_input_tokens": 10,
+            },
+        }
+    ]
+
+    def _fake_popen(command, **_kwargs):
+        return _make_popen(stream)
+
+    monkeypatch.setattr("dgov.workers.provider.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("dgov.workers.provider._emit_worker_event", lambda *_args: None)
+
+    provider = create_provider(name="claude", base_url="claude-code://daily", api_key="")
+    response = provider.create_chat_completion(
+        model="sonnet",
+        messages=[{"role": "user", "content": "do work"}],
+        tools=[{"type": "function", "function": {"name": "done"}}],
+    )
+
+    assert response.usage is not None
+    # 100 input + 20 cache_read + 10 cache_creation = 130 prompt tokens
+    assert response.usage.prompt_tokens == 130
+    assert response.usage.completion_tokens == 50
+    assert response.usage.total_tokens == 180
+
+
+def test_claude_code_provider_reports_nonzero_exit_with_stderr(monkeypatch, tmp_path) -> None:
+    """Non-zero exit includes both stdout and stderr in the error message."""
+    monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(tmp_path / "run_claude_code.py"))
+
+    def _fake_popen(command, **_kwargs):
+        return _FakePopen(
+            stdout_text='{"type": "system"}\n',
+            returncode=1,
+            stderr_text="API error: timeout",
+        )
+
+    monkeypatch.setattr("dgov.workers.provider.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("dgov.workers.provider._emit_worker_event", lambda *_args: None)
+    provider = create_provider(name="claude", base_url="claude-code://daily", api_key="")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        provider.create_chat_completion(
+            model="sonnet",
+            messages=[{"role": "user", "content": "work"}],
+            tools=[{"type": "function", "function": {"name": "done"}}],
+        )
+
+    msg = str(exc_info.value)
+    assert "exited with status 1" in msg
+    assert "API error: timeout" in msg
+
+
+def test_claude_code_provider_fallback_to_plain_stdout(monkeypatch, tmp_path) -> None:
+    """If runner emits no result event, falls back to raw stdout lines as result."""
+    monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(tmp_path / "run_claude_code.py"))
+
+    def _fake_popen(command, **_kwargs):
+        return _FakePopen(stdout_text="plain text output\n", returncode=0)
+
+    monkeypatch.setattr("dgov.workers.provider.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("dgov.workers.provider._emit_worker_event", lambda *_args: None)
+    provider = create_provider(name="claude", base_url="claude-code://daily", api_key="")
+
+    response = provider.create_chat_completion(
+        model="sonnet",
+        messages=[{"role": "user", "content": "work"}],
+        tools=[{"type": "function", "function": {"name": "done"}}],
+    )
+
+    tool_call = response.choices[0].message.tool_calls[0]
+    assert json.loads(tool_call.function.arguments) == {"summary": "plain text output"}

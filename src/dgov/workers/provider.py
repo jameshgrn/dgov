@@ -8,6 +8,7 @@ import random
 import re
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
@@ -461,16 +462,16 @@ class ClaudeCodeProvider:
             messages=kwargs.get("messages", []),
         )
         prompt = _claude_code_prompt(kwargs, terminal_tool=terminal_tool)
-        output = _run_claude_code(
+        output, usage = _run_claude_code(
             settings=settings,
             prompt=prompt,
             model=str(kwargs.get("model") or "").strip(),
             cwd=_worktree_from_messages(kwargs.get("messages", [])),
         )
-        return _claude_code_response(terminal_tool, output)
+        return _claude_code_response(terminal_tool, output, usage)
 
 
-def _claude_code_response(terminal_tool: str, output: str) -> Any:
+def _claude_code_response(terminal_tool: str, output: str, usage: dict[str, int]) -> Any:
     arguments = (
         json.dumps({"summary": output})
         if terminal_tool == "done"
@@ -488,9 +489,14 @@ def _claude_code_response(terminal_tool: str, output: str) -> Any:
             )
         ],
     )
+    usage_obj = SimpleNamespace(
+        prompt_tokens=usage.get("prompt_tokens", 0),
+        completion_tokens=usage.get("completion_tokens", 0),
+        total_tokens=usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0),
+    )
     return SimpleNamespace(
         choices=[SimpleNamespace(message=message, finish_reason="stop")],
-        usage=None,
+        usage=usage_obj,
     )
 
 
@@ -665,25 +671,155 @@ def _worktree_from_text(text: str) -> Path | None:
     return None
 
 
+def _drain_to_list(stream: Any, dest: list[str]) -> None:
+    for line in stream:
+        dest.append(line)
+
+
+def _emit_worker_event(event_type: str, content: object) -> None:
+    print(
+        json.dumps({"worker_event": {"type": event_type, "content": content}}),
+        flush=True,
+    )
+
+
+def _emit_stream_worker_events(event: Any, turn_index: int) -> None:
+    if not isinstance(event, dict) or event.get("type") != "assistant":
+        return
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return
+    content = message.get("content")
+    if not isinstance(content, list):
+        return
+    for tool_index, block in enumerate(content):
+        if not isinstance(block, dict):
+            continue
+        block_map = cast("dict[str, Any]", block)
+        block_type = block_map.get("type")
+        if block_type == "text":
+            text = block_map.get("text", "")
+            if text and isinstance(text, str):
+                _emit_worker_event("thought", text)
+        elif block_type == "tool_use":
+            _emit_worker_event(
+                "call",
+                {
+                    "tool": block_map.get("name", ""),
+                    "args": block_map.get("input", {}),
+                    "role": "assistant",
+                    "turn_index": turn_index,
+                    "tool_index": tool_index,
+                },
+            )
+
+
+def _update_stream_usage(event: Any, usage: dict[str, int]) -> None:
+    if not isinstance(event, dict) or event.get("type") != "result":
+        return
+    raw = event.get("usage")
+    if not isinstance(raw, dict):
+        return
+    usage["prompt_tokens"] = (
+        int(raw.get("input_tokens", 0))
+        + int(raw.get("cache_read_input_tokens", 0))
+        + int(raw.get("cache_creation_input_tokens", 0))
+    )
+    usage["completion_tokens"] = int(raw.get("output_tokens", 0))
+
+
+def _extract_result_from_stream(stream_lines: list[str], all_lines: list[str]) -> str:
+    for line in reversed(stream_lines):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            result = event.get("result")
+            if isinstance(result, str):
+                return result.strip()
+    # Fallback for non-stream output (old runner that doesn't emit result events).
+    return "\n".join(all_lines).strip()
+
+
 def _run_claude_code(
     *,
     settings: _ClaudeCodeSettings,
     prompt: str,
     model: str,
     cwd: Path | None,
-) -> str:
+) -> tuple[str, dict[str, int]]:
     command = _claude_code_command(settings=settings, model=model, cwd=cwd)
-    completed = subprocess.run(
+    proc = subprocess.Popen(
         command,
-        input=prompt,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        capture_output=True,
-        check=False,
-        timeout=settings.timeout_seconds + 5,
     )
-    if completed.returncode != 0:
-        raise RuntimeError(_claude_code_error(completed))
-    return completed.stdout.strip()
+    # Drain stderr concurrently to prevent pipe deadlock.
+    stderr_chunks: list[str] = []
+    stderr_thread = threading.Thread(
+        target=_drain_to_list,
+        args=(proc.stderr, stderr_chunks),
+        daemon=True,
+    )
+    stderr_thread.start()
+
+    assert proc.stdin is not None
+    try:
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+    except OSError:
+        pass
+
+    all_lines: list[str] = []
+    stream_lines: list[str] = []
+    usage: dict[str, int] = {}
+    turn_index = 0
+
+    # Kill after deadline so the stdout loop unblocks if Claude Code hangs.
+    kill_called = threading.Event()
+
+    def _timeout_kill() -> None:
+        kill_called.set()
+        proc.kill()
+
+    kill_timer = threading.Timer(settings.timeout_seconds + 5, _timeout_kill)
+    kill_timer.start()
+    try:
+        assert proc.stdout is not None
+        for raw_line in proc.stdout:
+            line = raw_line.rstrip("\n")
+            if not line:
+                continue
+            all_lines.append(line)
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            stream_lines.append(line)
+            _emit_stream_worker_events(event, turn_index)
+            if isinstance(event, dict) and event.get("type") == "assistant":
+                turn_index += 1
+            _update_stream_usage(event, usage)
+    finally:
+        kill_timer.cancel()
+        proc.wait()
+        stderr_thread.join(timeout=5.0)
+
+    stderr_data = "".join(stderr_chunks)
+    if proc.returncode != 0:
+        prefix = (
+            f"Claude Code provider timed out after {settings.timeout_seconds}s.\n"
+            if kill_called.is_set()
+            else ""
+        )
+        raise RuntimeError(
+            prefix + _claude_code_stream_error(proc.returncode, "\n".join(all_lines), stderr_data)
+        )
+
+    return _extract_result_from_stream(stream_lines, all_lines), usage
 
 
 def _claude_code_command(
@@ -700,8 +836,7 @@ def _claude_code_command(
         "--model-profile",
         settings.model_profile,
         "--output-format",
-        "json",
-        "--extract-result",
+        "stream-json",
         "--timeout-seconds",
         _format_timeout(settings.timeout_seconds),
     ]
@@ -721,14 +856,12 @@ def _format_timeout(timeout_seconds: float) -> str:
     return str(timeout_seconds)
 
 
-def _claude_code_error(completed: subprocess.CompletedProcess[str]) -> str:
-    parts = [f"Claude Code provider exited with status {completed.returncode}."]
-    stdout = completed.stdout.strip()
-    stderr = completed.stderr.strip()
+def _claude_code_stream_error(returncode: int, stdout: str, stderr: str) -> str:
+    parts = [f"Claude Code provider exited with status {returncode}."]
     if stdout:
-        parts.append(f"stdout:\n{stdout}")
+        parts.append(f"stdout:\n{stdout.strip()}")
     if stderr:
-        parts.append(f"stderr:\n{stderr}")
+        parts.append(f"stderr:\n{stderr.strip()}")
     return "\n".join(parts)
 
 
