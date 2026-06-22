@@ -1,0 +1,27 @@
+[tasks.size-contract]
+summary = "Test and document list_dir file-size output"
+commit_message = "Test list_dir file size output"
+role = "worker"
+provider = "claude-haiku-worker"
+iteration_budget = 20
+files.edit = [
+  "src/dgov/workers/atomic.py",
+  "tests/test_worker_tools.py",
+]
+test_cmd = "uv run pytest -q -m unit tests/test_worker_tools.py -k list_dir"
+prompt = """
+Orient:
+- Read `src/dgov/workers/atomic.py` around `AtomicTools.list_dir` and the `list_dir` entry in `get_tool_spec`.
+- Read `tests/test_worker_tools.py` around `TestListDir`.
+- The desired contract is narrow: `list_dir` should make regular-file sizes visible in bytes so workers do not need the MCP filesystem `list_directory_with_sizes` tool for that common inspection. Directory entries should remain clear directory markers, not recursive size calculations.
+
+Edit:
+1. Preserve the current user-facing directory listing shape unless a test exposes a mismatch: directories should keep the trailing `/`, regular files should include a byte count.
+2. Make the tool description/schema text precise enough that an agent can infer regular files include byte sizes and directories are marked with `/`.
+3. Add focused tests proving `list_dir(".")` includes an exact byte-size suffix for a known fixture file and still does not attach sizes to directory entries.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_worker_tools.py -k list_dir`
+- `uv run ruff check src/dgov/workers/atomic.py tests/test_worker_tools.py`
+- `uv run ruff format --check src/dgov/workers/atomic.py tests/test_worker_tools.py`
+"""

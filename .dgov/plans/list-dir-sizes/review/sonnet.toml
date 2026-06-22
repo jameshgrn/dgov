@@ -1,0 +1,20 @@
+[tasks.sonnet]
+summary = "Review list_dir size-output contract"
+role = "reviewer"
+provider = "claude-sonnet-review"
+depends_on = ["tasks/size-contract.size-contract"]
+timeout_s = 1500
+prompt = """
+Orient:
+- Review only the dependency diff for `tasks/size-contract.size-contract`.
+- This is a bounded semantic review of the worker `list_dir` size-output contract and its focused tests.
+- Do not run broad verification. Use the dependency diff and recorded targeted checks unless a single exact command is required to confirm a blocker.
+
+Edit:
+1. Check that regular-file size output is explicit and stable enough for worker use.
+2. Check that directory entries remain clear and do not imply recursive directory-size computation.
+3. Check that tests cover the intended contract without depending on unrelated fixture details.
+
+Verify:
+- If no blocker remains, call done with `{"approved": true, "issues": []}` and mention any residual risk.
+"""
