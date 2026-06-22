@@ -115,6 +115,22 @@ def _assert_source_fireworks_provider(pc: ProjectConfig) -> None:
     assert payload["llm_generated_token_limit_header"] == fireworks.generated_token_limit_header
 
 
+def _assert_source_default_claude_provider(pc: ProjectConfig) -> None:
+    provider = pc.provider_config("claude")
+    assert pc.llm_provider == "claude"
+    assert pc.default_agent == "sonnet"
+    assert provider.default_agent == "sonnet"
+    assert provider.base_url == "claude-code://daily?max_turns=32"
+    assert provider.api_key_env == ""
+    assert provider.requires_api_key() is False
+    assert pc.agents["claude"] == "sonnet"
+
+    payload = pc.to_worker_payload()
+    assert payload["llm_provider"] == "claude"
+    assert payload["llm_base_url"] == provider.base_url
+    assert payload["llm_api_key_env"] == ""
+
+
 def _assert_source_claude_code_provider(
     pc: ProjectConfig,
     provider_name: str,
@@ -422,6 +438,7 @@ base_url = "claude-code://fast?preset=edit"
     def test_source_repo_config_wires_local_gemma_provider(self):
         pc = load_project_config(Path(__file__).resolve().parents[1])
 
+        _assert_source_default_claude_provider(pc)
         _assert_source_local_provider(pc)
         _assert_source_fireworks_provider(pc)
         _assert_source_claude_code_provider(

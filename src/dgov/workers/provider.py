@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -26,7 +26,8 @@ _DEFAULT_CLAUDE_CODE_RUNNER = (
     Path.home() / ".codex" / "skills" / "invoke-claude" / "scripts" / "run_claude_code.py"
 )
 _DEFAULT_CLAUDE_CODE_PROFILE = "daily"
-_DEFAULT_CLAUDE_CODE_PRESET = "review"
+_DEFAULT_CLAUDE_CODE_PRESET = ""
+_FALLBACK_CLAUDE_CODE_PRESET = "review"
 _DEFAULT_CLAUDE_CODE_TIMEOUT_S = 600.0
 _WORKTREE_PATTERNS = (
     re.compile(r"git worktree:\s*([^\)\n]+)"),
@@ -454,9 +455,14 @@ class ClaudeCodeProvider:
                 "claude-code providers currently require a role that exposes "
                 "the terminal `done` or `emit_plan` tool"
             )
+        settings = _settings_for_request(
+            self.settings,
+            terminal_tool=terminal_tool,
+            messages=kwargs.get("messages", []),
+        )
         prompt = _claude_code_prompt(kwargs, terminal_tool=terminal_tool)
         output = _run_claude_code(
-            settings=self.settings,
+            settings=settings,
             prompt=prompt,
             model=str(kwargs.get("model") or "").strip(),
             cwd=_worktree_from_messages(kwargs.get("messages", [])),
@@ -536,6 +542,33 @@ def _terminal_tool_name(tools: object) -> str:
     if "emit_plan" in names:
         return "emit_plan"
     return ""
+
+
+def _settings_for_request(
+    settings: _ClaudeCodeSettings,
+    *,
+    terminal_tool: str,
+    messages: object,
+) -> _ClaudeCodeSettings:
+    if settings.preset:
+        return settings
+    return replace(
+        settings,
+        preset=_claude_code_preset_for_request(terminal_tool, messages),
+    )
+
+
+def _claude_code_preset_for_request(terminal_tool: str, messages: object) -> str:
+    if terminal_tool == "emit_plan":
+        return "plan"
+    text = _render_messages(messages)
+    if "[DGOV_WORKER_PROMPT_" in text:
+        return "edit"
+    if "[DGOV_RESEARCHER_PROMPT_" in text:
+        return "review"
+    if "[DGOV_PLANNER_PROMPT_" in text:
+        return "plan"
+    return _FALLBACK_CLAUDE_CODE_PRESET
 
 
 def _tool_names(tools: object) -> set[str]:

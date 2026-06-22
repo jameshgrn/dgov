@@ -3,7 +3,7 @@ language = "python"
 src_dir = "src/"
 test_dir = "tests/"
 source_extensions = [".py"]
-provider = "fireworks"
+provider = "claude"
 test_cmd = "uv run pytest -q -m unit {test_dir} --tb=short"
 lint_cmd = "uv run ruff check {file}"
 format_cmd = "uv run ruff format {file}"
@@ -33,6 +33,10 @@ default_agent = "unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit"
 base_url = "http://localhost:8080/v1"
 api_key_env = "LOCAL_LLM_API_KEY"
 max_tokens = 262144
+
+[providers.claude]
+default_agent = "sonnet"
+base_url = "claude-code://daily?max_turns=32"
 
 [providers.claude-haiku-worker]
 default_agent = "haiku"
@@ -67,6 +71,7 @@ stale_days = 14
 kimi = "accounts/fireworks/routers/kimi-k2p6-turbo"
 "kimi-k2.6" = "accounts/fireworks/routers/kimi-k2p6-turbo"
 "gemma-4-26b-a4b" = "unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit"
+"claude" = "sonnet"
 "claude-haiku" = "haiku"
 "claude-sonnet" = "sonnet"
 

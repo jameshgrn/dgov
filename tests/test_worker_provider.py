@@ -531,6 +531,55 @@ def test_claude_code_provider_invokes_skill_runner(monkeypatch, tmp_path) -> Non
     assert json.loads(tool_call.function.arguments) == {"summary": "changed x.py"}
 
 
+def test_claude_code_provider_infers_edit_preset_for_worker_prompt(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(tmp_path / "run_claude_code.py"))
+    captured: dict[str, object] = {}
+
+    def _fake_run(command, **_kwargs):
+        captured["command"] = command
+        return subprocess.CompletedProcess(command, 0, stdout="changed x.py", stderr="")
+
+    monkeypatch.setattr("dgov.workers.provider.subprocess.run", _fake_run)
+    provider = create_provider(
+        name="claude",
+        base_url="claude-code://daily?max_turns=32",
+        api_key="",
+    )
+
+    provider.create_chat_completion(
+        model="sonnet",
+        messages=[{"role": "system", "content": "[DGOV_WORKER_PROMPT_V1.2.0]"}],
+        tools=[{"type": "function", "function": {"name": "done"}}],
+    )
+
+    command = cast(list[str], captured["command"])
+    assert command[command.index("--preset") + 1] == "edit"
+    assert command[command.index("--max-turns") + 1] == "32"
+
+
+def test_claude_code_provider_infers_review_preset_for_researcher_prompt(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(tmp_path / "run_claude_code.py"))
+    captured: dict[str, object] = {}
+
+    def _fake_run(command, **_kwargs):
+        captured["command"] = command
+        return subprocess.CompletedProcess(command, 0, stdout="reviewed", stderr="")
+
+    monkeypatch.setattr("dgov.workers.provider.subprocess.run", _fake_run)
+    provider = create_provider(name="claude", base_url="claude-code://daily", api_key="")
+
+    provider.create_chat_completion(
+        model="sonnet",
+        messages=[{"role": "system", "content": "[DGOV_RESEARCHER_PROMPT_V1.4.0]"}],
+        tools=[{"type": "function", "function": {"name": "done"}}],
+    )
+
+    command = cast(list[str], captured["command"])
+    assert command[command.index("--preset") + 1] == "review"
+
+
 def test_claude_code_provider_reports_runner_failure(monkeypatch, tmp_path) -> None:
     runner = tmp_path / "run_claude_code.py"
     monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", str(runner))
@@ -573,9 +622,7 @@ def test_claude_code_provider_synthesizes_emit_plan_tool_call(monkeypatch, tmp_p
         return subprocess.CompletedProcess(command, 0, stdout=json.dumps(plan_output), stderr="")
 
     monkeypatch.setattr("dgov.workers.provider.subprocess.run", _fake_run)
-    provider = create_provider(
-        name="claude", base_url="claude-code://daily?preset=plan", api_key=""
-    )
+    provider = create_provider(name="claude", base_url="claude-code://daily", api_key="")
 
     response = provider.create_chat_completion(
         model="sonnet",
@@ -583,6 +630,8 @@ def test_claude_code_provider_synthesizes_emit_plan_tool_call(monkeypatch, tmp_p
         tools=[{"type": "function", "function": {"name": "emit_plan"}}],
     )
 
+    command = cast(list[str], captured["command"])
+    assert command[command.index("--preset") + 1] == "plan"
     kwargs = cast(dict[str, Any], captured["kwargs"])
     prompt = cast(str, kwargs["input"])
     assert "printing only one JSON object" in prompt
