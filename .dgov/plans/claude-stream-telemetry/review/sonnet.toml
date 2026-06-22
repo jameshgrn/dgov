@@ -3,6 +3,7 @@ summary = "Review Claude provider stream telemetry"
 role = "reviewer"
 provider = "claude-sonnet-review"
 depends_on = ["tasks/provider-stream.provider-stream"]
+timeout_s = 1500
 prompt = """
 Orient:
 - Read the dependency diff for `tasks/provider-stream.provider-stream`.

@@ -27,7 +27,7 @@ Verify:
 commit_message = "Stream Claude provider telemetry"
 role = "worker"
 iteration_budget = 34
-timeout_s = 900
+timeout_s = 1500
 max_fork_depth = 1
 files.edit = [
   "src/dgov/workers/provider.py",

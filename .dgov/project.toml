@@ -36,23 +36,23 @@ max_tokens = 262144
 
 [providers.claude]
 default_agent = "sonnet"
-base_url = "claude-code://daily?max_turns=32"
+base_url = "claude-code://daily?max_turns=32&timeout=1200"
 
 [providers.claude-haiku-worker]
 default_agent = "haiku"
-base_url = "claude-code://fast?preset=edit&max_turns=18"
+base_url = "claude-code://fast?preset=edit&max_turns=18&timeout=1200"
 
 [providers.claude-haiku-plan]
 default_agent = "haiku"
-base_url = "claude-code://fast?preset=plan&max_turns=18"
+base_url = "claude-code://fast?preset=plan&max_turns=18&timeout=1200"
 
 [providers.claude-sonnet-review]
 default_agent = "sonnet"
-base_url = "claude-code://daily?preset=review&max_turns=32"
+base_url = "claude-code://daily?preset=review&max_turns=32&timeout=1200"
 
 [providers.claude-sonnet-plan]
 default_agent = "sonnet"
-base_url = "claude-code://daily?preset=plan&max_turns=32"
+base_url = "claude-code://daily?preset=plan&max_turns=32&timeout=1200"
 
 [tool_policy]
 restrict_run_bash = true
