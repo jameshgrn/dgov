@@ -1,0 +1,21 @@
+[tasks.review-retry-supervision]
+summary = "Review settlement retry supervision fix"
+role = "reviewer"
+provider = "claude-sonnet-review"
+depends_on = ["tasks/implementation.retry-supervision"]
+prompt = """
+Orient:
+- Read the dependency diff for `tasks/implementation.retry-supervision`.
+- This is a bounded review of ledger bug #280 only: retry timeout, retry iteration budget, and retry-worker supervision behavior.
+- Do not run broad verification or generic test commands. Rely on the dependency diff and already-recorded targeted checks unless a finding requires one exact command to confirm.
+- Ignore unrelated pre-existing runner complexity and Sentrux score issues.
+
+Edit:
+1. Review whether the retry task still carries the original task supervision settings.
+2. Review whether retry launch now uses the same timeout/cancellation path as ordinary worker launches.
+3. Flag blockers first, especially behavior that would reintroduce a background retry worker, lose task-local budgets, or make settlement retry silently pass after a failed retry.
+
+Verify:
+- Verify by inspecting the dependency diff and targeted check evidence only.
+- If no blocker remains, call done with a concise approval and residual risk.
+"""
