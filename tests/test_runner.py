@@ -1427,6 +1427,45 @@ class TestVerificationScope:
             "required_verification_command": "uv run pytest tests/test_a.py -q",
         }
 
+    def test_settlement_retry_preserves_task_supervision_fields(self, tmp_path: Path):
+        """Settlement retry task has original iteration_budget and uses _run_with_timeout."""
+        task = DagTaskSpec(
+            slug="a",
+            summary="supervised task",
+            prompt="Do a",
+            commit_message="feat: a",
+            iteration_budget=12,
+            timeout_s=500,
+            files=DagFileSpec(create=("src/new.py",)),
+        )
+        runner = _make_runner(_dag({"a": task}))
+        captured_timeout_task = {}
+
+        async def mock_run_with_timeout(
+            task_slug,
+            pane_slug,
+            worktree_path,
+            timeout_task,
+            task_scope,
+            on_exit,
+            timeout_s,
+            on_event=None,
+        ):
+            captured_timeout_task["task"] = timeout_task
+            captured_timeout_task["timeout_s"] = timeout_s
+
+        with patch.object(runner, "_run_with_timeout", side_effect=mock_run_with_timeout):
+            asyncio.run(
+                runner._settlement_retry(
+                    MergeTask("a", "pane-a", ("src/new.py",)),
+                    Worktree(path=tmp_path, branch="dgov/a", commit="abc123"),
+                    "Lint failure:\nE501",
+                )
+            )
+
+        assert captured_timeout_task["task"].iteration_budget == 12
+        assert captured_timeout_task["timeout_s"] == 500
+
 
 class TestInterruptHandling:
     def test_handle_interrupt_marks_task_abandoned_during_shutdown(self):

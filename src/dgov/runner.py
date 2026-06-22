@@ -2220,17 +2220,11 @@ class EventDagRunner:
         sp.run(["git", "reset", "HEAD~1"], cwd=wt.path, capture_output=True)
 
         task = self.dag.tasks[action.task_slug]
-        retry_task = DagTaskSpec(
-            slug=action.task_slug,
-            summary=f"[retry] {task.summary}",
-            prompt=PromptBuilder.settlement_retry_prompt(task, settlement_error),
-            commit_message=task.commit_message,
-            depends_on=task.depends_on,
-            files=task.files,
-            agent=task.agent,
-            provider=task.provider,
-            timeout_s=task.timeout_s,
-            test_cmd=task.test_cmd,
+        retry_task = task.model_copy(
+            update={
+                "summary": f"[retry] {task.summary}",
+                "prompt": PromptBuilder.settlement_retry_prompt(task, settlement_error),
+            }
         )
         retry_pane_slug = f"{action.pane_slug}-retry"
         retry_scope = self._retry_scope(action.task_slug, task, retry_pane_slug)
@@ -2240,15 +2234,14 @@ class EventDagRunner:
             retry_scope["require_successful_test_verification"] = True
             retry_scope["required_verification_command"] = command
 
-        await run_headless_worker(
-            self.session_root,
-            self.dag.name,
+        await self._run_with_timeout(
             action.task_slug,
             retry_pane_slug,
             wt.path,
             retry_task,
             retry_scope,
             self._noop_retry_exit,
+            retry_task.timeout_s,
             on_event=self.on_event,
         )
 
