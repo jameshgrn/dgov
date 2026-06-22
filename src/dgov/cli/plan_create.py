@@ -265,6 +265,8 @@ async def _run_planner_subprocess(
     target_provider: str = "",
 ) -> dict | None:
     """Spawn planner subprocess and handle stdin/stdout protocol."""
+    from dgov.workers.headless import _SUBPROCESS_STREAM_LIMIT
+
     plan_data: dict | None = None
     proc = await asyncio.create_subprocess_exec(
         *_planner_command(
@@ -279,6 +281,7 @@ async def _run_planner_subprocess(
         stdin=asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.STDOUT,
         cwd=project_root,
+        limit=_SUBPROCESS_STREAM_LIMIT,
     )
 
     while True:

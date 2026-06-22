@@ -9,7 +9,12 @@ from typing import cast
 import pytest
 
 from dgov.dag_parser import DagFileSpec, DagTaskSpec
-from dgov.workers.headless import _config_json_for_task, _script_for_role, run_headless_worker
+from dgov.workers.headless import (
+    _SUBPROCESS_STREAM_LIMIT,
+    _config_json_for_task,
+    _script_for_role,
+    run_headless_worker,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -195,6 +200,9 @@ def test_run_headless_worker_uses_project_config_payload(
     task_scope_json = args[-1]
     assert isinstance(task_scope_json, str)
     assert json.loads(task_scope_json)["create"] == ["x.py"]
+    kwargs = captured.get("kwargs")
+    assert isinstance(kwargs, dict)
+    assert kwargs["limit"] == _SUBPROCESS_STREAM_LIMIT
     assert exits == [(0, "", 0, 0)]
 
 

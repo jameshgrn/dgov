@@ -30,6 +30,7 @@ _RESEARCHER_SCRIPT = Path(__file__).resolve().parent.parent / "researcher.py"
 _PLANNER_SCRIPT = Path(__file__).resolve().parent.parent / "planner.py"
 _WORKER_TERMINATE_GRACE_S = 3.0
 _WORKER_KILL_GRACE_S = 3.0
+_SUBPROCESS_STREAM_LIMIT = 16 * 1024 * 1024
 _CLAUDE_CODE_ENV_KEYS = (
     "HOME",
     "USER",
@@ -233,6 +234,7 @@ async def _launch_worker_subprocess(
         stderr=asyncio.subprocess.STDOUT,
         cwd=project_root,
         env=env,
+        limit=_SUBPROCESS_STREAM_LIMIT,
     )
     assert process.stdout is not None
     return process
