@@ -42,6 +42,23 @@ system level. Workers may be probabilistic. Governance should not be.
   may keep `.dgov/` local-only; core dgov must not require production repos to
   track dgov plan history.
 
+## Lacustrine Pillars
+
+These are the structural invariants enforced at every dgov layer. They are
+governance constraints — workers, reviewers, and settlement gates must preserve
+them when changing architecture, state, runner/worktree, worker, settlement,
+plan, or persistence boundaries.
+
+- **Pillar #1: Separation of Powers** — Governor plans; Worker implements; Settlement validates.
+- **Pillar #2: The Atomic Attempt** — Each task runs in an isolated worktree checkout.
+- **Pillar #3: Snapshot Isolation** — Each worktree has independent git state.
+- **Pillar #4: Determinism** — All plan inputs and dependencies are validated before dispatch.
+- **Pillar #6: Event-Sourced** — Every action and thought is emitted as an append-only event.
+- **Pillar #7: Zero Ambient Authority** — Workers execute sandboxed within their claimed worktree only.
+- **Pillar #8: Falsifiable Validation** — All work is machine-verified before merge.
+- **Pillar #9: Hot-Path** — Zero-latency async signaling; no polling or pipes.
+- **Pillar #10: Fail-Closed** — Invalid state is rejected immediately; never silently passed.
+
 ## Governor Invocation
 
 When operator direction is ambiguous, classify the work before dispatching.

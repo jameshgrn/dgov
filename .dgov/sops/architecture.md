@@ -29,3 +29,23 @@ priority: must
 ## Escalate
 - if fixing the model would broaden the task beyond its current file claims or plan scope
 - if a proposed state shape changes public interfaces or persistence semantics
+
+## Lacustrine Pillars
+
+Preserve the relevant Lacustrine Pillar headers when editing boundary modules.
+
+### When
+- editing runner, worker, settlement, worktree, plan, or persistence boundaries
+- refactoring code that touches module-level docstrings or file headers
+
+### Do
+- keep `Follows Lacustrine Pillars:` headers and `Pillar #N:` bullet lines intact in boundary files
+- confirm the file still satisfies the constraint named in each pillar comment after your change
+- flag any pillar whose constraint has become stale or is violated
+
+### Do Not
+- remove or reword pillar comments without a governance repair plan
+- add new pillars without updating `.dgov/governor.md` as the canonical source
+
+### Verify
+- `uv run pytest -q -m unit tests/test_boundaries.py` confirms pillar markers remain visible
