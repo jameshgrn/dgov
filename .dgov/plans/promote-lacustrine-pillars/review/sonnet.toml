@@ -1,0 +1,25 @@
+[tasks.sonnet]
+summary = "Review Lacustrine Pillars policy promotion"
+role = "reviewer"
+provider = "claude-sonnet-review"
+depends_on = ["tasks/policy.policy"]
+timeout_s = 1500
+files.read = [
+  ".dgov/governor.md",
+  ".dgov/sops/architecture.md",
+  "tests/test_boundaries.py",
+]
+prompt = """
+Orient:
+- Review only the dependency diff for `tasks/policy.policy`.
+- This is a bounded review of policy promotion, not a broad architecture rewrite.
+- Do not run broad verification; rely on the dependency diff and recorded targeted checks unless one exact command is required to confirm a blocker.
+
+Edit:
+1. Check that `.dgov/governor.md` and `.dgov/sops/architecture.md` now expose the Lacustrine Pillars as policy constraints.
+2. Check that the worker did not invent an unsupported missing pillar definition.
+3. Check that the boundary test covers the policy surfaces without becoming brittle outside the intended contract.
+
+Verify:
+- If no blocker remains, call done with `{"approved": true, "issues": []}` and note residual risk.
+"""
