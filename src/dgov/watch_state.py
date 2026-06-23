@@ -18,7 +18,7 @@ _KNOWN_FIELDS = frozenset({"id", "ts", "event", "pane", "plan_name", "task_slug"
 
 @dataclass(frozen=True)
 class PlanSwitchUpdate:
-    """Emitted by follow mode when the tracked plan changes."""
+    """Emitted when watch selects or switches the tracked plan."""
 
     from_plan: str | None
     to_plan: str | None
@@ -68,6 +68,7 @@ class WatchSession:
 
     _cursor: int = field(default=0, init=False, repr=False)
     _active_plan: str | None = field(default=None, init=False, repr=False)
+    _pending_selection_plan: str | None = field(default=None, init=False, repr=False)
 
     @property
     def active_plan(self) -> str | None:
@@ -82,11 +83,13 @@ class WatchSession:
         if self.mode == "all":
             self._cursor = 0
             self._active_plan = None
+            self._pending_selection_plan = None
             return
 
         if self.mode == "pinned":
             self._active_plan = self.pinned_plan
             self._cursor = _run_start_cursor(self.project_root, self.pinned_plan or "")
+            self._pending_selection_plan = self.pinned_plan
             return
 
         # follow mode: pick up a live plan if exactly one exists
@@ -95,8 +98,10 @@ class WatchSession:
             plan = next(iter(live))
             self._active_plan = plan
             self._cursor = _run_start_cursor(self.project_root, plan)
+            self._pending_selection_plan = plan
         else:
             self._active_plan = None
+            self._pending_selection_plan = None
             self._cursor = latest_event_id(self.project_root)
 
     def poll(self) -> list[PlanSwitchUpdate | EventRowUpdate]:
@@ -117,14 +122,14 @@ class WatchSession:
 
     def _poll_pinned(self) -> list[PlanSwitchUpdate | EventRowUpdate]:
         rows = read_events(self.project_root, after_id=self._cursor, plan_name=self._active_plan)
-        updates: list[PlanSwitchUpdate | EventRowUpdate] = []
+        updates = self._pop_pending_selection()
         for row in rows:
             self._cursor = max(self._cursor, int(row.get("id", 0)))
             updates.append(_to_event_row(row))
         return updates
 
     def _poll_follow(self) -> list[PlanSwitchUpdate | EventRowUpdate]:
-        updates: list[PlanSwitchUpdate | EventRowUpdate] = []
+        updates = self._pop_pending_selection()
         live = live_plan_names(self.project_root)
 
         if self._active_plan is None:
@@ -151,3 +156,10 @@ class WatchSession:
             self._cursor = _run_start_cursor(self.project_root, new_plan)
 
         return updates
+
+    def _pop_pending_selection(self) -> list[PlanSwitchUpdate | EventRowUpdate]:
+        if self._pending_selection_plan is None:
+            return []
+        selected = self._pending_selection_plan
+        self._pending_selection_plan = None
+        return [PlanSwitchUpdate(from_plan=None, to_plan=selected)]

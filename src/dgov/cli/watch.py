@@ -77,6 +77,7 @@ _VERIFY_TOOLS = frozenset({
 @dataclass
 class _TerminalWatchState:
     last_task: str = ""
+    suppress_initial_selection: bool = False
 
 
 def _get_task_color(slug: str) -> str:
@@ -549,7 +550,9 @@ def _cmd_watch(
     """Stream events from the current run. Open in a second tab."""
     session = _new_watch_session(project_root, watch_all=watch_all, plan_name=plan_name)
     emit_ndjson = ndjson or want_json()
-    terminal_state = _TerminalWatchState()
+    terminal_state = _TerminalWatchState(
+        suppress_initial_selection=session.active_plan is not None
+    )
     agents: dict[str, str] = {}
     if not emit_ndjson:
         console.print("dgov watch", style="bold cyan")
@@ -627,6 +630,10 @@ def _print_terminal_updates(
 def _print_watch_plan_switch(update: PlanSwitchUpdate, state: _TerminalWatchState) -> None:
     state.last_task = ""
     _TASK_COLORS.clear()
+    if update.from_plan is None and state.suppress_initial_selection:
+        state.suppress_initial_selection = False
+        return
+    state.suppress_initial_selection = False
     if update.from_plan and update.to_plan:
         console.print(
             f"\n  --- [bold]following plan: {update.from_plan} -> {update.to_plan}[/bold] ---\n",

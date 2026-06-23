@@ -34,6 +34,20 @@ def _slugs(updates: list) -> list[str | None]:
 # ── follow mode ───────────────────────────────────────────────────────────────
 
 
+def test_follow_startup_live_plan_emits_initial_selection(tmp_path: Path) -> None:
+    """A live plan at startup yields a plan_selected control update before events."""
+    root = str(tmp_path)
+    emit_event(root, "run_start", "run-a-1", plan_name="plan-a")
+    emit_event(root, "dag_task_dispatched", "pane-a", plan_name="plan-a", task_slug="task-a")
+
+    session = WatchSession(project_root=root, mode="follow")
+    session.initialize()
+
+    updates = session.poll()
+    assert _switches(updates) == [(None, "plan-a")]
+    assert _slugs(updates) == ["task-a"]
+
+
 def test_follow_switches_plan_a_to_plan_b(tmp_path: Path) -> None:
     """PlanSwitchUpdate emitted when plan A finishes and plan B becomes sole live plan."""
     root = str(tmp_path)
@@ -72,6 +86,7 @@ def test_follow_no_stale_plan_a_events_after_switch(tmp_path: Path) -> None:
     assert session.active_plan == "plan-b"
 
     updates = session.poll()
+    assert _switches(updates) == [(None, "plan-b")]
     assert "plan-a" not in _plan_names(updates)
     assert "fresh-b" in _slugs(updates)
 
@@ -93,7 +108,7 @@ def test_pinned_stays_pinned_ignores_new_live_plan(tmp_path: Path) -> None:
     emit_event(root, "dag_task_dispatched", "pane-b", plan_name="plan-b", task_slug="task-b")
 
     updates = session.poll()
-    assert _switches(updates) == []
+    assert _switches(updates) == [(None, "plan-a")]
     assert "plan-b" not in _plan_names(updates)
     assert session.active_plan == "plan-a"
 
