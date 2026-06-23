@@ -200,8 +200,7 @@ def test_run_headless_worker_uses_project_config_payload(
     task_scope_json = args[-1]
     assert isinstance(task_scope_json, str)
     assert json.loads(task_scope_json)["create"] == ["x.py"]
-    kwargs = captured.get("kwargs")
-    assert isinstance(kwargs, dict)
+    kwargs = cast(dict[str, object], captured.get("kwargs", {}))
     assert kwargs["limit"] == _SUBPROCESS_STREAM_LIMIT
     assert exits == [(0, "", 0, 0)]
 
