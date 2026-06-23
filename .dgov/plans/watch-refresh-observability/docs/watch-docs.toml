@@ -1,0 +1,23 @@
+[tasks.watch-docs]
+summary = "Document refreshed watch behavior, NDJSON output, and the Swift app boundary."
+depends_on = ["cli/watch-cli.watch-cli-stream"]
+prompt = """
+Orient:
+- Read `README.md`, `docs/docs/pages/cli-reference.mdx`, and `docs/docs/pages/getting-started.mdx`.
+- Read `src/dgov/cli/watch.py` and `src/dgov/watch_state.py` only to confirm the final flag names and stream fields.
+- Do not add Swift, Xcode, package, or macOS app behavior to core dgov.
+
+Edit:
+1. Update README watch examples to describe default live-plan following, `--plan`, `--all`, `--root`, and `--ndjson`.
+2. Update CLI docs for `dgov watch` with the same behavior and a compact NDJSON contract example.
+3. Add a short architecture note or docs section explaining that a future Swift macOS app should consume the `dgov watch --ndjson` subprocess contract first. Mention direct read-only SQLite WAL access as possible later, but not the first implementation, because it duplicates Python-owned event semantics.
+4. Keep the note concise and avoid adding any Swift/Xcode implementation instructions.
+
+Verify:
+- `uv run ruff check README.md docs/docs/pages/cli-reference.mdx docs/docs/pages/getting-started.mdx`
+- `uv run ruff format --check README.md docs/docs/pages/cli-reference.mdx docs/docs/pages/getting-started.mdx`
+"""
+commit_message = "Document watch NDJSON stream contract"
+files.edit = ["README.md", "docs/docs/pages/cli-reference.mdx", "docs/docs/pages/getting-started.mdx"]
+files.read = ["src/dgov/cli/watch.py", "src/dgov/watch_state.py"]
+

@@ -1,0 +1,42 @@
+[tasks.watch-state-model]
+summary = "Add a non-Rich watch stream model with plan-following and latest-run window semantics."
+prompt = """
+Orient:
+- Read `src/dgov/cli/watch.py`, especially `_default_watch_state()`, `_refresh_watch_plan_filter()`, and `_print_new_watch_events()`.
+- Read `src/dgov/live_state.py`, especially `latest_run_start_ids()` and `live_plan_names()`.
+- Read `src/dgov/persistence/events.py` to confirm `read_events()` remains a dict-returning persistence API.
+- The governor invariant is `stale_run_window`: plan-scoped event reads must lower-bound on the latest `run_start` id for that plan and must not truncate or mutate persisted events.
+- Do not import Rich, Click, or CLI rendering code from the new model layer.
+
+Edit:
+1. Create `src/dgov/watch_state.py` as a small non-Rich model/stream layer for `dgov watch`.
+2. Model three modes: default follow mode, pinned plan mode, and all-plan mode.
+3. In follow mode, select the single current live plan from `live_plan_names(project_root)`. If no single live plan exists at idle startup, initialize the cursor from `latest_event_id(project_root)` so old history is not replayed.
+4. In follow mode, keep following the active plan while it emits events. When the prior plan has completed and a new single live plan appears, switch to the new plan automatically and emit a control update that callers can render as a divider.
+5. In pinned mode, always remain pinned to the requested plan.
+6. In all-plan mode, preserve all-history/all-plan behavior.
+7. For plan-scoped modes, suppress stale prior runs by using the latest `run_start` id for the selected plan as the lower bound. If no `run_start` exists for a plan, fall back to id 0 for legacy databases.
+8. Expose normalized line-ready updates for callers, including plan selection/switch updates and event-row updates. Event rows should carry at least `id`, `ts`, `event`, `pane`, `plan_name`, `task_slug`, and a JSON-safe `payload` that preserves the remaining raw event fields.
+9. Keep `read_events()` unchanged and continue to consume its existing dict rows.
+10. Add `tests/test_watch_state.py` covering:
+    - sequential default follow switches from plan A to plan B without replaying stale plan A history;
+    - pinned `--plan` stays on the pinned plan and ignores a new live plan;
+    - `--all` returns all-plan history;
+    - idle-to-active follow starts from the latest id and then follows the new live plan;
+    - stale prior run suppression for a plan with multiple `run_start` markers.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_watch_state.py tests/test_live_state.py -k "watch or live_plan_names"`
+- `uv run ruff check src/dgov/watch_state.py tests/test_watch_state.py`
+- `uv run ruff format --check src/dgov/watch_state.py tests/test_watch_state.py`
+"""
+commit_message = "Add watch stream state model"
+files.create = ["src/dgov/watch_state.py", "tests/test_watch_state.py"]
+files.read = [
+    "src/dgov/cli/watch.py",
+    "src/dgov/live_state.py",
+    "src/dgov/persistence/events.py",
+    "tests/test_live_state.py",
+]
+test_cmd = "uv run pytest -q -m unit tests/test_watch_state.py tests/test_live_state.py -k \"watch or live_plan_names\""
+

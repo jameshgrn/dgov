@@ -1,0 +1,5 @@
+[plan]
+name = "watch-refresh-observability"
+summary = "Modernize dgov watch plan following, latest-run scoping, and app-ready NDJSON output."
+sections = ["core", "cli", "docs"]
+
