@@ -27,6 +27,7 @@ from dgov.cli.watch import (
     _format_event,
     _infer_plan_name_from_active_tasks,
     _ndjson_payload,
+    _print_ndjson_updates,
 )
 from dgov.event_types import (
     IntegrationRiskScored,
@@ -1803,6 +1804,31 @@ def test_ndjson_payload_formats_event_row() -> None:
         "task_slug": "tasks/main.a",
         "payload": {"log_type": "thought", "content": "checking"},
     }
+
+
+def test_print_ndjson_updates_emits_line_delimited_json(capsys: pytest.CaptureFixture) -> None:
+    _print_ndjson_updates(
+        [
+            PlanSwitchUpdate(from_plan=None, to_plan="plan-a"),
+            EventRowUpdate(
+                id=12,
+                ts="2026-04-24T12:34:56Z",
+                event="worker_log",
+                pane="pane-a",
+                plan_name="plan-a",
+                task_slug="tasks/main.a",
+                payload={"log_type": "thought", "content": "checking"},
+            ),
+        ],
+        "follow",
+    )
+
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert rows[0]["type"] == "plan_selected"
+    assert rows[0]["plan_name"] == "plan-a"
+    assert rows[1]["type"] == "event"
+    assert rows[1]["event"] == "worker_log"
+    assert rows[1]["payload"] == {"log_type": "thought", "content": "checking"}
 
 
 def test_format_event_shows_successful_verify_tool_results() -> None:
