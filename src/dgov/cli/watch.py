@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,7 +16,7 @@ from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 
-from dgov.cli import cli, load_project_config_or_exit
+from dgov.cli import cli, load_project_config_or_exit, want_json
 from dgov.event_types import (
     DgovEvent,
     EvtTaskDispatched,
@@ -42,9 +44,9 @@ from dgov.event_types import (
     deserialize_event,
 )
 from dgov.live_state import live_plan_names
-from dgov.persistence import latest_event_id, read_events
 from dgov.project_root import resolve_project_root
 from dgov.semantic_settlement import describe_evidence_payload
+from dgov.watch_state import EventRowUpdate, PlanSwitchUpdate, WatchMode, WatchSession
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
@@ -73,9 +75,7 @@ _VERIFY_TOOLS = frozenset({
 
 
 @dataclass
-class _WatchState:
-    active_plan_name: str | None
-    last_id: int
+class _TerminalWatchState:
     last_task: str = ""
 
 
@@ -100,31 +100,31 @@ def _default_watch_state(
     plan_name: str | None,
 ) -> tuple[str | None, int]:
     """Return the initial plan filter and event cursor for watch mode."""
-    if plan_name:
-        return plan_name, 0
-    if watch_all:
-        return None, 0
-    inferred_plan_name = _infer_plan_name_from_active_tasks(project_root)
-    if inferred_plan_name:
-        return inferred_plan_name, 0
-    return None, latest_event_id(project_root)
+    session = _new_watch_session(project_root, watch_all=watch_all, plan_name=plan_name)
+    return session.active_plan, session.cursor
 
 
 @cli.command(name="watch")
 @click.option("--all", "watch_all", is_flag=True, help="Stream all plans and history")
 @click.option("--plan", "plan_name", help="Stream only events for this plan name")
+@click.option("--ndjson", is_flag=True, help="Stream line-delimited JSON for app integrations")
 @click.option(
     "--root",
     "root_path",
     type=click.Path(path_type=Path, exists=True),
     help="Project root or path inside the repo whose state DB you want to watch",
 )
-def watch_cmd(watch_all: bool, plan_name: str | None, root_path: Path | None) -> None:
+def watch_cmd(
+    watch_all: bool,
+    plan_name: str | None,
+    ndjson: bool,
+    root_path: Path | None,
+) -> None:
     """Stream governor events in real time."""
     project_root = (
         resolve_project_root(root_path) if root_path is not None else resolve_project_root()
     )
-    _cmd_watch(str(project_root), watch_all=watch_all, plan_name=plan_name)
+    _cmd_watch(str(project_root), watch_all=watch_all, plan_name=plan_name, ndjson=ndjson)
 
 
 def _clean_slug(slug: str) -> str:
@@ -544,31 +544,52 @@ def _cmd_watch(
     project_root: str,
     watch_all: bool = False,
     plan_name: str | None = None,
+    ndjson: bool = False,
 ) -> None:
     """Stream events from the current run. Open in a second tab."""
-    console.print("dgov watch", style="bold cyan")
-    config = load_project_config_or_exit(project_root)
-    agents = config.agents if config else {}
-    state = _initial_watch_state(project_root, watch_all, plan_name)
-    _print_watch_scope(watch_all, plan_name, state.active_plan_name)
+    session = _new_watch_session(project_root, watch_all=watch_all, plan_name=plan_name)
+    emit_ndjson = ndjson or want_json()
+    terminal_state = _TerminalWatchState()
+    agents: dict[str, str] = {}
+    if not emit_ndjson:
+        console.print("dgov watch", style="bold cyan")
+        config = load_project_config_or_exit(project_root)
+        agents = config.agents if config else {}
+        _print_watch_scope(watch_all, plan_name, session.active_plan)
 
     try:
         while True:
-            _refresh_watch_plan_filter(project_root, state, watch_all, plan_name)
-            _reset_watch_state_if_needed(project_root, state, watch_all, plan_name)
-            _print_new_watch_events(project_root, state, agents)
+            updates = session.poll()
+            if emit_ndjson:
+                _print_ndjson_updates(updates, session.mode)
+            else:
+                _print_terminal_updates(updates, terminal_state, agents)
             time.sleep(0.5)
     except KeyboardInterrupt:
-        console.print("\n[dim]stopped watch[/dim]")
+        if not emit_ndjson:
+            console.print("\n[dim]stopped watch[/dim]")
 
 
-def _initial_watch_state(
+def _watch_mode(watch_all: bool, plan_name: str | None) -> WatchMode:
+    if watch_all:
+        return "all"
+    if plan_name:
+        return "pinned"
+    return "follow"
+
+
+def _new_watch_session(
     project_root: str,
     watch_all: bool,
     plan_name: str | None,
-) -> _WatchState:
-    active_plan_name, last_id = _default_watch_state(project_root, watch_all, plan_name)
-    return _WatchState(active_plan_name=active_plan_name, last_id=last_id)
+) -> WatchSession:
+    session = WatchSession(
+        project_root=project_root,
+        mode=_watch_mode(watch_all, plan_name),
+        pinned_plan=plan_name,
+    )
+    session.initialize()
+    return session
 
 
 def _print_watch_scope(
@@ -587,46 +608,84 @@ def _print_watch_scope(
     console.print("  (Ctrl-C to exit)\n", style="dim")
 
 
-def _refresh_watch_plan_filter(
-    project_root: str,
-    state: _WatchState,
-    watch_all: bool,
-    plan_name: str | None,
-) -> None:
-    if state.active_plan_name is None and not watch_all and plan_name is None:
-        state.active_plan_name = _infer_plan_name_from_active_tasks(project_root)
-
-
-def _reset_watch_state_if_needed(
-    project_root: str,
-    state: _WatchState,
-    watch_all: bool,
-    plan_name: str | None,
-) -> None:
-    current_max = latest_event_id(project_root)
-    if current_max >= state.last_id:
-        return
-
-    console.print("\n  --- [bold]new run[/bold] ---\n", style="dim")
-    state.last_id = 0
-    state.last_task = ""
-    _TASK_COLORS.clear()
-    if not watch_all and plan_name is None:
-        state.active_plan_name, state.last_id = _default_watch_state(project_root, False, None)
-
-
-def _print_new_watch_events(
-    project_root: str,
-    state: _WatchState,
+def _print_terminal_updates(
+    updates: list[PlanSwitchUpdate | EventRowUpdate],
+    state: _TerminalWatchState,
     agents: dict[str, str],
 ) -> None:
-    events = read_events(project_root, after_id=state.last_id, plan_name=state.active_plan_name)
-    for event in events:
-        state.last_id = max(state.last_id, event.get("id", 0))
+    for update in updates:
+        if isinstance(update, PlanSwitchUpdate):
+            _print_watch_plan_switch(update, state)
+            continue
+        event = _event_row_to_raw(update)
         typed_event = deserialize_event(event)
         line = _format_event(typed_event, _watch_event_time(event), agents=agents)
         if line is not None:
             _print_watch_event_line(typed_event, line, state)
+
+
+def _print_watch_plan_switch(update: PlanSwitchUpdate, state: _TerminalWatchState) -> None:
+    state.last_task = ""
+    _TASK_COLORS.clear()
+    if update.from_plan and update.to_plan:
+        console.print(
+            f"\n  --- [bold]following plan: {update.from_plan} -> {update.to_plan}[/bold] ---\n",
+            style="dim",
+        )
+        return
+    if update.to_plan:
+        console.print(f"\n  --- [bold]following plan: {update.to_plan}[/bold] ---\n", style="dim")
+
+
+def _print_ndjson_updates(
+    updates: list[PlanSwitchUpdate | EventRowUpdate],
+    mode: WatchMode,
+) -> None:
+    for update in updates:
+        sys.stdout.write(json.dumps(_ndjson_payload(update, mode), sort_keys=True, default=str))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
+def _ndjson_payload(
+    update: PlanSwitchUpdate | EventRowUpdate,
+    mode: WatchMode,
+) -> dict[str, object]:
+    if isinstance(update, PlanSwitchUpdate):
+        row_type = "plan_switch" if update.from_plan else "plan_selected"
+        return {
+            "type": row_type,
+            "mode": mode,
+            "from_plan": update.from_plan,
+            "to_plan": update.to_plan,
+            "plan_name": update.to_plan,
+        }
+    return {
+        "type": "event",
+        "mode": mode,
+        "id": update.id,
+        "ts": update.ts,
+        "event": update.event,
+        "pane": update.pane,
+        "plan_name": update.plan_name,
+        "task_slug": update.task_slug,
+        "payload": update.payload,
+    }
+
+
+def _event_row_to_raw(update: EventRowUpdate) -> dict[str, object]:
+    event: dict[str, object] = {
+        "id": update.id,
+        "ts": update.ts,
+        "event": update.event,
+        "pane": update.pane,
+        **update.payload,
+    }
+    if update.plan_name is not None:
+        event["plan_name"] = update.plan_name
+    if update.task_slug is not None:
+        event["task_slug"] = update.task_slug
+    return event
 
 
 def _watch_event_time(event: dict[str, object]) -> str:
@@ -637,7 +696,7 @@ def _watch_event_time(event: dict[str, object]) -> str:
 def _print_watch_event_line(
     event: DgovEvent,
     line: RenderableType,
-    state: _WatchState,
+    state: _TerminalWatchState,
 ) -> None:
     task = getattr(event, "task_slug", "")
     if isinstance(event, EvtTaskDispatched) and state.last_task:

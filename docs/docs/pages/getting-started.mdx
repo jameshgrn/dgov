@@ -249,13 +249,20 @@ copy and prints a note to stderr.
 ```bash
 dgov status              # one-line summary of the active run
 dgov --json status       # same, as JSON
-dgov watch               # tail the event log live
+dgov watch               # follow the current live plan
+dgov watch --ndjson      # stream app-ready line-delimited JSON
 dgov tools audit         # summarize worker tool-call telemetry
 dgov clean               # remove stale worktrees and outputs
 ```
 
 `status`, `watch`, and `clean` derive state from the event log, not from
 mutable task snapshots. The event log is the authority.
+
+`dgov watch` follows the single current live plan by default and switches to a
+new single live plan when sequential plan runs advance. Use `--plan` to pin one
+plan, `--all` for all-plan history, and `--root` to watch another checkout/root.
+Use `--ndjson` when another process, such as a future desktop app, needs a
+stable line-delimited stream.
 
 Recovery flows through `dgov run`:
 

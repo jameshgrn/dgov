@@ -378,16 +378,35 @@ tasks:
 ### `dgov watch`
 
 Stream events in real time. Run this in a second terminal while a plan is
-executing.
+executing. With no flags, `watch` follows the single current live plan. When
+that plan completes and a new single live plan starts, the watcher switches to
+the new plan and prints a divider.
 
 ```bash
-dgov watch
-dgov watch --all      # include events from all plans
-dgov watch --plan my-plan
+dgov watch                    # follow the current live plan
+dgov watch --all              # include events from all plans
+dgov watch --plan my-plan     # pin one plan
+dgov watch --root ../repo     # watch another checkout/root
+dgov watch --ndjson           # emit line-delimited JSON
 ```
 
 `watch` polls the SQLite event log in WAL mode, so it does not block the
-runner.
+runner. Plan-scoped modes read from the latest `run_start` for that plan, so a
+rerun does not replay stale prior-run events. If `watch` starts while no single
+live plan exists, it tails from the current latest event id until a single live
+plan appears.
+
+`--ndjson` is the app integration contract. It emits one JSON object per line:
+
+```json
+{"type":"plan_selected","mode":"follow","from_plan":null,"to_plan":"my-plan","plan_name":"my-plan"}
+{"type":"event","mode":"follow","id":42,"ts":"2026-06-23T16:00:00Z","event":"worker_log","pane":"pane-a","plan_name":"my-plan","task_slug":"tasks/main","payload":{"log_type":"thought","content":"reading files"}}
+```
+
+For a future Swift macOS app, prefer consuming `dgov watch --ndjson` as a
+subprocess first. Direct read-only SQLite WAL access is possible later, but it
+should not be the first implementation because it would duplicate the
+Python-owned plan-following, latest-run, and event-normalization semantics.
 
 ### `dgov tools audit`
 
