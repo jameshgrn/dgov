@@ -1,0 +1,36 @@
+[tasks.archive-ergonomics]
+summary = "Analyze archive ergonomics and generated artifact expectations"
+role = "researcher"
+provider = "claude-sonnet-plan"
+files.read = [
+  ".dgov/governor.md",
+  ".dgov/.gitignore",
+  "src/dgov/archive.py",
+  "src/dgov/cli/run.py",
+  "src/dgov/cli/fix.py",
+  "tests/test_archive.py",
+  "tests/test_cli_fix.py",
+  "tests/test_cli.py",
+]
+prompt = """
+Orient:
+- Read the user feedback in this prompt. Treat it as dogfood evidence from orbitopo.
+- Read archive and post-run lifecycle code in `src/dgov/archive.py`, `src/dgov/cli/run.py`, and `src/dgov/cli/fix.py`.
+- Read `.dgov/.gitignore`, archive tests, and fix/run lifecycle tests relevant to completed plan archive moves.
+
+Feedback to analyze:
+- Successful runs leave an expected dirty archive move. Mechanically fine, but it feels like extra bookkeeping every time.
+- A command like `dgov archive-plan --commit` or `dgov run --commit-archive` would reduce ceremony.
+- `_compiled.toml` is ignored in live plans but tracked in archives. That may be intentional, but it is surprising until learned.
+- Archive flow is valuable because completed plans remain inspectable and old degraded state stays available for postmortem.
+
+Research:
+1. Identify current archive behavior, gitignore behavior, and where dirty archive moves are surfaced.
+2. Evaluate `archive-plan --commit`, `run --commit-archive`, and automatic commit options against dgov principles.
+3. Explain whether archived `_compiled.toml` should remain ignored or tracked, and what messaging would make the behavior unsurprising.
+4. Recommend one narrow implementation plan with files/tests.
+
+Verify:
+- Read-only research only. Do not edit files.
+- Call done with a ranked recommendation and why it preserves auditable governance history.
+"""

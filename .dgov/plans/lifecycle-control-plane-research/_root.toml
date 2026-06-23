@@ -1,0 +1,5 @@
+[plan]
+name = "lifecycle-control-plane-research"
+summary = "Research first-class lifecycle states and governor UX improvements from orbitopo dogfood feedback."
+sections = ["research"]
+default_provider = "claude-sonnet-plan"
