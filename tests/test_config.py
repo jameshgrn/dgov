@@ -120,7 +120,7 @@ def _assert_source_default_claude_provider(pc: ProjectConfig) -> None:
     assert pc.llm_provider == "claude"
     assert pc.default_agent == "sonnet"
     assert provider.default_agent == "sonnet"
-    assert provider.base_url == "claude-code://daily?max_turns=32"
+    assert provider.base_url == "claude-code://daily?max_turns=32&timeout=1200"
     assert provider.api_key_env == ""
     assert provider.requires_api_key() is False
     assert pc.agents["claude"] == "sonnet"
@@ -445,25 +445,25 @@ base_url = "claude-code://fast?preset=edit"
             pc,
             "claude-haiku-worker",
             agent="haiku",
-            base_url="claude-code://fast?preset=edit&max_turns=18",
+            base_url="claude-code://fast?preset=edit&max_turns=18&timeout=1200",
         )
         _assert_source_claude_code_provider(
             pc,
             "claude-haiku-plan",
             agent="haiku",
-            base_url="claude-code://fast?preset=plan&max_turns=18",
+            base_url="claude-code://fast?preset=plan&max_turns=18&timeout=1200",
         )
         _assert_source_claude_code_provider(
             pc,
             "claude-sonnet-review",
             agent="sonnet",
-            base_url="claude-code://daily?preset=review&max_turns=32",
+            base_url="claude-code://daily?preset=review&max_turns=32&timeout=1200",
         )
         _assert_source_claude_code_provider(
             pc,
             "claude-sonnet-plan",
             agent="sonnet",
-            base_url="claude-code://daily?preset=plan&max_turns=32",
+            base_url="claude-code://daily?preset=plan&max_turns=32&timeout=1200",
         )
 
     def test_rejects_unknown_selected_provider(self, tmp_path):
