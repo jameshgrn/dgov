@@ -14,8 +14,9 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from runner_helpers import InterruptGovernor, MergeTask
 
-from dgov.actions import InterruptGovernor, MergeTask
+from dgov.command_facts import CommandExecutionFact
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
 from dgov.dispatch_run import DispatchRun
 from dgov.persistence import (
@@ -24,7 +25,9 @@ from dgov.persistence import (
     get_dispatch_run,
     save_dispatch_run,
 )
-from dgov.runner import EventDagRunner, _ForkProvenance, _test_failure_command
+from dgov.runner import EventDagRunner
+from dgov.runner_support import ForkProvenance, parse_test_failure_command
+from dgov.settlement import GateResult
 from dgov.types import TaskState, WorkerExit, Worktree
 
 # ---------------------------------------------------------------------------
@@ -62,6 +65,74 @@ def _task(
 
 def _single_dag() -> DagDefinition:
     return _dag({"a": _task("a")})
+
+
+def _candidate_validation_test_fact() -> CommandExecutionFact:
+    return CommandExecutionFact(
+        gate="test",
+        source="project.test_cmd",
+        command="uv run pytest -q tests/test_candidate.py",
+        outcome="completed",
+        duration_s=1.25,
+        exit_code=1,
+    )
+
+
+def _candidate_validation_fail_validator(call_count: dict[str, int]):
+    def _validate_with_candidate_fail(
+        wt_path,
+        base_commit,
+        project_root,
+        config=None,
+        **_kwargs,
+    ):
+        call_count["count"] += 1
+        if call_count["count"] == 1:
+            return GateResult(passed=True)
+        return GateResult(
+            passed=False,
+            error="Candidate gate failed",
+            facts=(_candidate_validation_test_fact(),),
+        )
+
+    return _validate_with_candidate_fail
+
+
+def _candidate_validation_pass_facts() -> tuple[dict[str, object], ...]:
+    return (
+        {
+            "gate": "test",
+            "source": "project.test_cmd",
+            "command": "uv run pytest -q tests/test_candidate.py",
+            "outcome": "completed",
+            "duration_s": 1.5,
+            "exit_code": 0,
+        },
+    )
+
+
+def _candidate_validation_success_result() -> Any:
+    from dgov.worktree import IntegrationCandidateResult
+
+    return IntegrationCandidateResult(
+        passed=True,
+        candidate_path=Path("/tmp/candidate"),
+        candidate_sha="candidate123",
+    )
+
+
+def _emitted_events(mock_emit: MagicMock, event_type: str) -> list[Any]:
+    return [
+        c.args[1]
+        for c in mock_emit.call_args_list
+        if getattr(c.args[1], "event_type", None) == event_type
+    ]
+
+
+def _emitted_settlement_phase(mock_emit: MagicMock, phase: str) -> Any:
+    return next(
+        e for e in _emitted_events(mock_emit, "settlement_phase_completed") if e.phase == phase
+    )
 
 
 def _chain_dag() -> DagDefinition:
@@ -702,7 +773,7 @@ class TestDispatchRunRecording:
             ctx=ctx,
         )
 
-        ctx.provenance = _ForkProvenance(first.id)
+        ctx.provenance = ForkProvenance(first.id)
         ctx.fork_depth = 1
         second = runner._mint_dispatch_run(
             task_slug="a",
@@ -846,6 +917,36 @@ api_key_env = "OPENAI_API_KEY"
         runner = EventDagRunner(dag, session_root=str(tmp_path))
         monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        asyncio.run(runner._check_model_env())
+
+    def test_preflight_skips_api_key_for_claude_code_provider(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            """
+[project]
+provider = "local"
+
+[providers.local]
+base_url = "http://localhost:8080/v1"
+api_key_env = "LOCAL_LLM_API_KEY"
+
+[providers.claude-sonnet-review]
+default_agent = "sonnet"
+base_url = "claude-code://daily?preset=review"
+"""
+        )
+        dag = DagDefinition(
+            name="preflight",
+            dag_file="test.toml",
+            project_root=str(tmp_path),
+            session_root=str(tmp_path),
+            tasks={"a": _task("a", provider="claude-sonnet-review")},
+        )
+        runner = EventDagRunner(dag, session_root=str(tmp_path))
+        monkeypatch.delenv("LOCAL_LLM_API_KEY", raising=False)
         asyncio.run(runner._check_model_env())
 
 
@@ -1288,12 +1389,12 @@ class TestVerificationScope:
 
     def test_test_failure_command_parses_settlement_error(self):
         assert (
-            _test_failure_command(
+            parse_test_failure_command(
                 "Test failure from `uv run pytest tests/test_a.py -q`:\nFAILED test_a"
             )
             == "uv run pytest tests/test_a.py -q"
         )
-        assert _test_failure_command("Lint failure:\nE501") is None
+        assert parse_test_failure_command("Lint failure:\nE501") is None
 
     def test_settlement_retry_requires_successful_tests_after_test_failure(self, tmp_path: Path):
         """Settlement retry sets required test verification when tests previously failed."""
@@ -1326,6 +1427,45 @@ class TestVerificationScope:
             "required_verification_command": "uv run pytest tests/test_a.py -q",
         }
 
+    def test_settlement_retry_preserves_task_supervision_fields(self, tmp_path: Path):
+        """Settlement retry task has original iteration_budget and uses _run_with_timeout."""
+        task = DagTaskSpec(
+            slug="a",
+            summary="supervised task",
+            prompt="Do a",
+            commit_message="feat: a",
+            iteration_budget=12,
+            timeout_s=500,
+            files=DagFileSpec(create=("src/new.py",)),
+        )
+        runner = _make_runner(_dag({"a": task}))
+        captured_timeout_task = {}
+
+        async def mock_run_with_timeout(
+            task_slug,
+            pane_slug,
+            worktree_path,
+            timeout_task,
+            task_scope,
+            on_exit,
+            timeout_s,
+            on_event=None,
+        ):
+            captured_timeout_task["task"] = timeout_task
+            captured_timeout_task["timeout_s"] = timeout_s
+
+        with patch.object(runner, "_run_with_timeout", side_effect=mock_run_with_timeout):
+            asyncio.run(
+                runner._settlement_retry(
+                    MergeTask("a", "pane-a", ("src/new.py",)),
+                    Worktree(path=tmp_path, branch="dgov/a", commit="abc123"),
+                    "Lint failure:\nE501",
+                )
+            )
+
+        assert captured_timeout_task["task"].iteration_budget == 12
+        assert captured_timeout_task["timeout_s"] == 500
+
 
 class TestInterruptHandling:
     def test_handle_interrupt_marks_task_abandoned_during_shutdown(self):
@@ -1349,17 +1489,17 @@ class TestInterruptHandling:
         assert event.reason == "shutdown"
 
     def test_adaptive_rate_limit_fails_fast_even_with_retries_remaining(self):
-        """Fireworks adaptive TPM errors should fail immediately, not retry."""
-        from dgov.actions import GovernorAction
-        from dgov.event_types import GovernorResumed
+        """Configured provider token-limit errors should fail immediately, not retry."""
+        from runner_helpers import GovernorAction, GovernorResumed
 
         with _io_patches(), patch("dgov.runner.emit_event") as mock_emit:
             runner = _make_runner(_single_dag())
             runner.kernel.task_states["a"] = TaskState.ACTIVE
             runner._ctx("a").attempts = 0  # retries remaining
             runner._ctx("a").error = (
-                "Fireworks adaptive serverless TPM: prompt token limit exceeded. "
-                "Estimated prompt tokens: 50000, observed limit: 10000."
+                "Provider token limit exceeded (Fireworks adaptive serverless TPM): "
+                "prompt token limit exceeded. Estimated prompt tokens: 50000, "
+                "observed limit: 10000."
             )
 
             actions = runner._handle_interrupt(InterruptGovernor("a", "pane-a", "rate limited"))
@@ -1381,8 +1521,7 @@ class TestInterruptHandling:
 
     def test_ordinary_errors_still_retry_when_attempts_remain(self):
         """Normal worker errors should still follow retry logic."""
-        from dgov.actions import GovernorAction
-        from dgov.event_types import GovernorResumed
+        from runner_helpers import GovernorAction, GovernorResumed
 
         with _io_patches(), patch("dgov.runner.emit_event") as mock_emit:
             runner = _make_runner(_single_dag())
@@ -1409,17 +1548,17 @@ class TestInterruptHandling:
         assert event.action == GovernorAction.RETRY.value
 
     def test_generated_token_rate_limit_also_fails_fast(self):
-        """Fireworks adaptive TPM for generated tokens should also fail fast."""
-        from dgov.actions import GovernorAction
-        from dgov.event_types import GovernorResumed
+        """Configured provider generated-token limits should also fail fast."""
+        from runner_helpers import GovernorAction, GovernorResumed
 
         with _io_patches(), patch("dgov.runner.emit_event") as mock_emit:
             runner = _make_runner(_single_dag())
             runner.kernel.task_states["a"] = TaskState.ACTIVE
             runner._ctx("a").attempts = 0
             runner._ctx("a").error = (
-                "Fireworks adaptive serverless TPM: generated token limit exceeded. "
-                "Estimated generated tokens: 25000, observed limit: 5000."
+                "Provider token limit exceeded (Fireworks adaptive serverless TPM): "
+                "generated token limit exceeded. Estimated generated tokens: 25000, "
+                "observed limit: 5000."
             )
 
             actions = runner._handle_interrupt(InterruptGovernor("a", "pane-a", "rate limited"))
@@ -1668,56 +1807,18 @@ class TestIntegrationCandidate:
 
     def test_candidate_validation_gate_failure_rejects(self):
         """If candidate passes replay but fails validation gates, reject."""
-        # First call is isolated validation (pass), second is candidate validation (fail)
         call_count = {"count": 0}
 
-        def _validate_with_candidate_fail(
-            wt_path, base_commit, project_root, config=None, **_kwargs
-        ):
-            from dgov.settlement import CommandExecutionFact, GateResult
-
-            call_count["count"] += 1
-            if call_count["count"] == 1:
-                return GateResult(passed=True)  # Isolated validation passes
-            return GateResult(
-                passed=False,
-                error="Candidate gate failed",
-                facts=(
-                    CommandExecutionFact(
-                        gate="test",
-                        source="project.test_cmd",
-                        command="uv run pytest -q tests/test_candidate.py",
-                        outcome="completed",
-                        duration_s=1.25,
-                        exit_code=1,
-                    ),
-                ),
-            )
-
         with (
-            _io_patches(validate=_validate_with_candidate_fail) as _,
+            _io_patches(validate=_candidate_validation_fail_validator(call_count)) as _,
             patch(_P_EMIT_EVENT) as mock_emit,
         ):
             runner = _make_runner(_single_dag())
             results = asyncio.run(runner.run())
 
-            # Task should fail due to candidate gate failure
             assert results["a"] == "failed"
-
-            # Verify both candidate creation and cleanup were called
-            # and integration_candidate_failed was emitted (typed event signature)
-            failed_calls = [
-                c
-                for c in mock_emit.call_args_list
-                if getattr(c.args[1], "event_type", None) == "integration_candidate_failed"
-            ]
-            assert len(failed_calls) == 1
-            completed_events = [
-                c.args[1]
-                for c in mock_emit.call_args_list
-                if getattr(c.args[1], "event_type", None) == "settlement_phase_completed"
-            ]
-            cv_event = next(e for e in completed_events if e.phase == "candidate_validation")
+            assert len(_emitted_events(mock_emit, "integration_candidate_failed")) == 1
+            cv_event = _emitted_settlement_phase(mock_emit, "candidate_validation")
             assert cv_event.facts == (
                 {
                     "gate": "test",
@@ -1850,7 +1951,7 @@ class TestPythonSemanticGateSubprocess:
 
     def test_subprocess_uses_candidate_src_path(self, tmp_path, monkeypatch):
         """Candidate subprocess should import from the candidate src tree first."""
-        from dgov.settlement_flow import run_python_semantic_gate_in_subprocess
+        from runner_helpers import run_python_semantic_gate_in_subprocess
 
         captured: dict[str, object] = {}
 
@@ -1889,7 +1990,7 @@ class TestPythonSemanticGateSubprocess:
 
     def test_subprocess_failure_fails_closed(self, tmp_path, monkeypatch):
         """Runner should reject when candidate-side semantic execution fails."""
-        from dgov.settlement_flow import run_python_semantic_gate_in_subprocess
+        from runner_helpers import run_python_semantic_gate_in_subprocess
 
         def _fake_run(cmd, cwd, capture_output, text, env, check):
             result = MagicMock()
@@ -1966,8 +2067,7 @@ class TestRecoveryPipeline:
 
     def test_apply_rehydrate_event_dispatched(self):
         """Rehydration applies dispatched events to kernel."""
-        from dgov.actions import TaskDispatched
-        from dgov.event_types import EvtTaskDispatched
+        from runner_helpers import EvtTaskDispatched, TaskDispatched
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -1984,8 +2084,7 @@ class TestRecoveryPipeline:
 
     def test_apply_rehydrate_event_task_done(self):
         """Rehydration applies task_done events to kernel."""
-        from dgov.actions import TaskWaitDone
-        from dgov.event_types import TaskDone
+        from runner_helpers import TaskDone, TaskWaitDone
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2000,8 +2099,7 @@ class TestRecoveryPipeline:
 
     def test_apply_rehydrate_event_task_failed(self):
         """Rehydration applies task_failed events with FAILED state."""
-        from dgov.actions import TaskWaitDone
-        from dgov.event_types import TaskFailed
+        from runner_helpers import TaskFailed, TaskWaitDone
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2016,8 +2114,7 @@ class TestRecoveryPipeline:
 
     def test_apply_rehydrate_event_task_failed_timeout(self):
         """Rehydration detects timeout from error string and sets TIMED_OUT state."""
-        from dgov.actions import TaskWaitDone
-        from dgov.event_types import TaskFailed
+        from runner_helpers import TaskFailed, TaskWaitDone
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2045,8 +2142,7 @@ class TestRecoveryPipeline:
         and `_fork_worker`. A bare `"timeout" in error` substring check missed them,
         causing genuine timeouts to rehydrate as TaskState.FAILED.
         """
-        from dgov.actions import TaskWaitDone
-        from dgov.event_types import TaskFailed
+        from runner_helpers import TaskFailed, TaskWaitDone
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2061,8 +2157,7 @@ class TestRecoveryPipeline:
 
     def test_apply_rehydrate_event_governor_resumed(self):
         """Rehydration restores governor-resume events for retry state."""
-        from dgov.actions import GovernorAction, TaskGovernorResumed
-        from dgov.event_types import GovernorResumed
+        from runner_helpers import GovernorAction, GovernorResumed, TaskGovernorResumed
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2077,7 +2172,7 @@ class TestRecoveryPipeline:
 
     def test_abandon_orphaned_task_marks_abandoned(self):
         """Orphan abandonment marks ACTIVE tasks as ABANDONED."""
-        from dgov.actions import TaskWaitDone
+        from runner_helpers import TaskWaitDone
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2109,7 +2204,7 @@ class TestRecoveryPipeline:
 
     def test_resume_single_task_emits_event(self):
         """Resume emits governor-resumed event for auditability."""
-        from dgov.actions import GovernorAction, TaskGovernorResumed
+        from runner_helpers import GovernorAction, TaskGovernorResumed
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2254,7 +2349,7 @@ class TestSettlementPhaseBoundaries:
         """_settle_and_merge returns early when run_isolated_validation returns error."""
         from unittest.mock import MagicMock
 
-        from dgov.settlement_flow import IsolatedValidationResult
+        from runner_helpers import IsolatedValidationResult
 
         with _io_patches():
             runner = _make_runner(_single_dag())
@@ -2289,7 +2384,7 @@ class TestSettlementPhaseBoundaries:
             action = MagicMock(task_slug="a", pane_slug="pane-1")
             wt = _mock_create_worktree("/tmp", "a")
 
-            from dgov.settlement_flow import IsolatedValidationResult
+            from runner_helpers import IsolatedValidationResult
 
             sf = runner._settlement_flow
             _set_async_mock(sf, "prepare_and_commit", return_value=(None, True))
@@ -2399,7 +2494,7 @@ class TestSettlementPhaseBoundaries:
             runner = _make_runner(_single_dag())
 
             # Make isolated validation fail
-            from dgov.settlement_flow import IsolatedValidationResult
+            from runner_helpers import IsolatedValidationResult
 
             sf = runner._settlement_flow
             _set_async_mock(
@@ -2440,7 +2535,7 @@ class TestSettlementPhaseBoundaries:
         """SettlementPhaseCompleted events should include facts from gate results."""
         from unittest.mock import patch
 
-        from dgov.settlement_flow import IsolatedValidationResult
+        from runner_helpers import IsolatedValidationResult
 
         with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
             runner = _make_runner(_single_dag())
@@ -2475,11 +2570,54 @@ class TestSettlementPhaseBoundaries:
             assert iv_event.facts == facts
 
     @pytest.mark.unit
+    def test_serialize_command_facts_preserves_optional_fields(self):
+        """Verify that _serialize_command_facts preserves log_path and warning_count."""
+        from runner_helpers import _serialize_command_facts
+
+        from dgov.command_facts import CommandExecutionFact
+
+        facts = (
+            CommandExecutionFact(
+                gate="lint",
+                source="ruff",
+                command="ruff check .",
+                outcome="completed",
+                duration_s=1.2,
+                exit_code=0,
+                log_path="/tmp/lint.log",
+                warning_count=5,
+            ),
+            CommandExecutionFact(
+                gate="test",
+                source="pytest",
+                command="pytest",
+                outcome="completed",
+                duration_s=2.0,
+                exit_code=0,
+            ),
+        )
+
+        serialized = _serialize_command_facts(facts)
+
+        assert len(serialized) == 2
+        # First fact
+        assert serialized[0]["gate"] == "lint"
+        assert serialized[0]["log_path"] == "/tmp/lint.log"
+        assert serialized[0]["warning_count"] == 5
+        assert "exit_code" in serialized[0]
+
+        # Second fact
+        assert serialized[1]["gate"] == "test"
+        assert "log_path" not in serialized[1]
+        assert "warning_count" not in serialized[1]
+        assert "exit_code" in serialized[1]
+
+    @pytest.mark.unit
     def test_isolated_validation_pass_carries_facts(self):
         """Passing isolated_validation should include facts on its completed event."""
         from unittest.mock import MagicMock, patch
 
-        from dgov.settlement_flow import IsolatedValidationResult, RiskLevel
+        from runner_helpers import IsolatedValidationResult, RiskLevel
 
         facts = (
             {
@@ -2522,23 +2660,9 @@ class TestSettlementPhaseBoundaries:
     @pytest.mark.unit
     def test_candidate_validation_pass_carries_facts(self):
         """Passing candidate_validation should include facts on its completed event."""
-        from pathlib import Path
-        from unittest.mock import MagicMock, patch
+        from runner_helpers import CandidateValidationResult
 
-        from dgov.settlement_flow import CandidateValidationResult
-        from dgov.worktree import IntegrationCandidateResult
-
-        facts = (
-            {
-                "gate": "test",
-                "source": "project.test_cmd",
-                "command": "uv run pytest -q tests/test_candidate.py",
-                "outcome": "completed",
-                "duration_s": 1.5,
-                "exit_code": 0,
-            },
-        )
-
+        facts = _candidate_validation_pass_facts()
         with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
             runner = _make_runner(_single_dag())
             _set_async_mock(
@@ -2549,23 +2673,17 @@ class TestSettlementPhaseBoundaries:
 
             action = MagicMock(task_slug="a", pane_slug="pane-1")
             task = runner.dag.tasks["a"]
-            candidate_result = IntegrationCandidateResult(
-                passed=True,
-                candidate_path=Path("/tmp/candidate"),
-                candidate_sha="candidate123",
-            )
             result = asyncio.run(
-                runner._candidate_validation_phase(action, task, candidate_result)
+                runner._candidate_validation_phase(
+                    action,
+                    task,
+                    _candidate_validation_success_result(),
+                )
             )
 
             assert result.error is None
             assert result.facts == facts
-            completed_events = [
-                c.args[1]
-                for c in mock_emit.call_args_list
-                if getattr(c.args[1], "event_type", None) == "settlement_phase_completed"
-            ]
-            cv_event = next(e for e in completed_events if e.phase == "candidate_validation")
+            cv_event = _emitted_settlement_phase(mock_emit, "candidate_validation")
             assert cv_event.status == "passed"
             assert cv_event.facts == facts
 

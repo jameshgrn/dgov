@@ -1,0 +1,30 @@
+[tasks.fact-fields]
+summary = "Preserve optional command fact fields in phase events"
+commit_message = "Preserve settlement command fact fields"
+role = "worker"
+iteration_budget = 20
+files.edit = [
+  "src/dgov/settlement_flow.py",
+  "tests/test_runner.py",
+]
+files.read = [
+  "src/dgov/command_facts.py",
+]
+test_cmd = "uv run pytest -q -m unit tests/test_runner.py -k \"candidate_validation_gate_failure or settlement_phase_completed_carries_facts\""
+prompt = """
+Orient:
+- Read `src/dgov/command_facts.py` and `src/dgov/settlement_flow.py`.
+- Read the existing settlement phase facts tests in `tests/test_runner.py`.
+- Ledger debt #253 remains open for broader declared coverage/exclusion design; this task is only the narrow evidence-fidelity slice.
+
+Edit:
+1. Update settlement command-fact serialization so every non-None field on `CommandExecutionFact` is preserved in settlement phase fact payloads. Keep existing field names and preserve the current behavior of omitting fields whose value is `None`.
+2. Add or update one focused regression test proving a settlement phase event keeps optional fact fields such as `log_path` and `warning_count`.
+3. Do not add new verification schema, coverage declarations, recipe parser behavior, or remote-provider configuration.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_runner.py -k "candidate_validation_gate_failure or settlement_phase_completed_carries_facts"`
+- `uv run ruff check src/dgov/settlement_flow.py tests/test_runner.py`
+- `uv run ruff format --check src/dgov/settlement_flow.py tests/test_runner.py`
+- `uv run ty check`
+"""

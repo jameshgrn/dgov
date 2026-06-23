@@ -1,0 +1,5 @@
+[plan]
+name = "retry-supervision-280"
+summary = "Keep settlement retry workers under the same task supervision as initial workers."
+sections = ["tasks", "review"]
+default_provider = "claude-haiku-worker"

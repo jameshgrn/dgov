@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-
-from dgov.cli import cli
+from helpers import cli
 
 pytestmark = pytest.mark.unit
 
@@ -228,7 +227,7 @@ def _make_plan_tree_under_plans(plans: Path, name: str) -> Path:
 
 def _patched_run_envelope(monkeypatch: pytest.MonkeyPatch, **overrides) -> None:
     """Stub plan_review.load_run_envelope so list tests can control run-level fields."""
-    from dgov.plan_review import RunEnvelope
+    from helpers import RunEnvelope
 
     envelope = overrides.get(
         "envelope",
@@ -291,8 +290,7 @@ def test_list_stale_compiled_plan_json(
 def test_list_degraded_fully_deployed(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.deploy_log import append as deploy_append
-    from dgov.plan_review import RunEnvelope
+    from helpers import RunEnvelope, deploy_append
 
     root = _make_project_root(tmp_path)
     plans = root / ".dgov" / "plans"
@@ -371,8 +369,7 @@ def test_list_empty_plan_not_marked_stale_json(
 def test_list_degraded_fully_deployed_json(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.deploy_log import append as deploy_append
-    from dgov.plan_review import RunEnvelope
+    from helpers import RunEnvelope, deploy_append
 
     root = _make_project_root(tmp_path)
     plans = root / ".dgov" / "plans"

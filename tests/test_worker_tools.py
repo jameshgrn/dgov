@@ -298,6 +298,18 @@ class TestListDir:
         assert "internal" in result
         assert "tree" in result
 
+    def test_regular_file_shows_exact_byte_size(self, tools, worktree):
+        # README.md is written as "# Test Project\n" = 15 bytes in the fixture
+        expected_size = (worktree / "README.md").stat().st_size
+        result = tools.list_dir(".")
+        assert f"README.md  ({expected_size} bytes)" in result
+
+    def test_directory_entries_have_no_size(self, tools):
+        result = tools.list_dir(".")
+        for line in result.splitlines():
+            if line.endswith("/"):
+                assert "bytes" not in line
+
 
 # -- SOP compound tools --
 

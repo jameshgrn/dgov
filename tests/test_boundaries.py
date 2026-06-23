@@ -81,6 +81,26 @@ class TestLacustrinePillarVisibility:
         missing = [marker for marker in markers if marker not in module_docstring]
         assert not missing, f"Boundary-test Lacustrine markers missing: {missing}"
 
+    def test_governor_md_names_lacustrine_pillars(self):
+        source = (_REPO_ROOT / ".dgov" / "governor.md").read_text()
+        markers = (
+            "Lacustrine Pillars",
+            "Pillar #1: Separation of Powers",
+            "Pillar #8: Falsifiable Validation",
+            "Pillar #10: Fail-Closed",
+        )
+        missing = [marker for marker in markers if marker not in source]
+        assert not missing, f"governor.md Lacustrine markers missing: {missing}"
+
+    def test_architecture_sop_names_lacustrine_pillars(self):
+        source = (_REPO_ROOT / ".dgov" / "sops" / "architecture.md").read_text()
+        markers = (
+            "Lacustrine Pillar",
+            "Follows Lacustrine Pillars:",
+        )
+        missing = [marker for marker in markers if marker not in source]
+        assert not missing, f"architecture.md Lacustrine markers missing: {missing}"
+
 
 class TestKernelPurity:
     """kernel.py must only import dgov.actions and dgov.types — no I/O."""

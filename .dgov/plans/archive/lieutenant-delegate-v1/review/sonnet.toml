@@ -1,0 +1,21 @@
+[tasks.review-delegate-command]
+summary = "Review lieutenant-governor delegation v1"
+role = "reviewer"
+provider = "claude-sonnet-review"
+depends_on = ["tasks/delegate-command.delegate-command"]
+prompt = """
+Orient:
+- Read the dependency diff for `tasks/delegate-command.delegate-command`.
+- This is a bounded review of the new lieutenant delegation surface only.
+- Do not run broad verification or generic test commands. Rely on the dependency diff and recorded targeted checks unless one exact command is required to confirm a blocker.
+
+Edit:
+1. Check that `dgov delegate` only renders a contract and does not bypass plan-mediated execution.
+2. Check that provider validation uses existing project config and does not add provider-specific shims.
+3. Check that the governor guidance is concise, non-duplicative, and consistent with the current task-authoring rules.
+4. Check that the focused tests cover success and unknown-provider failure.
+
+Verify:
+- Verify by inspecting the dependency diff and targeted check evidence only.
+- If no blocker remains, call done with a concise approval and residual risk.
+"""

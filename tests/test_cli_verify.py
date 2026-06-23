@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-
-from dgov.cli import cli
+from helpers import cli
 
 pytestmark = pytest.mark.unit
 
@@ -118,6 +117,13 @@ def test_verify_run_json(runner: CliRunner, tmp_path: Path) -> None:
     assert payload["results"][0]["exit_code"] == 0
     assert payload["results"][0]["warning_count"] == 0
     assert payload["results"][0]["log_path"] is not None
+    assert payload["results"][0]["fact"]["gate"] == "verify"
+    assert payload["results"][0]["fact"]["source"] == "verify.ok"
+    assert payload["results"][0]["fact"]["outcome"] == "completed"
+    assert payload["results"][0]["fact"]["exit_code"] == 0
+    assert payload["results"][0]["fact"]["log_path"] == payload["results"][0]["log_path"]
+    assert payload["results"][0]["fact"]["warning_count"] == 0
+    assert payload["facts"] == [payload["results"][0]["fact"]]
 
 
 def test_verify_run_missing_recipe(runner: CliRunner, tmp_path: Path) -> None:

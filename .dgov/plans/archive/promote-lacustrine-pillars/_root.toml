@@ -1,0 +1,5 @@
+[plan]
+name = "promote-lacustrine-pillars"
+summary = "Promote Lacustrine Pillars from source markers into governor and SOP policy."
+sections = ["tasks", "review"]
+default_provider = "claude"

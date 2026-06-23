@@ -47,13 +47,17 @@ class KnowledgeGraph:
     source_nodes: frozenset[str]
     edges: tuple[KnowledgeEdge, ...]
 
-    def related_by_depth(self, start_id: str, depth: int) -> set[str]:
-        if depth < 0 or start_id not in self.article_nodes:
-            return set()
+    def _related_adjacency(self) -> dict[str, set[str]]:
         adj: dict[str, set[str]] = {aid: set() for aid in self.article_nodes}
         for edge in self.edges:
             if edge.relation == "related":
                 adj[edge.source].add(edge.target)
+        return adj
+
+    def related_by_depth(self, start_id: str, depth: int) -> set[str]:
+        if depth < 0 or start_id not in self.article_nodes:
+            return set()
+        adj = self._related_adjacency()
         visited: set[str] = set()
         current: set[str] = {start_id}
         for _ in range(depth):
@@ -75,10 +79,7 @@ class KnowledgeGraph:
             return None
         if start_id == end_id:
             return [start_id]
-        adj: dict[str, set[str]] = {aid: set() for aid in self.article_nodes}
-        for edge in self.edges:
-            if edge.relation == "related":
-                adj[edge.source].add(edge.target)
+        adj = self._related_adjacency()
         queue: deque[tuple[str, list[str]]] = deque([(start_id, [start_id])])
         visited: set[str] = {start_id}
         while queue:

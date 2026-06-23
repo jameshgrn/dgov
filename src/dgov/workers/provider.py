@@ -3,35 +3,61 @@
 from __future__ import annotations
 
 import json
+import os
 import random
+import re
+import subprocess
+import sys
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
+from urllib.parse import parse_qs, unquote, urlparse
 
 from openai import OpenAI
 
 RATE_LIMIT_BACKOFF_S = (5.0, 30.0, 90.0)
 _JITTER_FRACTION = 0.2
+_PROVIDER_TOKEN_LIMIT_MARKER = "Provider token limit exceeded"
+CLAUDE_CODE_PROVIDER_SCHEME = "claude-code"
+_DEFAULT_CLAUDE_CODE_RUNNER = (
+    Path.home() / ".codex" / "skills" / "invoke-claude" / "scripts" / "run_claude_code.py"
+)
+_DEFAULT_CLAUDE_CODE_PROFILE = "daily"
+_DEFAULT_CLAUDE_CODE_PRESET = ""
+_FALLBACK_CLAUDE_CODE_PRESET = "review"
+_DEFAULT_CLAUDE_CODE_TIMEOUT_S = 600.0
+_WORKTREE_PATTERNS = (
+    re.compile(r"git worktree:\s*([^\)\n]+)"),
+    re.compile(r"project root:\s*([^\)\n]+)"),
+)
 
 
-class FireworksRateLimitError(Exception):
-    """Raised when a request exceeds Fireworks adaptive serverless TPM limits.
+@dataclass(frozen=True)
+class TokenLimitPolicy:
+    """Configured provider token-limit headers for fail-fast 429 handling."""
 
-    Attributes:
-        limit_type: Either "prompt" or "generated" indicating which limit was exceeded.
-        estimated_tokens: The estimated token count that exceeded the limit.
-        observed_limit: The TPM limit observed from response headers.
-    """
+    label: str
+    prompt_header: str = ""
+    generated_header: str = ""
+
+
+class ProviderRateLimitError(Exception):
+    """Raised when a request exceeds configured provider token limits."""
 
     def __init__(
         self,
         *,
+        provider_label: str,
         limit_type: str,
         estimated_tokens: int,
         observed_limit: int,
         message: str | None = None,
     ) -> None:
+        self.provider_label = provider_label
         self.limit_type = limit_type
         self.estimated_tokens = estimated_tokens
         self.observed_limit = observed_limit
@@ -46,7 +72,8 @@ class FireworksRateLimitError(Exception):
             "or use an on-demand deployment."
         )
         return (
-            f"Fireworks adaptive serverless TPM: {self.limit_type} token limit exceeded. "
+            f"{_PROVIDER_TOKEN_LIMIT_MARKER} ({self.provider_label}): "
+            f"{self.limit_type} token limit exceeded. "
             f"Estimated {self.limit_type} tokens: {self.estimated_tokens}, "
             f"observed limit: {self.observed_limit}. {actions}"
         )
@@ -104,18 +131,21 @@ def _extract_retry_after(headers: Mapping[str, str]) -> float | None:
         return None
 
 
-def _extract_fireworks_limits(
+def _extract_token_limits(
     headers: Mapping[str, str],
+    policy: TokenLimitPolicy,
 ) -> tuple[int | None, int | None]:
-    """Extract Fireworks TPM limits from headers.
+    """Extract configured prompt/generated token limits from headers.
 
     Returns:
         Tuple of (prompt_limit, generated_limit) or (None, None) if not present.
     """
     import contextlib
 
-    prompt_limit = _get_header(headers, "x-ratelimit-limit-tokens-prompt")
-    generated_limit = _get_header(headers, "x-ratelimit-limit-tokens-generated")
+    prompt_limit = _get_header(headers, policy.prompt_header) if policy.prompt_header else None
+    generated_limit = (
+        _get_header(headers, policy.generated_header) if policy.generated_header else None
+    )
 
     prompt_val: int | None = None
     generated_val: int | None = None
@@ -189,33 +219,38 @@ def _estimate_generated_tokens(kwargs: dict[str, Any]) -> int:
         return 0
 
 
-def _check_fireworks_limits(
+def _check_token_limits(
     exc: Exception,
     kwargs: dict[str, Any],
+    policy: TokenLimitPolicy | None,
 ) -> None:
-    """Check Fireworks TPM limits and raise FireworksRateLimitError if exceeded.
+    """Check configured provider token limits and raise if exceeded.
 
     This function extracts limits from response headers and compares against
     estimated request tokens. It raises immediately if limits are exceeded
     to avoid wasteful retries.
     """
+    if policy is None:
+        return
     headers = _get_headers_from_exc(exc)
-    prompt_limit, generated_limit = _extract_fireworks_limits(headers)
+    prompt_limit, generated_limit = _extract_token_limits(headers, policy)
 
     if prompt_limit is None and generated_limit is None:
-        return  # No Fireworks limits detected, let normal retry handle it
+        return  # No configured limits detected, let normal retry handle it
 
     estimated_prompt, estimated_generated = _estimate_request_tokens(kwargs)
 
     if prompt_limit is not None and estimated_prompt > prompt_limit:
-        raise FireworksRateLimitError(
+        raise ProviderRateLimitError(
+            provider_label=policy.label,
             limit_type="prompt",
             estimated_tokens=estimated_prompt,
             observed_limit=prompt_limit,
         )
 
     if generated_limit is not None and estimated_generated > generated_limit:
-        raise FireworksRateLimitError(
+        raise ProviderRateLimitError(
+            provider_label=policy.label,
             limit_type="generated",
             estimated_tokens=estimated_generated,
             observed_limit=generated_limit,
@@ -230,11 +265,14 @@ def _jittered_delay(
     return max(0.0, base_delay_s + jitter_fn(-jitter_span, jitter_span))
 
 
-def _fireworks_limit_retry_decision(
+def _token_limit_retry_decision(
     headers: Mapping[str, Any],
     kwargs: dict[str, Any],
+    policy: TokenLimitPolicy | None,
 ) -> tuple[bool, float | None] | None:
-    prompt_limit, generated_limit = _extract_fireworks_limits(headers)
+    if policy is None:
+        return None
+    prompt_limit, generated_limit = _extract_token_limits(headers, policy)
     if prompt_limit is None and generated_limit is None:
         return None
 
@@ -256,6 +294,7 @@ def _retry_after_decision(headers: Mapping[str, Any]) -> tuple[bool, float | Non
 def _classify_rate_limit_error(
     exc: Exception,
     kwargs: dict[str, Any],
+    token_limit_policy: TokenLimitPolicy | None,
 ) -> tuple[bool, float | None]:
     """Classify a rate limit error and determine retry strategy.
 
@@ -267,9 +306,9 @@ def _classify_rate_limit_error(
     if not _is_rate_limit_error(exc):
         return (False, None)
 
-    # Check Fireworks-specific limits first - fail fast if exceeded
+    # Check configured token limits first - fail fast if exceeded.
     headers = _get_headers_from_exc(exc)
-    decision = _fireworks_limit_retry_decision(headers, kwargs)
+    decision = _token_limit_retry_decision(headers, kwargs, token_limit_policy)
     if decision is not None:
         return decision
 
@@ -289,6 +328,7 @@ def call_with_rate_limit_backoff[T](
     jitter_fn: Callable[[float, float], float] = random.uniform,
     backoff_s: tuple[float, ...] = RATE_LIMIT_BACKOFF_S,
     _kwargs_for_classification: dict[str, Any] | None = None,
+    token_limit_policy: TokenLimitPolicy | None = None,
 ) -> T:
     """Call ``fn`` with slow retries for provider 429/rate-limit failures."""
     backoff_iter = iter(backoff_s)
@@ -301,6 +341,7 @@ def call_with_rate_limit_backoff[T](
                 exc,
                 kwargs_for_classification=_kwargs_for_classification,
                 backoff_iter=backoff_iter,
+                token_limit_policy=token_limit_policy,
             )
             sleep_fn(_jittered_delay(delay_s, jitter_fn))
 
@@ -310,10 +351,15 @@ def _retry_delay_for_rate_limit(
     *,
     kwargs_for_classification: dict[str, Any] | None,
     backoff_iter: Iterator[float],
+    token_limit_policy: TokenLimitPolicy | None,
 ) -> float:
-    should_retry, custom_delay = _classify_rate_limit_error(exc, kwargs_for_classification or {})
+    should_retry, custom_delay = _classify_rate_limit_error(
+        exc,
+        kwargs_for_classification or {},
+        token_limit_policy,
+    )
     if not should_retry:
-        _raise_unretryable_provider_error(exc, kwargs_for_classification)
+        _raise_unretryable_provider_error(exc, kwargs_for_classification, token_limit_policy)
     if custom_delay is not None:
         return custom_delay
     return _next_backoff_delay(backoff_iter, exc)
@@ -322,9 +368,10 @@ def _retry_delay_for_rate_limit(
 def _raise_unretryable_provider_error(
     exc: Exception,
     kwargs_for_classification: dict[str, Any] | None,
+    token_limit_policy: TokenLimitPolicy | None,
 ) -> None:
     if kwargs_for_classification is not None:
-        _check_fireworks_limits(exc, kwargs_for_classification)
+        _check_token_limits(exc, kwargs_for_classification, token_limit_policy)
     raise exc
 
 
@@ -339,14 +386,574 @@ def _next_backoff_delay(backoff_iter: Iterator[float], exc: Exception) -> float:
 class OpenAICompatibleProvider:
     client: Any
     name: str = ""
+    token_limit_policy: TokenLimitPolicy | None = None
 
     def create_chat_completion(self, **kwargs: Any) -> Any:
         return call_with_rate_limit_backoff(
             lambda: self.client.chat.completions.create(**kwargs),
             _kwargs_for_classification=kwargs,
+            token_limit_policy=self.token_limit_policy,
         )
 
 
-def create_provider(*, base_url: str, api_key: str, name: str = "") -> OpenAICompatibleProvider:
+@dataclass(frozen=True)
+class _ToolFunctionCall:
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class _ToolCall:
+    id: str
+    function: _ToolFunctionCall
+    type: str = "function"
+
+
+@dataclass(frozen=True)
+class _AssistantMessage:
+    content: str | None
+    tool_calls: list[_ToolCall]
+
+    def model_dump(self, exclude_none: bool = True) -> dict[str, Any]:
+        data: dict[str, Any] = {"role": "assistant"}
+        if self.content is not None or not exclude_none:
+            data["content"] = self.content
+        if self.tool_calls:
+            data["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": call.type,
+                    "function": {
+                        "name": call.function.name,
+                        "arguments": call.function.arguments,
+                    },
+                }
+                for call in self.tool_calls
+            ]
+        return data
+
+
+@dataclass(frozen=True)
+class _ClaudeCodeSettings:
+    model_profile: str
+    preset: str
+    runner: Path
+    timeout_seconds: float
+    passthrough: Mapping[str, tuple[str, ...]]
+
+
+@dataclass(frozen=True)
+class ClaudeCodeProvider:
+    """Provider adapter for the local invoke-claude skill wrapper."""
+
+    settings: _ClaudeCodeSettings
+    name: str = ""
+
+    def create_chat_completion(self, **kwargs: Any) -> Any:
+        terminal_tool = _terminal_tool_name(kwargs.get("tools"))
+        if terminal_tool not in {"done", "emit_plan"}:
+            raise RuntimeError(
+                "claude-code providers currently require a role that exposes "
+                "the terminal `done` or `emit_plan` tool"
+            )
+        settings = _settings_for_request(
+            self.settings,
+            terminal_tool=terminal_tool,
+            messages=kwargs.get("messages", []),
+        )
+        prompt = _claude_code_prompt(kwargs, terminal_tool=terminal_tool)
+        output, usage = _run_claude_code(
+            settings=settings,
+            prompt=prompt,
+            model=str(kwargs.get("model") or "").strip(),
+            cwd=_worktree_from_messages(kwargs.get("messages", [])),
+        )
+        return _claude_code_response(terminal_tool, output, usage)
+
+
+def _claude_code_response(terminal_tool: str, output: str, usage: dict[str, int]) -> Any:
+    arguments = (
+        json.dumps({"summary": output})
+        if terminal_tool == "done"
+        else _emit_plan_arguments(output)
+    )
+    message = _AssistantMessage(
+        content=None,
+        tool_calls=[
+            _ToolCall(
+                id=f"call_claude_code_{terminal_tool}",
+                function=_ToolFunctionCall(
+                    name=terminal_tool,
+                    arguments=arguments,
+                ),
+            )
+        ],
+    )
+    usage_obj = SimpleNamespace(
+        prompt_tokens=usage.get("prompt_tokens", 0),
+        completion_tokens=usage.get("completion_tokens", 0),
+        total_tokens=usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0),
+    )
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")],
+        usage=usage_obj,
+    )
+
+
+def _emit_plan_arguments(output: str) -> str:
+    plan = _extract_json_object(output)
+    if not isinstance(plan, dict):
+        raise RuntimeError("Claude Code provider did not return valid emit_plan JSON.")
+    plan_map = cast("dict[str, Any]", plan)
+    if not isinstance(plan_map.get("tasks"), list):
+        raise RuntimeError("Claude Code provider did not return valid emit_plan JSON.")
+    return json.dumps(plan_map)
+
+
+def _extract_json_object(output: str) -> object:
+    stripped = output.strip()
+    if stripped.startswith("```"):
+        stripped = _strip_json_fence(stripped)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        return json.loads(stripped[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+
+
+def _strip_json_fence(text: str) -> str:
+    lines = text.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def is_claude_code_provider_url(base_url: str) -> bool:
+    return base_url.strip().lower().startswith(f"{CLAUDE_CODE_PROVIDER_SCHEME}:")
+
+
+def _terminal_tool_name(tools: object) -> str:
+    names = _tool_names(tools)
+    if "done" in names:
+        return "done"
+    if "emit_plan" in names:
+        return "emit_plan"
+    return ""
+
+
+def _settings_for_request(
+    settings: _ClaudeCodeSettings,
+    *,
+    terminal_tool: str,
+    messages: object,
+) -> _ClaudeCodeSettings:
+    if settings.preset:
+        return settings
+    return replace(
+        settings,
+        preset=_claude_code_preset_for_request(terminal_tool, messages),
+    )
+
+
+def _claude_code_preset_for_request(terminal_tool: str, messages: object) -> str:
+    if terminal_tool == "emit_plan":
+        return "plan"
+    text = _render_messages(messages)
+    if "[DGOV_WORKER_PROMPT_" in text:
+        return "edit"
+    if "[DGOV_RESEARCHER_PROMPT_" in text:
+        return "review"
+    if "[DGOV_PLANNER_PROMPT_" in text:
+        return "plan"
+    return _FALLBACK_CLAUDE_CODE_PRESET
+
+
+def _tool_names(tools: object) -> set[str]:
+    if not isinstance(tools, list):
+        return set()
+    names: set[str] = set()
+    for item in tools:
+        if not isinstance(item, dict):
+            continue
+        item_map = cast("dict[str, Any]", item)
+        function = item_map.get("function")
+        if not isinstance(function, dict):
+            continue
+        function_map = cast("dict[str, Any]", function)
+        name = function_map.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
+
+
+def _claude_code_prompt(kwargs: Mapping[str, Any], *, terminal_tool: str) -> str:
+    messages = kwargs.get("messages", [])
+    sections = [
+        "DGOV provider adapter instructions:",
+        "- You are running under Claude Code, not dgov's OpenAI-compatible tool-call transport.",
+        "- Treat dgov tool instructions as workflow guidance; do not emit tool-call JSON.",
+        "- Use Claude Code's allowed local tools according to the selected preset.",
+        _claude_code_terminal_instruction(terminal_tool),
+        "",
+        "DGOV conversation:",
+        _render_messages(messages),
+    ]
+    return "\n".join(sections).strip() + "\n"
+
+
+def _claude_code_terminal_instruction(terminal_tool: str) -> str:
+    if terminal_tool == "emit_plan":
+        return (
+            "- Finish by printing only one JSON object that matches dgov's emit_plan "
+            "arguments: name, summary, tasks, and optional config_overrides. Do not "
+            "wrap it in markdown."
+        )
+    return "- Finish with a concise governor-facing summary of edits, verification, or blockers."
+
+
+def _render_messages(messages: object) -> str:
+    if not isinstance(messages, list):
+        return str(messages)
+    rendered: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            rendered.append(str(message))
+            continue
+        message_map = cast("dict[str, Any]", message)
+        role = str(message_map.get("role", "unknown"))
+        content = _message_content_as_text(message_map.get("content", ""))
+        rendered.append(f"## {role}\n{content}".rstrip())
+        tool_calls = message_map.get("tool_calls")
+        if tool_calls:
+            rendered.append(f"tool_calls: {json.dumps(tool_calls, sort_keys=True)}")
+    return "\n\n".join(rendered)
+
+
+def _message_content_as_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, sort_keys=True)
+
+
+def _worktree_from_messages(messages: object) -> Path | None:
+    if not isinstance(messages, list):
+        return None
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_map = cast("dict[str, Any]", message)
+        content = message_map.get("content")
+        if not isinstance(content, str):
+            continue
+        path = _worktree_from_text(content)
+        if path is not None:
+            return path
+    return None
+
+
+def _worktree_from_text(text: str) -> Path | None:
+    for pattern in _WORKTREE_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        value = match.group(1).strip().rstrip(".")
+        if value:
+            return Path(value)
+    return None
+
+
+def _drain_to_list(stream: Any, dest: list[str]) -> None:
+    for line in stream:
+        dest.append(line)
+
+
+def _emit_worker_event(event_type: str, content: object) -> None:
+    print(
+        json.dumps({"worker_event": {"type": event_type, "content": content}}),
+        flush=True,
+    )
+
+
+def _emit_stream_worker_events(event: Any, turn_index: int) -> None:
+    if not isinstance(event, dict) or event.get("type") != "assistant":
+        return
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return
+    content = message.get("content")
+    if not isinstance(content, list):
+        return
+    for tool_index, block in enumerate(content):
+        if not isinstance(block, dict):
+            continue
+        block_map = cast("dict[str, Any]", block)
+        block_type = block_map.get("type")
+        if block_type == "text":
+            text = block_map.get("text", "")
+            if text and isinstance(text, str):
+                _emit_worker_event("thought", text)
+        elif block_type == "tool_use":
+            _emit_worker_event(
+                "call",
+                {
+                    "tool": block_map.get("name", ""),
+                    "args": block_map.get("input", {}),
+                    "role": "assistant",
+                    "turn_index": turn_index,
+                    "tool_index": tool_index,
+                },
+            )
+
+
+def _update_stream_usage(event: Any, usage: dict[str, int]) -> None:
+    if not isinstance(event, dict) or event.get("type") != "result":
+        return
+    raw = event.get("usage")
+    if not isinstance(raw, dict):
+        return
+    usage["prompt_tokens"] = (
+        int(raw.get("input_tokens", 0))
+        + int(raw.get("cache_read_input_tokens", 0))
+        + int(raw.get("cache_creation_input_tokens", 0))
+    )
+    usage["completion_tokens"] = int(raw.get("output_tokens", 0))
+
+
+def _extract_result_from_stream(stream_lines: list[str], all_lines: list[str]) -> str:
+    for line in reversed(stream_lines):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            result = event.get("result")
+            if isinstance(result, str):
+                return result.strip()
+    # Fallback for non-stream output (old runner that doesn't emit result events).
+    return "\n".join(all_lines).strip()
+
+
+def _run_claude_code(
+    *,
+    settings: _ClaudeCodeSettings,
+    prompt: str,
+    model: str,
+    cwd: Path | None,
+) -> tuple[str, dict[str, int]]:
+    command = _claude_code_command(settings=settings, model=model, cwd=cwd)
+    proc = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    # Drain stderr concurrently to prevent pipe deadlock.
+    stderr_chunks: list[str] = []
+    stderr_thread = threading.Thread(
+        target=_drain_to_list,
+        args=(proc.stderr, stderr_chunks),
+        daemon=True,
+    )
+    stderr_thread.start()
+
+    assert proc.stdin is not None
+    try:
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+    except OSError:
+        pass
+
+    all_lines: list[str] = []
+    stream_lines: list[str] = []
+    usage: dict[str, int] = {}
+    turn_index = 0
+
+    # Kill after deadline so the stdout loop unblocks if Claude Code hangs.
+    kill_called = threading.Event()
+
+    def _timeout_kill() -> None:
+        kill_called.set()
+        proc.kill()
+
+    kill_timer = threading.Timer(settings.timeout_seconds + 5, _timeout_kill)
+    kill_timer.start()
+    try:
+        assert proc.stdout is not None
+        for raw_line in proc.stdout:
+            line = raw_line.rstrip("\n")
+            if not line:
+                continue
+            all_lines.append(line)
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            stream_lines.append(line)
+            _emit_stream_worker_events(event, turn_index)
+            if isinstance(event, dict) and event.get("type") == "assistant":
+                turn_index += 1
+            _update_stream_usage(event, usage)
+    finally:
+        kill_timer.cancel()
+        proc.wait()
+        stderr_thread.join(timeout=5.0)
+
+    stderr_data = "".join(stderr_chunks)
+    if proc.returncode != 0:
+        prefix = (
+            f"Claude Code provider timed out after {settings.timeout_seconds}s.\n"
+            if kill_called.is_set()
+            else ""
+        )
+        raise RuntimeError(
+            prefix + _claude_code_stream_error(proc.returncode, "\n".join(all_lines), stderr_data)
+        )
+
+    return _extract_result_from_stream(stream_lines, all_lines), usage
+
+
+def _claude_code_command(
+    *,
+    settings: _ClaudeCodeSettings,
+    model: str,
+    cwd: Path | None,
+) -> list[str]:
+    command = [
+        sys.executable,
+        str(settings.runner),
+        "--preset",
+        settings.preset,
+        "--model-profile",
+        settings.model_profile,
+        "--output-format",
+        "stream-json",
+        "--timeout-seconds",
+        _format_timeout(settings.timeout_seconds),
+    ]
+    if model:
+        command.extend(["--model", model])
+    if cwd is not None:
+        command.extend(["--cwd", str(cwd)])
+    for option, values in settings.passthrough.items():
+        for value in values:
+            command.extend([option, value])
+    return command
+
+
+def _format_timeout(timeout_seconds: float) -> str:
+    if timeout_seconds.is_integer():
+        return str(int(timeout_seconds))
+    return str(timeout_seconds)
+
+
+def _claude_code_stream_error(returncode: int, stdout: str, stderr: str) -> str:
+    parts = [f"Claude Code provider exited with status {returncode}."]
+    if stdout:
+        parts.append(f"stdout:\n{stdout.strip()}")
+    if stderr:
+        parts.append(f"stderr:\n{stderr.strip()}")
+    return "\n".join(parts)
+
+
+def _claude_code_settings(base_url: str) -> _ClaudeCodeSettings:
+    parsed = urlparse(base_url)
+    query = parse_qs(parsed.query, keep_blank_values=False)
+    return _ClaudeCodeSettings(
+        model_profile=_query_one(query, "profile") or _profile_from_url(parsed),
+        preset=_query_one(query, "preset") or _DEFAULT_CLAUDE_CODE_PRESET,
+        runner=_runner_from_query(query),
+        timeout_seconds=_timeout_from_query(query),
+        passthrough=_passthrough_options(query),
+    )
+
+
+def _profile_from_url(parsed: Any) -> str:
+    profile = parsed.netloc or parsed.path.strip("/")
+    return unquote(profile) if profile else _DEFAULT_CLAUDE_CODE_PROFILE
+
+
+def _runner_from_query(query: Mapping[str, list[str]]) -> Path:
+    configured = _query_one(query, "runner") or os.environ.get("DGOV_CLAUDE_CODE_RUNNER", "")
+    return Path(configured).expanduser() if configured else _DEFAULT_CLAUDE_CODE_RUNNER
+
+
+def _timeout_from_query(query: Mapping[str, list[str]]) -> float:
+    raw = _query_one(query, "timeout")
+    if not raw:
+        return _DEFAULT_CLAUDE_CODE_TIMEOUT_S
+    try:
+        timeout = float(raw)
+    except ValueError as exc:
+        raise ValueError("claude-code provider timeout must be numeric") from exc
+    if timeout <= 0:
+        raise ValueError("claude-code provider timeout must be > 0")
+    return timeout
+
+
+def _passthrough_options(query: Mapping[str, list[str]]) -> Mapping[str, tuple[str, ...]]:
+    allowed = {
+        "add_dir": "--add-dir",
+        "max_turns": "--max-turns",
+        "max_budget_usd": "--max-budget-usd",
+        "tools": "--tools",
+        "disallowed_tools": "--disallowed-tools",
+    }
+    options: dict[str, tuple[str, ...]] = {}
+    for query_key, option in allowed.items():
+        values = tuple(value for value in query.get(query_key, []) if value)
+        if values:
+            options[option] = values
+    return options
+
+
+def _query_one(query: Mapping[str, list[str]], key: str) -> str:
+    values = query.get(key, [])
+    return values[-1].strip() if values else ""
+
+
+def _token_limit_policy_from_config(
+    *,
+    label: str,
+    prompt_header: str,
+    generated_header: str,
+) -> TokenLimitPolicy | None:
+    prompt_header = prompt_header.strip()
+    generated_header = generated_header.strip()
+    label = label.strip()
+    if not prompt_header and not generated_header:
+        return None
+    return TokenLimitPolicy(
+        label=label or "configured provider token limit",
+        prompt_header=prompt_header,
+        generated_header=generated_header,
+    )
+
+
+def create_provider(
+    *,
+    base_url: str,
+    api_key: str,
+    name: str = "",
+    token_limit_label: str = "",
+    prompt_token_limit_header: str = "",
+    generated_token_limit_header: str = "",
+) -> OpenAICompatibleProvider | ClaudeCodeProvider:
+    if is_claude_code_provider_url(base_url):
+        return ClaudeCodeProvider(_claude_code_settings(base_url), name=name)
     client = OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
-    return OpenAICompatibleProvider(client, name=name)
+    token_limit_policy = _token_limit_policy_from_config(
+        label=token_limit_label,
+        prompt_header=prompt_token_limit_header,
+        generated_header=generated_token_limit_header,
+    )
+    return OpenAICompatibleProvider(client, name=name, token_limit_policy=token_limit_policy)

@@ -301,6 +301,33 @@ def _create_complete_optional_fields_plan(tmp_path) -> tuple[FlatPlan, BundleRes
     return flat_plan, bundle
 
 
+def _create_flat_plan_with_units(
+    tmp_path: Path,
+    *,
+    name: str,
+    summary: str,
+    units: dict[str, PlanUnit],
+) -> FlatPlan:
+    plan_root = tmp_path / "test_plan"
+    plan_root.mkdir()
+    source_file = plan_root / "section1" / "file.toml"
+    return FlatPlan(
+        plan_root=plan_root,
+        root_meta=RootMeta(name=name, summary=summary, sections=("section1",)),
+        units=units,
+        source_map={slug: source_file for slug in units},
+        source_mtime_max=1234567890.0,
+    )
+
+
+def _empty_sop_bundle(flat_plan: FlatPlan, sop_set_hash: str) -> BundleResult:
+    return BundleResult(
+        plan=flat_plan,
+        sop_mapping={slug: () for slug in flat_plan.units},
+        sop_set_hash=sop_set_hash,
+    )
+
+
 def _assert_field_order(task_section: str, field_specs: list[tuple[str, str]]) -> None:
     """Assert that fields appear in task_section in the specified order.
 
@@ -759,15 +786,6 @@ class TestSerializeCompiledTomlWithAgentAndTimeout:
 
     def test_self_review_and_fork_controls_emit_only_when_overridden(self, tmp_path):
         """Task-local review/fork controls should round-trip through compiled TOML."""
-        plan_root = tmp_path / "test_plan"
-        plan_root.mkdir()
-
-        root_meta = RootMeta(
-            name="worker-controls-plan",
-            summary="Test worker controls",
-            sections=("section1",),
-        )
-
         review_unit = PlanUnit(
             slug="section1/file.review_task",
             summary="Review task",
@@ -784,29 +802,16 @@ class TestSerializeCompiledTomlWithAgentAndTimeout:
             commit_message="Done",
             files=PlanUnitFiles(),
         )
-
-        flat_plan = FlatPlan(
-            plan_root=plan_root,
-            root_meta=root_meta,
+        flat_plan = _create_flat_plan_with_units(
+            tmp_path,
+            name="worker-controls-plan",
+            summary="Test worker controls",
             units={
                 "section1/file.review_task": review_unit,
                 "section1/file.default_task": default_unit,
             },
-            source_map={
-                "section1/file.review_task": plan_root / "section1" / "file.toml",
-                "section1/file.default_task": plan_root / "section1" / "file.toml",
-            },
-            source_mtime_max=1234567890.0,
         )
-
-        bundle = BundleResult(
-            plan=flat_plan,
-            sop_mapping={
-                "section1/file.review_task": (),
-                "section1/file.default_task": (),
-            },
-            sop_set_hash="worker_controls_hash",
-        )
+        bundle = _empty_sop_bundle(flat_plan, "worker_controls_hash")
 
         result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
         review_section = _extract_task_section(result, "section1/file.review_task")

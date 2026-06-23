@@ -794,18 +794,23 @@ def _iter_plan_dirs(
     """Yield (plan_path, archived) pairs from plans_dir respecting filters."""
     out: list[tuple[Path, bool]] = []
     if include_active:
-        for child in sorted(plans_dir.iterdir()):
-            if not child.is_dir() or child.name.startswith("_") or child.name == "archive":
-                continue
-            out.append((child, False))
+        out.extend((child, False) for child in _visible_plan_dirs(plans_dir, skip_archive=True))
     if include_archived:
         archive_dir = plans_dir / "archive"
-        if archive_dir.is_dir():
-            for child in sorted(archive_dir.iterdir()):
-                if not child.is_dir() or child.name.startswith("_"):
-                    continue
-                out.append((child, True))
+        out.extend((child, True) for child in _visible_plan_dirs(archive_dir, skip_archive=False))
     return out
+
+
+def _visible_plan_dirs(parent: Path, *, skip_archive: bool) -> list[Path]:
+    if not parent.is_dir():
+        return []
+    return [
+        child
+        for child in sorted(parent.iterdir())
+        if child.is_dir()
+        and not child.name.startswith("_")
+        and not (skip_archive and child.name == "archive")
+    ]
 
 
 def _plan_list_status(total: int, deployed: int) -> PlanListStatus:
@@ -818,24 +823,49 @@ def _plan_list_status(total: int, deployed: int) -> PlanListStatus:
     return PlanListStatus.IN_PROGRESS
 
 
+def _basic_plan_list_entry(plan_path: Path, *, archived: bool) -> PlanListEntry:
+    return PlanListEntry(
+        name=plan_path.name,
+        path=str(plan_path),
+        archived=archived,
+    )
+
+
+def _read_compiled_plan(compiled_path: Path) -> dict[str, Any] | None:
+    try:
+        return tomllib.loads(compiled_path.read_text())
+    except (tomllib.TOMLDecodeError, OSError):
+        return None
+
+
+def _plan_list_entry_status(
+    *,
+    total: int,
+    deployed_count: int,
+    stale: bool,
+    remediation_needed: bool,
+) -> PlanListStatus:
+    status = _plan_list_status(total, deployed_count)
+    # Don't override "empty" — a plan with zero units is more informative than "stale".
+    # `_needs_remediation` already guards on `unit_count > 0`.
+    if total == 0:
+        return status
+    if stale:
+        return PlanListStatus.STALE
+    if remediation_needed:
+        return PlanListStatus.DEGRADED
+    return status
+
+
 def _summarize_plan_entry(project_root: Path, plan_path: Path, *, archived: bool) -> PlanListEntry:
     from dgov.plan_review import load_run_envelope
 
     compiled_path = plan_path / "_compiled.toml"
     if not compiled_path.exists():
-        return PlanListEntry(
-            name=plan_path.name,
-            path=str(plan_path),
-            archived=archived,
-        )
-    try:
-        raw = tomllib.loads(compiled_path.read_text())
-    except (tomllib.TOMLDecodeError, OSError):
-        return PlanListEntry(
-            name=plan_path.name,
-            path=str(plan_path),
-            archived=archived,
-        )
+        return _basic_plan_list_entry(plan_path, archived=archived)
+    raw = _read_compiled_plan(compiled_path)
+    if raw is None:
+        return _basic_plan_list_entry(plan_path, archived=archived)
     tasks = raw.get("tasks", {}) or {}
     plan_section = raw.get("plan", {})
     plan_name = plan_section.get("name", plan_path.name)
@@ -855,15 +885,6 @@ def _summarize_plan_entry(project_root: Path, plan_path: Path, *, archived: bool
         pending_count=pending_count,
     )
 
-    status = _plan_list_status(total, deployed_count)
-    # Don't override "empty" — a plan with zero units is more informative than "stale".
-    # `_needs_remediation` already guards on `unit_count > 0`.
-    if total > 0:
-        if stale:
-            status = PlanListStatus.STALE
-        elif remediation_needed:
-            status = PlanListStatus.DEGRADED
-
     return PlanListEntry(
         name=plan_name,
         path=str(plan_path),
@@ -871,7 +892,12 @@ def _summarize_plan_entry(project_root: Path, plan_path: Path, *, archived: bool
         compiled=True,
         total=total,
         deployed=deployed_count,
-        status=status,
+        status=_plan_list_entry_status(
+            total=total,
+            deployed_count=deployed_count,
+            stale=stale,
+            remediation_needed=remediation_needed,
+        ),
         run_status=run_envelope.run_status,
         remediation_needed=remediation_needed,
     )

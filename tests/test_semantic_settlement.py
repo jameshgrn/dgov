@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from dgov.dag_parser import DagTaskSpec
     from dgov.runner import EventDagRunner
 
-from dgov.semantic_settlement import (
+from helpers import (
     DuplicateDefinition,
     FailureClass,
     IntegrationCandidateVerdict,
@@ -845,7 +845,7 @@ class TestPythonSemanticAnalyzers:
 
     def test_analyze_python_file_symbols_extracts_functions(self, tmp_path: Path):
         """Analyzer extracts function symbols from Python file."""
-        from dgov.semantic_settlement import _analyze_python_file_symbols
+        from helpers import _analyze_python_file_symbols
 
         test_file = tmp_path / "test.py"
         test_file.write_text("""
@@ -870,7 +870,7 @@ async def baz():
 
     def test_analyze_python_file_symbols_extracts_classes_and_methods(self, tmp_path: Path):
         """Analyzer extracts class and method symbols."""
-        from dgov.semantic_settlement import _analyze_python_file_symbols
+        from helpers import _analyze_python_file_symbols
 
         test_file = tmp_path / "test.py"
         test_file.write_text("""
@@ -892,7 +892,7 @@ class MyClass:
 
     def test_check_duplicate_definitions_detects_duplicates(self, tmp_path: Path):
         """Duplicate definition check finds same symbol in multiple files."""
-        from dgov.semantic_settlement import _check_duplicate_definitions
+        from helpers import _check_duplicate_definitions
 
         file1 = tmp_path / "a.py"
         file1.write_text("def shared(): pass\n")
@@ -908,7 +908,7 @@ class MyClass:
 
     def test_check_same_symbol_edit_detects_concurrent_edits(self):
         """Same symbol edit check finds overlapping changes."""
-        from dgov.semantic_settlement import _check_same_symbol_edit, _SymbolInfo
+        from helpers import _check_same_symbol_edit, _SymbolInfo
 
         # Task changed foo (line range changed from base)
         task_base_symbols = {
@@ -931,7 +931,7 @@ class MyClass:
 
     def test_check_same_symbol_edit_passes_one_sided_cleanup(self):
         """One-sided cleanup/refactor passes - only task changed the symbol."""
-        from dgov.semantic_settlement import _check_same_symbol_edit, _SymbolInfo
+        from helpers import _check_same_symbol_edit, _SymbolInfo
 
         # Base state
         task_base_symbols = {
@@ -958,7 +958,7 @@ class MyClass:
 
     def test_check_signature_drift_detects_changes(self):
         """Signature drift check finds changed function signatures."""
-        from dgov.semantic_settlement import _check_signature_drift, _SymbolInfo
+        from helpers import _check_signature_drift, _SymbolInfo
 
         base = {
             "foo": _SymbolInfo("foo", "function", "src/a.py", 1, 5, "def foo()"),
@@ -974,7 +974,7 @@ class MyClass:
 
     def test_run_python_semantic_gate_passes_non_python_files(self):
         """Non-Python tasks bypass the semantic gate."""
-        from dgov.semantic_settlement import run_python_semantic_gate
+        from helpers import run_python_semantic_gate
 
         verdict = run_python_semantic_gate(
             candidate_path=Path("/tmp"),
@@ -990,7 +990,7 @@ class MyClass:
 
     def test_run_python_semantic_gate_detects_syntax_errors(self, tmp_path: Path):
         """Semantic gate fails closed on syntax errors."""
-        from dgov.semantic_settlement import FailureClass, run_python_semantic_gate
+        from helpers import FailureClass, run_python_semantic_gate
 
         bad_file = tmp_path / "bad.py"
         bad_file.write_text("def broken(:")
@@ -1010,7 +1010,7 @@ class MyClass:
 
     def test_check_same_symbol_edit_true_conflict_rejects(self):
         """True concurrent edit to same symbol must still reject."""
-        from dgov.semantic_settlement import _check_same_symbol_edit, _SymbolInfo
+        from helpers import _check_same_symbol_edit, _SymbolInfo
 
         # Base: original symbol definition
         task_base_symbols = {
@@ -1040,7 +1040,7 @@ class MyClass:
 
     def test_check_same_symbol_edit_target_unchanged_passes(self):
         """Task-only edit (target unchanged) should pass - not a concurrent conflict."""
-        from dgov.semantic_settlement import _check_same_symbol_edit, _SymbolInfo
+        from helpers import _check_same_symbol_edit, _SymbolInfo
 
         # Base state
         task_base_symbols = {
@@ -1066,7 +1066,7 @@ class MyClass:
         """Duplicate symbols in test files should not trigger rejection."""
         import tempfile
 
-        from dgov.semantic_settlement import _check_duplicate_definitions
+        from helpers import _check_duplicate_definitions
 
         with tempfile.TemporaryDirectory() as tmp:
             # Create test files with same helper function (legitimate duplication)
@@ -1088,7 +1088,7 @@ class MyClass:
         """Common test helper names should not trigger duplicate detection."""
         import tempfile
 
-        from dgov.semantic_settlement import _check_duplicate_definitions
+        from helpers import _check_duplicate_definitions
 
         with tempfile.TemporaryDirectory() as tmp:
             # Production code file
@@ -1108,7 +1108,7 @@ class MyClass:
         """Duplicate symbols in production code should still be detected."""
         import tempfile
 
-        from dgov.semantic_settlement import _check_duplicate_definitions
+        from helpers import _check_duplicate_definitions
 
         with tempfile.TemporaryDirectory() as tmp:
             file1 = Path(tmp) / "module_a.py"
@@ -1383,7 +1383,7 @@ class TestPythonSemanticGateIntegration:
     """Integration tests for Python semantic gate with real git repos."""
 
     def test_semantic_gate_checks_unicode_python_diff(self, tmp_path: Path):
-        from dgov.semantic_settlement import FailureClass, run_python_semantic_gate
+        from helpers import FailureClass, run_python_semantic_gate
 
         name = "caf\u00e9.py"
         _init_git_repo(tmp_path)
@@ -1412,7 +1412,7 @@ class TestPythonSemanticGateIntegration:
 
     def test_semantic_gate_detects_class_method_collision(self, tmp_path: Path):
         """Gate detects when both sides modify the same class method."""
-        from dgov.semantic_settlement import (
+        from helpers import (
             _get_symbols_at_commit,
         )
 
@@ -1428,7 +1428,7 @@ class TestPythonSemanticGateIntegration:
 
     def test_semantic_gate_finds_duplicate_definitions(self, tmp_path: Path):
         """Gate detects duplicate function definitions in integrated result."""
-        from dgov.semantic_settlement import (
+        from helpers import (
             _check_duplicate_definitions,
         )
 
@@ -1447,7 +1447,7 @@ class TestPythonSemanticGateIntegration:
 
     def test_semantic_gate_rejects_duplicate_from_target_changed_file(self, tmp_path: Path):
         """Gate includes target-changed Python files in cross-file duplicate checks."""
-        from dgov.semantic_settlement import FailureClass, run_python_semantic_gate
+        from helpers import FailureClass, run_python_semantic_gate
 
         _init_git_repo(tmp_path)
         src = tmp_path / "src"
@@ -1490,7 +1490,7 @@ class TestPythonSemanticGateIntegration:
 
     def test_semantic_gate_ignores_preexisting_cross_file_duplicates(self, tmp_path: Path):
         """Pre-existing duplicate names across files are not a new settlement conflict."""
-        from dgov.semantic_settlement import run_python_semantic_gate
+        from helpers import run_python_semantic_gate
 
         _init_git_repo(tmp_path)
         src = tmp_path / "src"
@@ -1529,7 +1529,7 @@ class TestPythonSemanticGateIntegration:
 
     def test_semantic_gate_ignores_target_head_duplicate_unrelated_to_task(self, tmp_path: Path):
         """Target-head duplicate names should not be charged to an unrelated task."""
-        from dgov.semantic_settlement import run_python_semantic_gate
+        from helpers import run_python_semantic_gate
 
         _init_git_repo(tmp_path)
         src = tmp_path / "src"
@@ -1568,7 +1568,7 @@ class TestPythonSemanticGateIntegration:
         self, tmp_path: Path
     ):
         """Syntax rejection stays scoped to files changed by the task."""
-        from dgov.semantic_settlement import run_python_semantic_gate
+        from helpers import run_python_semantic_gate
 
         _init_git_repo(tmp_path)
         src = tmp_path / "src"

@@ -17,6 +17,7 @@ sys.modules["openai"].OpenAI = object  # type: ignore
 
 from dgov.researcher import (  # noqa: E402
     _build_system_prompt,
+    _create_completion,
     run_researcher,
 )
 from dgov.workers.atomic import (  # noqa: E402
@@ -49,6 +50,73 @@ class _LengthFinishProvider:
         return SimpleNamespace(
             choices=[SimpleNamespace(message=_LengthFinishMessage(), finish_reason="length")]
         )
+
+
+class _CaptureProvider:
+    def __init__(self) -> None:
+        self.kwargs: dict[str, Any] = {}
+
+    def create_chat_completion(self, **kwargs: Any) -> object:
+        self.kwargs = kwargs
+        return object()
+
+
+class _DoneToolCallMessage:
+    content = None
+
+    def __init__(self) -> None:
+        self.tool_calls = [
+            SimpleNamespace(
+                id="call-1",
+                function=SimpleNamespace(
+                    name="done",
+                    arguments=json.dumps({"summary": "review finished"}),
+                ),
+            )
+        ]
+
+    def model_dump(self, exclude_none: bool = True) -> dict[str, object]:
+        return {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "done",
+                        "arguments": json.dumps({"summary": "review finished"}),
+                    },
+                }
+            ],
+        }
+
+
+class _DoneToolCallProvider:
+    def create_chat_completion(self, **_kwargs: Any) -> object:
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=_DoneToolCallMessage(), finish_reason="stop")]
+        )
+
+
+def _capture_done_provider_factory(created: dict[str, object]):
+    def _create_provider(**kwargs: object) -> _DoneToolCallProvider:
+        created.update(kwargs)
+        return _DoneToolCallProvider()
+
+    return _create_provider
+
+
+def test_researcher_completion_uses_configured_provider_max_tokens() -> None:
+    provider = _CaptureProvider()
+
+    _create_completion(
+        provider,
+        model="provider/model",
+        messages=[{"role": "user", "content": "hi"}],
+        config=AtomicConfig(llm_max_tokens=8192),
+    )
+
+    assert provider.kwargs["max_tokens"] == 8192
 
 
 def test_researcher_prompt_uses_configured_budget_and_repo_map(tmp_path: Path) -> None:
@@ -177,6 +245,7 @@ def test_researcher_execution_rejects_disallowed_tool(tmp_path: Path) -> None:
     result_event = cast(dict[str, Any], result_event)
     assert result_event["status"] == "failed"
     assert result_event["error_kind"] == "policy_blocked"
+    assert result_event["result_excerpt"] == result
     assert result_event["duration_ms"] >= 0
 
 
@@ -209,6 +278,38 @@ def test_run_researcher_uses_configured_iteration_budget(
     assert excinfo.value.code == 1
     assert provider.call_count == 2
     assert events[-1] == ("error", "Exceeded max iterations (2)")
+
+
+def test_run_researcher_allows_claude_code_provider_without_api_key_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    created: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "dgov.researcher.create_provider",
+        _capture_done_provider_factory(created),
+    )
+    monkeypatch.setattr(
+        "dgov.workers.runtime.WorkerEvent.emit",
+        lambda self: events.append((self.type, self.content)),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_researcher(
+            "review it",
+            tmp_path,
+            "sonnet",
+            json.dumps({
+                "llm_provider": "claude-sonnet-review",
+                "llm_base_url": "claude-code://daily?preset=review",
+                "llm_api_key_env": "",
+            }),
+        )
+
+    assert excinfo.value.code == 0
+    assert created["api_key"] == ""
+    assert ("done", "review finished") in events
 
 
 def test_run_researcher_reports_invalid_project_config_json(

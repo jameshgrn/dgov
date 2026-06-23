@@ -1,0 +1,33 @@
+[tasks.review-noise]
+summary = "Analyze plan review noise and branch-local governance visibility"
+role = "researcher"
+provider = "claude-sonnet-plan"
+files.read = [
+  ".dgov/governor.md",
+  "src/dgov/cli/plan.py",
+  "src/dgov/plan_review.py",
+  "tests/test_cli_plan_review.py",
+  "tests/test_cli_plan_list.py",
+  "tests/test_cli.py",
+]
+prompt = """
+Orient:
+- Read the user feedback in this prompt. Treat it as dogfood evidence from orbitopo.
+- Read plan review/list rendering in `src/dgov/cli/plan.py` and worker-note mismatch detection in `src/dgov/plan_review.py`.
+- Read focused tests around plan review warnings, plan list, status, and branch/local attention behavior.
+
+Feedback to analyze:
+- `plan review` is genuinely helpful because it puts commits, changed files, claimed files, token counts, candidate status, and worker notes in one place.
+- Warning like “worker note mentions files not in landed diff” can be noisy for docs tasks when the worker note is just reporting verification context.
+- Branch-local dgov state is useful but cognitively heavy; switching branches changes plan list as expected but makes it easy to forget which branch owns governance history.
+
+Research:
+1. Identify how the worker-note mismatch warning is computed and rendered.
+2. Recommend a rule that preserves the durable-facts-vs-narration invariant without warning on benign verification context.
+3. Recommend a small way to make branch ownership or governance-history locality more visible in `plan list`, `plan status`, or `plan review`.
+4. Name exact files/tests likely touched by one narrow follow-up implementation.
+
+Verify:
+- Read-only research only. Do not edit files.
+- Call done with concrete recommendations and non-goals.
+"""

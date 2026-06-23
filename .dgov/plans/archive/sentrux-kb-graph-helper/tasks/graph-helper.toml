@@ -1,0 +1,30 @@
+[tasks.graph-helper]
+summary = "Extract a knowledge graph related-adjacency helper"
+prompt = """
+## Orient
+- Read `src/dgov/kb.py` lines 40-90 first.
+- Read `tests/test_kb.py` lines 143-214 for the existing graph traversal behavior.
+- This task is only a small Sentrux cleanup in `src/dgov/kb.py`.
+- Do not edit tests, CLI files, Sentrux config, or unrelated knowledge-base parsing code.
+- Use `grep` before broader reads. If tool output is clipped, narrow the next read immediately.
+
+## Edit
+1. In `src/dgov/kb.py`, add one private helper on `KnowledgeGraph`, for example `_related_adjacency(self) -> dict[str, set[str]]`.
+2. Move the repeated related-edge adjacency construction from `related_by_depth` and `shortest_related_path` into that helper.
+3. Update both traversal methods to call the helper.
+4. Preserve behavior exactly: depth traversal results, shortest path results, unknown IDs, and `start_id == end_id` behavior must not change.
+5. Keep the patch local to `KnowledgeGraph`; do not introduce new public APIs or abstractions outside this class.
+
+## Verify
+- Use the test tool, not raw shell, for `uv run pytest -q -m unit tests/test_kb.py`.
+"""
+commit_message = "Extract knowledge graph related adjacency helper"
+role = "worker"
+timeout_s = 600
+iteration_budget = 14
+test_cmd = "uv run pytest -q -m unit tests/test_kb.py"
+max_fork_depth = 0
+
+[tasks.graph-helper.files]
+edit = ["src/dgov/kb.py"]
+read = ["tests/test_kb.py"]

@@ -1,0 +1,6 @@
+[plan]
+name = "fix-claude-timeout-config-test"
+summary = "Update source-repo config tests for Claude Code provider timeout URLs."
+sections = ["tasks"]
+default_provider = "claude-haiku-worker"
+default_agent = "haiku"

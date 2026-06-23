@@ -10,12 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import signal
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -39,7 +37,6 @@ from dgov.dag_parser import DagDefinition, DagTaskSpec
 from dgov.dispatch_run import (
     DispatchRun,
     DispatchRunState,
-    _dispatch_run_from_row_dict,
     derive_drift_evidence,
 )
 from dgov.event_types import (
@@ -73,23 +70,30 @@ from dgov.persistence import (
     record_runtime_artifact,
     update_runtime_artifact_state,
 )
-from dgov.persistence.dispatch_runs import (
-    get_dispatch_run,
-    list_dispatch_runs,
-    save_dispatch_run,
-)
 from dgov.persistence.schema import TaskState, WorkerTask
 from dgov.prompt_builder import PromptBuilder, build_baseline_diag_note, load_review_sop_blocks
 from dgov.runner_support import (
+    DispatchCoroutine,
+    DispatchJob,
+    ForkProvenance,
+    KernelActionHandler,
+    RetryProvenance,
+    RunLoopStep,
+    TaskContext,
     current_runner_source,
     deploy_records_by_unit,
     deployed_units,
     effective_sop_set_hash,
     latest_deploy_record_for_units,
+    latest_dispatch_run_id,
     latest_runner_run_start_ids,
+    load_runner_dispatch_run,
     load_runner_project_config,
+    parse_test_failure_command,
     reset_runner_plan_state,
-    summarize_runner_evidence,
+    save_runner_dispatch_run,
+    summarize_risk_evidence,
+    verify_test_targets,
 )
 from dgov.settlement import ReviewResult, review_sandbox
 from dgov.settlement_flow import (
@@ -108,93 +112,6 @@ from dgov.worktree import (
 )
 
 logger = logging.getLogger(__name__)
-_TEST_FAILURE_COMMAND_RE = re.compile(r"^Test failure from `(?P<command>[^`]+)`:", re.MULTILINE)
-DispatchCoroutine = Coroutine[Any, Any, list[DagAction]]
-DispatchJob = tuple[str, DispatchCoroutine]
-KernelActionHandler = Callable[
-    [Any, list[DispatchJob], list[DagAction]],
-    Awaitable[bool | None],
-]
-
-
-def _normalize_scope_path(path: str) -> str:
-    return path.strip().lstrip("./").rstrip("/")
-
-
-def _verify_test_targets(task: DagTaskSpec, test_dir: str) -> tuple[str, ...]:
-    test_root = _normalize_scope_path(test_dir)
-    if not test_root:
-        return ()
-    claimed = (
-        *task.files.create,
-        *task.files.edit,
-        *task.files.touch,
-        *task.files.read,
-    )
-    return tuple(
-        dict.fromkeys(
-            norm
-            for path in claimed
-            if (norm := _normalize_scope_path(path))
-            and (norm == test_root or norm.startswith(f"{test_root}/"))
-        )
-    )
-
-
-def _test_failure_command(error: str) -> str | None:
-    match = _TEST_FAILURE_COMMAND_RE.search(error)
-    if match is None:
-        return None
-    return match.group("command").strip() or None
-
-
-def _summarize_evidence(risk_record: IntegrationRiskRecord) -> str:
-    return summarize_runner_evidence(risk_record.overlap_evidence)
-
-
-@dataclass(frozen=True, slots=True)
-class _RetryProvenance:
-    """Marks a TaskContext as awaiting dispatch as a retry of a prior run."""
-
-    from_dispatch_run_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class _ForkProvenance:
-    """Marks a TaskContext as awaiting fork dispatch after iteration exhaustion."""
-
-    from_dispatch_run_id: str
-
-
-_DispatchProvenance = _RetryProvenance | _ForkProvenance | None
-
-
-@dataclass
-class TaskContext:
-    """Per-task runtime state tracked by EventDagRunner."""
-
-    pane_slug: str | None = None
-    attempts: int = 0
-    error: str | None = None
-    start_time: float | None = None
-    duration: float | None = None
-    worktree: Worktree | None = None
-    worker_task: asyncio.Task[None] | None = None
-    rejected_worktree: Worktree | None = None
-    call_count: int = 0
-    fork_depth: int = 0
-    review_file_count: int = 0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    current_dispatch_run_id: str | None = None
-    provenance: _DispatchProvenance = None
-
-
-@dataclass(frozen=True)
-class _RunLoopStep:
-    actions: list[DagAction]
-    final: dict[str, str] | None = None
-    stop: bool = False
 
 
 class EventDagRunner:
@@ -383,7 +300,7 @@ class EventDagRunner:
         ctx = self._ctx(slug)
         ctx.attempts += 1
         if ctx.current_dispatch_run_id is not None:
-            ctx.provenance = _RetryProvenance(ctx.current_dispatch_run_id)
+            ctx.provenance = RetryProvenance(ctx.current_dispatch_run_id)
         self.kernel.handle(TaskGovernorResumed(slug, GovernorAction.RETRY))
         emit_event(
             self.session_root,
@@ -416,13 +333,13 @@ class EventDagRunner:
     def _rehydrate_dispatch_run_contexts(self) -> None:
         """Restore latest DispatchRun ids for retry/fork lineage after process restart."""
         for slug in self.dag.tasks:
-            rows = list_dispatch_runs(
+            latest_id = latest_dispatch_run_id(
                 self.session_root,
                 plan_id=self.dag.name,
                 unit_slug=slug,
             )
-            if rows:
-                self._ctx(slug).current_dispatch_run_id = rows[-1]["id"]
+            if latest_id is not None:
+                self._ctx(slug).current_dispatch_run_id = latest_id
 
     def _apply_rehydrate_event(self, event: DgovEvent) -> None:
         """Apply a single event during rehydration. Extracted for testability."""
@@ -643,7 +560,9 @@ class EventDagRunner:
             if not provider_name:
                 continue
             provider = self.project_config.provider_config(provider_name)
-            if not os.environ.get(provider.api_key_env):
+            if provider.requires_api_key() and (
+                not provider.api_key_env or not os.environ.get(provider.api_key_env)
+            ):
                 missing.append(f"{provider.api_key_env} for provider {provider.name!r}")
         if missing:
             raise RuntimeError(", ".join(f"{item} not set" for item in missing))
@@ -859,7 +778,7 @@ class EventDagRunner:
     ) -> None:
         ctx.fork_depth += 1
         if ctx.current_dispatch_run_id is not None:
-            ctx.provenance = _ForkProvenance(ctx.current_dispatch_run_id)
+            ctx.provenance = ForkProvenance(ctx.current_dispatch_run_id)
         ctx.call_count = 0
         ctx.start_time = time.time()
         self._pending_dispatches.add(exit_event.task_slug)
@@ -1309,33 +1228,33 @@ class EventDagRunner:
             actions = step.actions
         return self._task_state_snapshot()
 
-    async def _run_loop_step(self, actions: list[DagAction]) -> _RunLoopStep:
+    async def _run_loop_step(self, actions: list[DagAction]) -> RunLoopStep:
         if actions:
             return await self._run_actions_step(actions)
         shutdown_step = self._shutdown_loop_step()
         if shutdown_step is not None:
             return shutdown_step
         if self.kernel.done:
-            return _RunLoopStep(actions=[], stop=True)
+            return RunLoopStep(actions=[], stop=True)
         return await self._event_loop_step()
 
-    async def _run_actions_step(self, actions: list[DagAction]) -> _RunLoopStep:
+    async def _run_actions_step(self, actions: list[DagAction]) -> RunLoopStep:
         next_actions, final = await self._process_actions(actions)
         if final is not None:
-            return _RunLoopStep(actions=[], final=final)
-        return _RunLoopStep(actions=next_actions)
+            return RunLoopStep(actions=[], final=final)
+        return RunLoopStep(actions=next_actions)
 
-    def _shutdown_loop_step(self) -> _RunLoopStep | None:
+    def _shutdown_loop_step(self) -> RunLoopStep | None:
         if not self._shutdown_event.is_set():
             return None
         actions = self._handle_loop_shutdown()
-        return _RunLoopStep(actions=actions, stop=not actions)
+        return RunLoopStep(actions=actions, stop=not actions)
 
-    async def _event_loop_step(self) -> _RunLoopStep:
+    async def _event_loop_step(self) -> RunLoopStep:
         exit_event = await self._wait_for_loop_event()
         if exit_event is not None:
-            return _RunLoopStep(actions=self._handle_worker_exit(exit_event))
-        return _RunLoopStep(actions=[], stop=self._loop_is_idle_done())
+            return RunLoopStep(actions=self._handle_worker_exit(exit_event))
+        return RunLoopStep(actions=[], stop=self._loop_is_idle_done())
 
     def _handle_loop_shutdown(self) -> list[DagAction]:
         actions = self._abandon_active_tasks_for_shutdown()
@@ -1500,15 +1419,10 @@ class EventDagRunner:
         "Agent stopped without calling 'done'",
     })
 
-    _PROVIDER_RATE_LIMIT_MARKER = "Fireworks adaptive serverless TPM"
+    _PROVIDER_RATE_LIMIT_MARKER = "Provider token limit exceeded"
 
     def _is_non_retryable_provider_rate_limit(self, error_detail: str) -> bool:
-        """Check if error is a non-retryable provider rate limit.
-
-        Fireworks adaptive serverless TPM limits are infrastructure/provider
-        throughput constraints, not worker-fixable issues. These should fail
-        fast without wasting retry budget.
-        """
+        """Check if error is a non-retryable configured provider token limit."""
         return self._PROVIDER_RATE_LIMIT_MARKER in error_detail
 
     def _abandon_interrupted_task(
@@ -1568,7 +1482,7 @@ class EventDagRunner:
             ctx = self._ctx(action.task_slug)
             ctx.attempts = attempts + 1
             if ctx.current_dispatch_run_id is not None:
-                ctx.provenance = _RetryProvenance(ctx.current_dispatch_run_id)
+                ctx.provenance = RetryProvenance(ctx.current_dispatch_run_id)
             logger.info(
                 "Task %s failed — retry %d/%d: %s",
                 action.task_slug,
@@ -1705,6 +1619,25 @@ class EventDagRunner:
         """Hash the worker SOP bundle loaded for this dispatch."""
         return effective_sop_set_hash(self.session_root)
 
+    def _dispatch_run_lineage(
+        self,
+        ctx: TaskContext,
+    ) -> tuple[str | None, str | None, int, int]:
+        retried_from: str | None = None
+        forked_from: str | None = None
+        retry_index = 0
+        fork_depth = 0
+        match ctx.provenance:
+            case RetryProvenance(from_dispatch_run_id=rid):
+                retried_from = rid
+                retry_index = ctx.attempts
+            case ForkProvenance(from_dispatch_run_id=fid):
+                forked_from = fid
+                fork_depth = ctx.fork_depth
+            case None:
+                pass
+        return retried_from, forked_from, retry_index, fork_depth
+
     def _mint_dispatch_run(
         self,
         *,
@@ -1715,19 +1648,7 @@ class EventDagRunner:
     ) -> DispatchRun:
         effective_sop_set_hash = self._effective_sop_set_hash()
         plan_hash = self.dag.sop_set_hash or None
-        retried_from: str | None = None
-        forked_from: str | None = None
-        retry_index = 0
-        fork_depth = 0
-        match ctx.provenance:
-            case _RetryProvenance(from_dispatch_run_id=rid):
-                retried_from = rid
-                retry_index = ctx.attempts
-            case _ForkProvenance(from_dispatch_run_id=fid):
-                forked_from = fid
-                fork_depth = ctx.fork_depth
-            case None:
-                pass
+        retried_from, forked_from, retry_index, fork_depth = self._dispatch_run_lineage(ctx)
         dispatch_run = DispatchRun(
             from_plan_id=self.dag.name,
             unit_slug=task_slug,
@@ -1749,7 +1670,7 @@ class EventDagRunner:
             dispatched_by=self._dispatched_by,
             dispatched_at=datetime.now(UTC),
         ).start_active()
-        save_dispatch_run(self.session_root, dispatch_run)
+        save_runner_dispatch_run(self.session_root, dispatch_run)
         ctx.current_dispatch_run_id = dispatch_run.id
         ctx.provenance = None
         return dispatch_run
@@ -1771,15 +1692,12 @@ class EventDagRunner:
             state=state,
             terminated_at=datetime.now(UTC),
         )
-        save_dispatch_run(self.session_root, terminal)
+        save_runner_dispatch_run(self.session_root, terminal)
 
     def _current_dispatch_run(self, ctx: TaskContext) -> DispatchRun | None:
         if ctx.current_dispatch_run_id is None:
             return None
-        current_dispatch_run = get_dispatch_run(self.session_root, ctx.current_dispatch_run_id)
-        if current_dispatch_run is None:
-            return None
-        return _dispatch_run_from_row_dict(current_dispatch_run)
+        return load_runner_dispatch_run(self.session_root, ctx.current_dispatch_run_id)
 
     def _complete_terminal_dispatch_run(
         self,
@@ -1916,7 +1834,7 @@ class EventDagRunner:
             "scope_ignore_files": list(self.project_config.scope_ignore_files),
             "scope_allow_files": list(self.project_config.scope_allow_files),
             "scope_deny_files": list(self.project_config.scope_deny_files),
-            "verify_test_targets": list(_verify_test_targets(task, self.project_config.test_dir)),
+            "verify_test_targets": list(verify_test_targets(task, self.project_config.test_dir)),
         }
 
     def _record_dispatch_artifact(
@@ -2196,7 +2114,7 @@ class EventDagRunner:
             )
             return result
         if risk_record.risk_level == RiskLevel.CRITICAL:
-            crit_error = f"Integration risk CRITICAL: {_summarize_evidence(risk_record)}"
+            crit_error = f"Integration risk CRITICAL: {summarize_risk_evidence(risk_record)}"
             self._emit_settlement_phase_completed(
                 action, phase, "failed", duration, crit_error, facts=result.facts
             )
@@ -2302,35 +2220,28 @@ class EventDagRunner:
         sp.run(["git", "reset", "HEAD~1"], cwd=wt.path, capture_output=True)
 
         task = self.dag.tasks[action.task_slug]
-        retry_task = DagTaskSpec(
-            slug=action.task_slug,
-            summary=f"[retry] {task.summary}",
-            prompt=PromptBuilder.settlement_retry_prompt(task, settlement_error),
-            commit_message=task.commit_message,
-            depends_on=task.depends_on,
-            files=task.files,
-            agent=task.agent,
-            provider=task.provider,
-            timeout_s=task.timeout_s,
-            test_cmd=task.test_cmd,
+        retry_task = task.model_copy(
+            update={
+                "summary": f"[retry] {task.summary}",
+                "prompt": PromptBuilder.settlement_retry_prompt(task, settlement_error),
+            }
         )
         retry_pane_slug = f"{action.pane_slug}-retry"
         retry_scope = self._retry_scope(action.task_slug, task, retry_pane_slug)
-        if (command := _test_failure_command(settlement_error)) and retry_scope[
+        if (command := parse_test_failure_command(settlement_error)) and retry_scope[
             "verify_test_targets"
         ]:
             retry_scope["require_successful_test_verification"] = True
             retry_scope["required_verification_command"] = command
 
-        await run_headless_worker(
-            self.session_root,
-            self.dag.name,
+        await self._run_with_timeout(
             action.task_slug,
             retry_pane_slug,
             wt.path,
             retry_task,
             retry_scope,
             self._noop_retry_exit,
+            retry_task.timeout_s,
             on_event=self.on_event,
         )
 
@@ -2352,7 +2263,7 @@ class EventDagRunner:
             "scope_ignore_files": list(self.project_config.scope_ignore_files),
             "scope_allow_files": list(self.project_config.scope_allow_files),
             "scope_deny_files": list(self.project_config.scope_deny_files),
-            "verify_test_targets": list(_verify_test_targets(task, self.project_config.test_dir)),
+            "verify_test_targets": list(verify_test_targets(task, self.project_config.test_dir)),
         }
 
     def _noop_retry_exit(

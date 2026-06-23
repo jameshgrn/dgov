@@ -25,8 +25,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from typing import cast
 
+from dgov.command_facts import CommandExecutionFact
 from dgov.config import ProjectConfig, load_project_config
 from dgov.git_status import git_path_output_paths, porcelain_status_paths
 from dgov.persistence import read_events
@@ -48,34 +49,6 @@ _WRITE_ACTIVITY_KINDS = frozenset({
     "run_bash",
 })
 _WRITE_ACTIVITY_MODES = frozenset({"create", "edit", "patch", "revert"})
-
-
-@dataclass(frozen=True)
-class CommandExecutionFact:
-    """Objective record of a command executed by a settlement gate."""
-
-    gate: str
-    source: str
-    command: str
-    outcome: Literal["completed", "timed_out"]
-    duration_s: float
-    exit_code: int | None = None
-    timeout_s: float | None = None
-
-    def __post_init__(self) -> None:
-        if self.outcome == "completed":
-            if self.exit_code is None:
-                raise ValueError("CommandExecutionFact: completed outcome requires exit_code")
-            if self.timeout_s is not None:
-                raise ValueError("CommandExecutionFact: completed outcome cannot set timeout_s")
-            return
-        if self.outcome == "timed_out":
-            if self.exit_code is not None:
-                raise ValueError("CommandExecutionFact: timed_out outcome cannot set exit_code")
-            if self.timeout_s is None:
-                raise ValueError("CommandExecutionFact: timed_out outcome requires timeout_s")
-            return
-        raise ValueError(f"CommandExecutionFact: unknown outcome {self.outcome!r}")
 
 
 @dataclass(frozen=True)
@@ -772,6 +745,53 @@ def filter_unclaimed_non_ignored(
     )
 
 
+def _unclaimed_transient_paths(
+    transient_paths: set[str],
+    claimed: frozenset[str],
+    scope_ignore_files: Sequence[str],
+) -> list[str]:
+    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = split_ignore_entries(
+        scope_ignore_files
+    )
+    return filter_unclaimed_non_ignored(
+        transient_paths,
+        claimed,
+        ignored_exact,
+        ignored_prefix_dirs,
+        ignored_named_dirs,
+        ignored_globs,
+    )
+
+
+def _transient_reserved_failure(
+    transient_paths: set[str],
+    actual_files: frozenset[str],
+) -> ReviewResult | None:
+    reserved = sorted(path for path in transient_paths if _is_reserved_path(path))
+    if not reserved:
+        return None
+    return ReviewResult(
+        passed=False,
+        verdict="reserved_path",
+        actual_files=actual_files,
+        error=(f"Transiently touched governor-owned files via worker tools: {reserved}"),
+    )
+
+
+def _transient_unclaimed_failure(
+    unclaimed: list[str],
+    actual_files: frozenset[str],
+) -> ReviewResult | None:
+    if not unclaimed:
+        return None
+    return ReviewResult(
+        passed=False,
+        verdict="scope_violation",
+        actual_files=actual_files,
+        error=(f"Transiently touched unclaimed files via worker tools: {unclaimed}"),
+    )
+
+
 def check_transient_scope(
     session_root: str | None,
     task_slug: str | None,
@@ -792,37 +812,13 @@ def check_transient_scope(
         return None
 
     claimed = frozenset(claimed_files)
-    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = split_ignore_entries(
-        scope_ignore_files
-    )
-
     transient_paths = collect_transient_write_paths(session_root, task_slug, pane_slug)
-    reserved = sorted(path for path in transient_paths if _is_reserved_path(path))
-    if reserved:
-        return ReviewResult(
-            passed=False,
-            verdict="reserved_path",
-            actual_files=actual_files,
-            error=(f"Transiently touched governor-owned files via worker tools: {reserved}"),
-        )
-
-    unclaimed = filter_unclaimed_non_ignored(
-        transient_paths,
-        claimed,
-        ignored_exact,
-        ignored_prefix_dirs,
-        ignored_named_dirs,
-        ignored_globs,
-    )
-
-    if not unclaimed:
-        return None
-
-    return ReviewResult(
-        passed=False,
-        verdict="scope_violation",
-        actual_files=actual_files,
-        error=(f"Transiently touched unclaimed files via worker tools: {unclaimed}"),
+    failure = _transient_reserved_failure(transient_paths, actual_files)
+    if failure is not None:
+        return failure
+    return _transient_unclaimed_failure(
+        _unclaimed_transient_paths(transient_paths, claimed, scope_ignore_files),
+        actual_files,
     )
 
 
@@ -1646,6 +1642,79 @@ def _type_check_failure(
     return None
 
 
+def _run_type_check_diagnostics(
+    source: str,
+    type_check_cmd: str,
+    cwd: Path,
+    timeout: int,
+) -> tuple[
+    subprocess.CompletedProcess[str] | None,
+    CommandExecutionFact,
+    set[tuple[str, str]] | None,
+]:
+    result, fact = _run_cmd_with_fact(
+        "type_check",
+        source,
+        type_check_cmd,
+        [],
+        cwd,
+        timeout=timeout,
+    )
+    if result is None:
+        return None, fact, None
+    output = _type_check_output(result)
+    return result, fact, parse_diagnostic_identities(output, cwd)
+
+
+def _type_check_timeout_failure(
+    label: str,
+    timeout: int,
+    facts: tuple[CommandExecutionFact, ...],
+) -> tuple[GateResult, tuple[CommandExecutionFact, ...]]:
+    return (
+        GateResult(
+            passed=False,
+            error=f"Type check {label} command timed out after {timeout}s",
+            facts=facts,
+        ),
+        facts,
+    )
+
+
+@dataclass(frozen=True)
+class _TypeCheckDiagnosticRun:
+    result: subprocess.CompletedProcess[str]
+    fact: CommandExecutionFact
+    ids: set[tuple[str, str]]
+
+
+def _type_check_diagnostic_run(
+    *,
+    label: str,
+    source: str,
+    type_check_cmd: str,
+    cwd: Path,
+    timeout: int,
+    prior_facts: tuple[CommandExecutionFact, ...] = (),
+) -> tuple[
+    _TypeCheckDiagnosticRun | None,
+    GateResult | None,
+    tuple[CommandExecutionFact, ...],
+]:
+    result, fact, diagnostic_ids = _run_type_check_diagnostics(
+        source,
+        type_check_cmd,
+        cwd,
+        timeout,
+    )
+    facts = (*prior_facts, fact)
+    if result is None:
+        failure, facts = _type_check_timeout_failure(label, timeout, facts)
+        return None, failure, facts
+    assert diagnostic_ids is not None
+    return _TypeCheckDiagnosticRun(result, fact, diagnostic_ids), None, facts
+
+
 def _type_check_gate(
     type_check_cmd: str,
     worktree_path: Path,
@@ -1653,67 +1722,37 @@ def _type_check_gate(
     timeout: int = 120,
     baseline_path: Path | None = None,
 ) -> tuple[GateResult | None, tuple[CommandExecutionFact, ...]]:
-    """Run type checker with baseline comparison.
-
-    Runs the type checker in both the project root (baseline) and the
-    worktree. Only fails if the worktree introduces NEW diagnostic identities
-    (file, error_code pairs) that don't exist in the baseline — pre-existing
-    errors are not the worker's fault, even if line numbers shift.
-    """
-    # Baseline: run in project root by default. Branch-level verification can
-    # pass a detached baseline worktree so diagnostics are compared against the
-    # merge base instead of the already-mutated feature branch.
+    """Run type checker with baseline comparison."""
     baseline_cwd = baseline_path or Path(project_root)
-    baseline_res, baseline_fact = _run_cmd_with_fact(
-        "type_check",
-        "project.type_check_cmd:baseline",
-        type_check_cmd,
-        [],
-        baseline_cwd,
+    baseline, failure, facts = _type_check_diagnostic_run(
+        label="baseline",
+        source="project.type_check_cmd:baseline",
+        type_check_cmd=type_check_cmd,
+        cwd=baseline_cwd,
         timeout=timeout,
     )
-    if baseline_res is None:
-        return (
-            GateResult(
-                passed=False,
-                error=f"Type check baseline command timed out after {timeout}s",
-                facts=(baseline_fact,),
-            ),
-            (baseline_fact,),
-        )
-    baseline_output = _type_check_output(baseline_res)
-    baseline_ids = parse_diagnostic_identities(baseline_output, baseline_cwd)
-
-    # Worktree: run against worker's changes
-    worktree_res, worktree_fact = _run_cmd_with_fact(
-        "type_check",
-        "project.type_check_cmd:worktree",
-        type_check_cmd,
-        [],
-        worktree_path,
-        timeout=timeout,
-    )
-    if worktree_res is None:
-        return (
-            GateResult(
-                passed=False,
-                error=f"Type check worktree command timed out after {timeout}s",
-                facts=(baseline_fact, worktree_fact),
-            ),
-            (baseline_fact, worktree_fact),
-        )
-    worktree_output = _type_check_output(worktree_res)
-    worktree_ids = parse_diagnostic_identities(worktree_output, worktree_path)
-
-    # Compare identity sets: new diagnostics are those in worktree but not baseline
-    new_ids = worktree_ids - baseline_ids
-    failure = _type_check_failure(worktree_res, worktree_output, new_ids, worktree_ids)
     if failure is not None:
-        return replace(failure, facts=(baseline_fact, worktree_fact)), (
-            baseline_fact,
-            worktree_fact,
-        )
-    return None, (baseline_fact, worktree_fact)
+        return failure, facts
+    assert baseline is not None
+
+    worktree, failure, facts = _type_check_diagnostic_run(
+        label="worktree",
+        source="project.type_check_cmd:worktree",
+        type_check_cmd=type_check_cmd,
+        cwd=worktree_path,
+        timeout=timeout,
+        prior_facts=facts,
+    )
+    if failure is not None:
+        return failure, facts
+    assert worktree is not None
+
+    worktree_output = _type_check_output(worktree.result)
+    new_ids = worktree.ids - baseline.ids
+    failure = _type_check_failure(worktree.result, worktree_output, new_ids, worktree.ids)
+    if failure is not None:
+        return replace(failure, facts=facts), facts
+    return None, facts
 
 
 def _sentrux_is_warn_only(output: str) -> bool:
@@ -1807,6 +1846,19 @@ def _sentrux_gate_result(
     return GateResult(passed=True)
 
 
+def _sentrux_gate_preflight(baseline: Path) -> GateResult | None:
+    if not baseline.exists():
+        return GateResult(passed=True)
+    if shutil.which("sentrux") is None:
+        return GateResult(
+            passed=False,
+            error="Sentrux not found in PATH. Fix: install sentrux before running dgov.",
+        )
+    if _sentrux_baseline_is_empty(baseline):
+        return GateResult(passed=True)
+    return None
+
+
 def _run_sentrux_gate(
     worktree_path: Path,
     project_root: str,
@@ -1821,19 +1873,9 @@ def _run_sentrux_gate(
     if config is None:
         config = load_project_config(project_root)
     baseline = Path(project_root) / ".sentrux" / "baseline.json"
-    if not baseline.exists():
-        return GateResult(passed=True)
-
-    if shutil.which("sentrux") is None:
-        return GateResult(
-            passed=False,
-            error="Sentrux not found in PATH. Fix: install sentrux before running dgov.",
-        )
-
-    # Skip gate when baseline was captured from an empty project (no import edges).
-    # Comparing against an empty baseline always shows "degradation" for any real code.
-    if _sentrux_baseline_is_empty(baseline):
-        return GateResult(passed=True)
+    preflight_result = _sentrux_gate_preflight(baseline)
+    if preflight_result is not None:
+        return preflight_result
 
     _copy_sentrux_baseline(baseline, worktree_path)
     res_sx, fact = _execute_sentrux_gate(worktree_path, timeout)

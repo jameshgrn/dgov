@@ -3,7 +3,7 @@ language = "python"
 src_dir = "src/"
 test_dir = "tests/"
 source_extensions = [".py"]
-provider = "fireworks"
+provider = "claude"
 test_cmd = "uv run pytest -q -m unit {test_dir} --tb=short"
 lint_cmd = "uv run ruff check {file}"
 format_cmd = "uv run ruff format {file}"
@@ -24,6 +24,35 @@ review_hooks = [
 default_agent = "accounts/fireworks/routers/kimi-k2p6-turbo"
 base_url = "https://api.fireworks.ai/inference/v1"
 api_key_env = "FIREWORKS_API_KEY"
+token_limit_label = "Fireworks adaptive serverless TPM"
+prompt_token_limit_header = "x-ratelimit-limit-tokens-prompt"
+generated_token_limit_header = "x-ratelimit-limit-tokens-generated"
+
+[providers.local]
+default_agent = "unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit"
+base_url = "http://localhost:8080/v1"
+api_key_env = "LOCAL_LLM_API_KEY"
+max_tokens = 262144
+
+[providers.claude]
+default_agent = "sonnet"
+base_url = "claude-code://daily?max_turns=32&timeout=1200"
+
+[providers.claude-haiku-worker]
+default_agent = "haiku"
+base_url = "claude-code://fast?preset=edit&max_turns=18&timeout=1200"
+
+[providers.claude-haiku-plan]
+default_agent = "haiku"
+base_url = "claude-code://fast?preset=plan&max_turns=18&timeout=1200"
+
+[providers.claude-sonnet-review]
+default_agent = "sonnet"
+base_url = "claude-code://daily?preset=review&max_turns=32&timeout=1200"
+
+[providers.claude-sonnet-plan]
+default_agent = "sonnet"
+base_url = "claude-code://daily?preset=plan&max_turns=32&timeout=1200"
 
 [tool_policy]
 restrict_run_bash = true
@@ -41,6 +70,10 @@ stale_days = 14
 [agents]
 kimi = "accounts/fireworks/routers/kimi-k2p6-turbo"
 "kimi-k2.6" = "accounts/fireworks/routers/kimi-k2p6-turbo"
+"gemma-4-26b-a4b" = "unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit"
+"claude" = "sonnet"
+"claude-haiku" = "haiku"
+"claude-sonnet" = "sonnet"
 
 [conventions]
 test_framework = "pytest"

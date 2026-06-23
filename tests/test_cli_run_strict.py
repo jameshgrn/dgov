@@ -13,8 +13,33 @@ from typing import Any, cast
 import click
 import pytest
 from click.testing import CliRunner
+from helpers import cli
 
-from dgov.cli import cli
+from dgov.cli.run import (
+    PlanRunArtifacts,
+    PlanRunSummary,
+    _clean_head_worktree,
+    _execute_plan_with_gates,
+    _finalize_plan_run,
+    _normalize_sentrux_assessment,
+    _record_run_completion,
+    run_compiled_plan,
+)
+from dgov.cli.run_checks import (
+    _branch_changed_source_files,
+    branch_verification_gate,
+    branch_verification_gate_from_base,
+)
+from dgov.cli.run_git import dirty_worker_files, git_stdout
+from dgov.cli.run_lifecycle import (
+    refresh_sentrux_baseline_after_clean_run as refresh_run_sentrux_baseline_after_clean_run,
+)
+from dgov.config import ProjectConfig
+from dgov.dag_parser import DagDefinition, DagTaskSpec
+from dgov.sentrux_baseline import (
+    SentruxBaselineRefreshError,
+    refresh_sentrux_baseline_after_clean_run,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -100,9 +125,44 @@ def _commit_all(repo: Path, message: str = "add files") -> None:
     subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
 
 
-def test_dirty_worker_files_counts_rename_source_into_dgov(tmp_path: Path) -> None:
-    from dgov.cli.run import _dirty_worker_files
+def _git_status(repo: Path, *extra_args: str) -> str:
+    return subprocess.run(
+        ["git", "status", "--porcelain", *extra_args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
 
+
+def _commit_dgov_run_metadata_state(tmp_path: Path) -> tuple[Path, Path, Path, str]:
+    _init_committed_repo(tmp_path)
+    sentrux_dir = tmp_path / ".sentrux"
+    plan_dir = tmp_path / ".dgov" / "sops" / "plan_hello"
+    deployed_log = tmp_path / ".dgov" / "plans" / "deployed.jsonl"
+    compiled_plan = plan_dir / "_compiled.toml"
+    deployed_log.parent.mkdir(parents=True)
+    plan_dir.mkdir(parents=True)
+    sentrux_dir.mkdir()
+    (sentrux_dir / "baseline.json").write_text('{"quality": 90}\n')
+    deployed_log.write_text('{"plan":"hello","unit":"old","sha":"abc","ts":"old"}\n')
+    compiled_plan.write_text('[plan]\nname = "hello"\n')
+    subprocess.run(
+        [
+            "git",
+            "add",
+            ".sentrux/baseline.json",
+            ".dgov/plans/deployed.jsonl",
+            ".dgov/sops/plan_hello/_compiled.toml",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(["git", "commit", "-q", "-m", "save dgov state"], cwd=tmp_path, check=True)
+    return sentrux_dir, deployed_log, compiled_plan, _git_head(tmp_path)
+
+
+def test_dirty_worker_files_counts_rename_source_into_dgov(tmp_path: Path) -> None:
     _init_committed_repo(tmp_path)
     (tmp_path / "src").mkdir()
     (tmp_path / ".dgov").mkdir()
@@ -112,7 +172,7 @@ def test_dirty_worker_files_counts_rename_source_into_dgov(tmp_path: Path) -> No
     subprocess.run(["git", "commit", "-q", "-m", "add files"], cwd=tmp_path, check=True)
     subprocess.run(["git", "mv", "src/foo.py", ".dgov/foo.py"], cwd=tmp_path, check=True)
 
-    assert _dirty_worker_files(str(tmp_path)) == ["src/foo.py", ".dgov/foo.py"]
+    assert dirty_worker_files(str(tmp_path)) == ["src/foo.py", ".dgov/foo.py"]
 
 
 def test_run_blocks_dirty_worktree_with_shared_status(
@@ -231,9 +291,6 @@ def test_run_blocks_dirty_dgov_plan_source_before_compile(
 
 
 def test_branch_changed_source_files_decodes_unicode_path(tmp_path: Path) -> None:
-    from dgov.cli.run import _git_stdout
-    from dgov.cli.run_checks import _branch_changed_source_files
-
     _init_committed_repo(tmp_path)
     name = "caf\u00e9.py"
     (tmp_path / name).write_text("x = 1\n")
@@ -248,16 +305,13 @@ def test_branch_changed_source_files_decodes_unicode_path(tmp_path: Path) -> Non
         str(tmp_path),
         base,
         (".py",),
-        git_stdout=_git_stdout,
+        git_stdout=git_stdout,
     ) == [name]
 
 
 def test_execute_plan_with_gates_passes_pre_run_head_to_branch_verification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.cli.run import _execute_plan_with_gates
-    from dgov.config import ProjectConfig
-
     pre_run_head = _init_committed_repo(tmp_path)
     captured: dict[str, str | None] = {}
 
@@ -297,10 +351,6 @@ def test_execute_plan_with_gates_passes_pre_run_head_to_branch_verification(
 def test_branch_verification_gate_from_base_uses_explicit_base_ref(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.cli.run import _git_stdout
-    from dgov.cli.run_checks import branch_verification_gate, branch_verification_gate_from_base
-    from dgov.config import ProjectConfig
-
     merge_base = _init_committed_repo(tmp_path)
     subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=tmp_path, check=True)
     (tmp_path / "feature.py").write_text("x = 1\n")
@@ -318,9 +368,9 @@ def test_branch_verification_gate_from_base_uses_explicit_base_ref(
         str(tmp_path),
         ProjectConfig(),
         pre_run_head,
-        git_stdout=_git_stdout,
+        git_stdout=git_stdout,
     )
-    fallback = branch_verification_gate(str(tmp_path), ProjectConfig(), git_stdout=_git_stdout)
+    fallback = branch_verification_gate(str(tmp_path), ProjectConfig(), git_stdout=git_stdout)
 
     assert explicit["base"] == pre_run_head
     assert explicit["changed_files"] == 1
@@ -438,7 +488,7 @@ def _install_degraded_successful_run_patches(
     def _capture_fn(session_root: str, event: object, pane: str = "", **kwargs: object) -> None:
         captured_events.append(event)
 
-    monkeypatch.setattr("dgov.cli.run.emit_event", _capture_fn)
+    monkeypatch.setattr("dgov.cli.run_record.emit_event", _capture_fn)
     monkeypatch.chdir(tmp_path)
 
 
@@ -608,8 +658,6 @@ def test_run_compiled_plan_rejects_plan_file_outside_project_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from dgov.cli.run import run_compiled_plan
-
     project_root = tmp_path / "project"
     outside_plan_dir = tmp_path / "outside"
     project_root.mkdir()
@@ -633,8 +681,6 @@ def test_run_compiled_plan_rejects_department_violation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from dgov.cli.run import run_compiled_plan
-
     dgov_dir = tmp_path / ".dgov"
     plan_dir = dgov_dir / "plans" / "constitution"
     plan_dir.mkdir(parents=True)
@@ -667,8 +713,6 @@ def test_run_compiled_plan_rejects_missing_provider_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from dgov.cli.run import run_compiled_plan
-
     dgov_dir = tmp_path / ".dgov"
     plan_dir = dgov_dir / "plans" / "missing-provider"
     plan_dir.mkdir(parents=True)
@@ -902,18 +946,14 @@ def _latest_commit_subject(repo: Path) -> str:
 
 def test_refresh_sentrux_baseline_after_clean_run_commits_metadata(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from dgov.cli.run import _refresh_sentrux_baseline_after_clean_run
-
     sentrux_dir, accepted_head = _commit_sentrux_baseline(tmp_path)
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        "dgov.cli.run.run_sentrux", _mock_clean_sentrux_save(sentrux_dir, captured)
-    )
-    monkeypatch.chdir(tmp_path)
 
-    _refresh_sentrux_baseline_after_clean_run(".")
+    refresh_run_sentrux_baseline_after_clean_run(
+        str(tmp_path),
+        run_sentrux=_mock_clean_sentrux_save(sentrux_dir, captured),
+    )
 
     assert cast(list[str], captured["args"])[:2] == ["gate", "--save"]
     assert captured["timeout"] == 30.0
@@ -929,34 +969,23 @@ def test_refresh_sentrux_baseline_after_clean_run_commits_metadata(
 def test_refresh_sentrux_baseline_after_clean_run_allows_dgov_run_metadata(
     tmp_path: Path,
 ) -> None:
-    from dgov.sentrux_baseline import refresh_sentrux_baseline_after_clean_run
-
-    _init_committed_repo(tmp_path)
-    sentrux_dir = tmp_path / ".sentrux"
-    plan_dir = tmp_path / ".dgov" / "sops" / "plan_hello"
-    deployed_log = tmp_path / ".dgov" / "plans" / "deployed.jsonl"
-    compiled_plan = plan_dir / "_compiled.toml"
-    deployed_log.parent.mkdir(parents=True)
-    plan_dir.mkdir(parents=True)
-    sentrux_dir.mkdir()
-    (sentrux_dir / "baseline.json").write_text('{"quality": 90}\n')
-    deployed_log.write_text('{"plan":"hello","unit":"old","sha":"abc","ts":"old"}\n')
-    compiled_plan.write_text('[plan]\nname = "hello"\n')
-    subprocess.run(
-        [
-            "git",
-            "add",
-            ".sentrux/baseline.json",
-            ".dgov/plans/deployed.jsonl",
-            ".dgov/sops/plan_hello/_compiled.toml",
-        ],
-        cwd=tmp_path,
-        check=True,
+    sentrux_dir, deployed_log, compiled_plan, accepted_head = _commit_dgov_run_metadata_state(
+        tmp_path
     )
-    subprocess.run(["git", "commit", "-q", "-m", "save dgov state"], cwd=tmp_path, check=True)
-    accepted_head = _git_head(tmp_path)
+    runs_log = tmp_path / ".dgov" / "runs.log"
+    state_db = tmp_path / ".dgov" / "state.db"
+    out_log = tmp_path / ".dgov" / "out" / "hello" / "worker.log"
+    runtime_note = tmp_path / ".dgov" / "runtime" / "fix-plans" / "note.json"
     deployed_log.write_text(deployed_log.read_text() + '{"plan":"hello","unit":"new"}\n')
     compiled_plan.write_text('[plan]\nname = "hello"\nsource_mtime_max = "now"\n')
+    runs_log.write_text("[now] hello — pass\n")
+    state_db.write_text("sqlite state placeholder\n")
+    (tmp_path / ".dgov" / "state.db-shm").write_text("sqlite shm placeholder\n")
+    (tmp_path / ".dgov" / "state.db-wal").write_text("sqlite wal placeholder\n")
+    out_log.parent.mkdir(parents=True)
+    out_log.write_text("worker output\n")
+    runtime_note.parent.mkdir(parents=True)
+    runtime_note.write_text("{}\n")
     captured: dict[str, object] = {}
 
     committed = refresh_sentrux_baseline_after_clean_run(
@@ -969,22 +998,20 @@ def test_refresh_sentrux_baseline_after_clean_run_allows_dgov_run_metadata(
     metadata = json.loads((sentrux_dir / "dgov-baseline.json").read_text())
     assert metadata["accepted_head"] == accepted_head
     assert _latest_commit_subject(tmp_path) == "Refresh sentrux baseline"
-    status = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
+    status = _git_status(tmp_path)
     assert "M .dgov/plans/deployed.jsonl" in status
     assert "M .dgov/sops/plan_hello/_compiled.toml" in status
+    assert "?? .dgov/runs.log" in status
+    assert "?? .dgov/state.db" in status
+    assert "?? .dgov/state.db-shm" in status
+    assert "?? .dgov/state.db-wal" in status
+    assert "?? .dgov/out/" in status
+    assert "?? .dgov/runtime/" in status
 
 
 def test_refresh_sentrux_baseline_after_clean_run_allows_scope_ignored_uv_lock(
     tmp_path: Path,
 ) -> None:
-    from dgov.sentrux_baseline import refresh_sentrux_baseline_after_clean_run
-
     sentrux_dir, accepted_head = _commit_sentrux_baseline(tmp_path)
     (tmp_path / "uv.lock").write_text("version = 1\n")
     captured: dict[str, object] = {}
@@ -1012,11 +1039,6 @@ def test_refresh_sentrux_baseline_after_clean_run_allows_scope_ignored_uv_lock(
 def test_refresh_sentrux_baseline_after_clean_run_rejects_dirty_source_tree(
     tmp_path: Path,
 ) -> None:
-    from dgov.sentrux_baseline import (
-        SentruxBaselineRefreshError,
-        refresh_sentrux_baseline_after_clean_run,
-    )
-
     sentrux_dir, _accepted_head = _commit_sentrux_baseline(tmp_path)
     (tmp_path / "README.md").write_text("dirty\n")
     calls = 0
@@ -1044,11 +1066,6 @@ def test_refresh_sentrux_baseline_after_clean_run_rejects_dirty_source_tree(
 def test_refresh_sentrux_baseline_rejects_renamed_source_path(
     tmp_path: Path,
 ) -> None:
-    from dgov.sentrux_baseline import (
-        SentruxBaselineRefreshError,
-        refresh_sentrux_baseline_after_clean_run,
-    )
-
     sentrux_dir, _accepted_head = _commit_sentrux_baseline(tmp_path)
     source = tmp_path / "src.py"
     source.write_text("x = 1\n")
@@ -1082,8 +1099,6 @@ def test_refresh_sentrux_baseline_rejects_renamed_source_path(
 
 
 def _clean_complete_artifacts() -> object:
-    from dgov.cli.run import PlanRunArtifacts
-
     class _Runner:
         def __init__(self) -> None:
             self.task_errors: dict[str, str] = {}
@@ -1106,7 +1121,6 @@ def _clean_complete_artifacts() -> object:
 
 
 def _compiled_test_dag(plan_dir: Path) -> object:
-    from dgov.dag_parser import DagDefinition, DagTaskSpec
 
     return DagDefinition(
         name="compiled",
@@ -1121,17 +1135,17 @@ def _install_finalize_refresh_patches(
     calls: list[tuple[str, str]],
 ) -> None:
     monkeypatch.setattr(
-        "dgov.cli.run.is_plan_complete",
+        "dgov.cli.run_lifecycle.is_plan_complete",
         lambda project_root, plan_name, tasks: (
             project_root == str(tmp_path.resolve()) and plan_name == "compiled" and tasks == {"a"}
         ),
     )
     monkeypatch.setattr(
-        "dgov.cli.run._refresh_sentrux_baseline_after_clean_run",
-        lambda project_root: calls.append(("refresh", project_root)),
+        "dgov.cli.run_lifecycle.refresh_sentrux_baseline_after_clean_run",
+        lambda project_root, **_kwargs: calls.append(("refresh", project_root)),
     )
     monkeypatch.setattr(
-        "dgov.cli.run.archive_plan",
+        "dgov.cli.run_lifecycle.archive_plan",
         lambda archive_target: (
             calls.append(("archive", str(archive_target))) or archive_target / "archive"
         ),
@@ -1142,15 +1156,13 @@ def test_finalize_refreshes_sentrux_baseline_before_archiving(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from dgov.cli.run import _finalize_plan_run
-
     plan_dir = _write_plan_tree(tmp_path, "compiled")
     calls: list[tuple[str, str]] = []
 
     monkeypatch.chdir(tmp_path)
     _install_finalize_refresh_patches(monkeypatch, tmp_path, calls)
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
-    monkeypatch.setattr("dgov.cli.run.emit_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr("dgov.cli.run_record.emit_event", lambda *args, **kwargs: None)
 
     status = _finalize_plan_run(
         cast(Any, _clean_complete_artifacts()),
@@ -1174,17 +1186,17 @@ def test_record_run_completion_uses_runner_run_source_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from dgov.cli.run import PlanRunSummary, _record_run_completion
-
     artifacts = cast(Any, _clean_complete_artifacts())
     artifacts.runner.run_source = "workshop"
     captured_events: list[object] = []
 
     monkeypatch.setenv("DGOV_RUN_SOURCE", "invalid source")
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
-    monkeypatch.setattr("dgov.cli.run._maybe_archive_completed_plan", lambda **kwargs: None)
     monkeypatch.setattr(
-        "dgov.cli.run.emit_event",
+        "dgov.cli.run_lifecycle.maybe_archive_completed_plan", lambda **kwargs: None
+    )
+    monkeypatch.setattr(
+        "dgov.cli.run_record.emit_event",
         lambda _project_root, event: captured_events.append(event),
     )
 
@@ -1354,7 +1366,6 @@ def test_run_reports_structural_offenders_when_sentrux_degrades(
 
 def test_normalize_sentrux_assessment() -> None:
     """_normalize_sentrux_assessment should map assessment fields correctly."""
-    from dgov.cli.run import _normalize_sentrux_assessment
 
     class FakeAssessment:
         def __init__(self) -> None:
@@ -1384,8 +1395,6 @@ def test_normalize_sentrux_assessment() -> None:
 
 def test_clean_head_worktree_isolates_from_dirty_state(tmp_path: Path) -> None:
     """_clean_head_worktree yields a checkout at HEAD, ignoring dirty working-tree changes."""
-    from dgov.cli.run import _clean_head_worktree
-
     repo = tmp_path / "repo"
     repo.mkdir()
     env = {

@@ -30,6 +30,22 @@ _RESEARCHER_SCRIPT = Path(__file__).resolve().parent.parent / "researcher.py"
 _PLANNER_SCRIPT = Path(__file__).resolve().parent.parent / "planner.py"
 _WORKER_TERMINATE_GRACE_S = 3.0
 _WORKER_KILL_GRACE_S = 3.0
+_SUBPROCESS_STREAM_LIMIT = 16 * 1024 * 1024
+_CLAUDE_CODE_ENV_KEYS = (
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "CLAUDE_CODE_BIN",
+    "CLAUDE_CONFIG_DIR",
+    "ANTHROPIC_API_KEY",
+    "DGOV_CLAUDE_CODE_RUNNER",
+    "INVOKE_CLAUDE_MODEL_LIBRARY",
+    "INVOKE_CLAUDE_MODEL_PROFILE",
+    "INVOKE_CLAUDE_MODEL",
+    "INVOKE_CLAUDE_TIMEOUT_SECONDS",
+    "XDG_CONFIG_HOME",
+)
 
 
 def _script_for_role(role: str) -> Path:
@@ -170,10 +186,12 @@ def _resolved_tool_bin_dirs(names: tuple[str, ...]) -> list[str]:
 def _build_worker_env(project_root: str, task: DagTaskSpec) -> dict[str, str]:
     """Build a minimal, explicit environment for the worker subprocess."""
     from dgov.config import load_project_config
+    from dgov.workers.config import is_claude_code_provider_url
 
     config = load_project_config(project_root)
-    _, api_key_env = config.llm_runtime_settings(task.provider)
-    tool_bin_dirs = _resolved_tool_bin_dirs(("uv", "sg"))
+    provider = config.provider_config(task.provider)
+    api_key_env = provider.api_key_env
+    tool_bin_dirs = _resolved_tool_bin_dirs(("uv", "sg", "claude"))
 
     env: dict[str, str] = {
         "PATH": os.pathsep.join(
@@ -195,6 +213,11 @@ def _build_worker_env(project_root: str, task: DagTaskSpec) -> dict[str, str]:
     api_key_value = os.environ.get(api_key_env)
     if api_key_value is not None:
         env[api_key_env] = api_key_value
+    if is_claude_code_provider_url(provider.base_url):
+        for key in _CLAUDE_CODE_ENV_KEYS:
+            value = os.environ.get(key)
+            if value is not None:
+                env[key] = value
 
     return env
 
@@ -202,6 +225,7 @@ def _build_worker_env(project_root: str, task: DagTaskSpec) -> dict[str, str]:
 async def _launch_worker_subprocess(
     cmd: list[str],
     project_root: str,
+    env: Mapping[str, str],
 ) -> asyncio.subprocess.Process:
     """Launch the worker subprocess with stdout piped."""
     process = await asyncio.create_subprocess_exec(
@@ -209,6 +233,8 @@ async def _launch_worker_subprocess(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=project_root,
+        env=env,
+        limit=_SUBPROCESS_STREAM_LIMIT,
     )
     assert process.stdout is not None
     return process
@@ -254,6 +280,26 @@ async def _drain_worker_stdout(
             prompt_tokens, completion_tokens = tokens
 
     return last_error, prompt_tokens, completion_tokens
+
+
+async def _worker_subprocess_result(
+    process: asyncio.subprocess.Process,
+    *,
+    project_root: str,
+    plan_name: str,
+    task_slug: str,
+    pane_slug: str,
+    on_event: Callable[[str, str, object], None] | None,
+) -> tuple[int, str, int, int]:
+    last_error, prompt_tokens, completion_tokens = await _drain_worker_stdout(
+        process,
+        project_root=project_root,
+        plan_name=plan_name,
+        task_slug=task_slug,
+        pane_slug=pane_slug,
+        on_event=on_event,
+    )
+    return await process.wait(), last_error, prompt_tokens, completion_tokens
 
 
 def _decode_worker_stdout_line(line_bytes: bytes, task_slug: str) -> dict | None:
@@ -324,6 +370,42 @@ async def _wait_for_worker_exit(
     return True
 
 
+async def _start_worker_for_task(
+    *,
+    project_root: str,
+    worktree_path: Path,
+    task: DagTaskSpec,
+    task_scope: Mapping[str, object],
+) -> asyncio.subprocess.Process:
+    cmd = _worker_command(
+        project_root=project_root,
+        worktree_path=worktree_path,
+        task=task,
+        task_scope=task_scope,
+    )
+    env = _build_worker_env(project_root, task)
+    return await _launch_worker_subprocess(cmd, project_root, env)
+
+
+async def _cancel_started_worker(
+    process: asyncio.subprocess.Process | None,
+    *,
+    task_slug: str,
+) -> None:
+    if process is not None:
+        await _terminate_worker_process(process, task_slug=task_slug)
+
+
+def _report_headless_start_failure(
+    on_exit: Callable[[str, str, int, str, int, int], None],
+    task_slug: str,
+    pane_slug: str,
+    exc: Exception,
+) -> None:
+    logger.error("Headless worker [%s] failed to start: %s", task_slug, exc)
+    _report_exit(on_exit, task_slug, pane_slug, 1, str(exc), 0, 0)
+
+
 async def run_headless_worker(
     project_root: str,
     plan_name: str,
@@ -336,25 +418,16 @@ async def run_headless_worker(
     on_event: Callable[[str, str, object], None] | None = None,
 ) -> None:
     """Execute the headless worker lifecycle."""
-    cmd = _worker_command(
-        project_root=project_root,
-        worktree_path=worktree_path,
-        task=task,
-        task_scope=task_scope,
-    )
     process: asyncio.subprocess.Process | None = None
 
     try:
-        env = _build_worker_env(project_root, task)
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=project_root,
-            env=env,
+        process = await _start_worker_for_task(
+            project_root=project_root,
+            worktree_path=worktree_path,
+            task=task,
+            task_scope=task_scope,
         )
-        assert process.stdout is not None
-        last_error, prompt_tokens, completion_tokens = await _drain_worker_stdout(
+        exit_code, last_error, prompt_tokens, completion_tokens = await _worker_subprocess_result(
             process,
             project_root=project_root,
             plan_name=plan_name,
@@ -362,7 +435,6 @@ async def run_headless_worker(
             pane_slug=pane_slug,
             on_event=on_event,
         )
-        exit_code = await process.wait()
         _report_exit(
             on_exit,
             task_slug,
@@ -373,9 +445,7 @@ async def run_headless_worker(
             completion_tokens,
         )
     except asyncio.CancelledError:
-        if process is not None:
-            await _terminate_worker_process(process, task_slug=task_slug)
+        await _cancel_started_worker(process, task_slug=task_slug)
         raise
     except Exception as exc:
-        logger.error("Headless worker [%s] failed to start: %s", task_slug, exc)
-        _report_exit(on_exit, task_slug, pane_slug, 1, str(exc), 0, 0)
+        _report_headless_start_failure(on_exit, task_slug, pane_slug, exc)

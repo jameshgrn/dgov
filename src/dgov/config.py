@@ -139,6 +139,10 @@ class ProjectConfig(AtomicConfig):
             llm_provider=endpoint.name,
             llm_base_url=endpoint.base_url,
             llm_api_key_env=endpoint.api_key_env,
+            llm_max_tokens=endpoint.max_tokens,
+            llm_token_limit_label=endpoint.token_limit_label,
+            llm_prompt_token_limit_header=endpoint.prompt_token_limit_header,
+            llm_generated_token_limit_header=endpoint.generated_token_limit_header,
         )
         return AtomicConfig(**atomic_values)
 
@@ -158,6 +162,10 @@ class ProjectConfig(AtomicConfig):
                 name=atomic.llm_provider,
                 base_url=atomic.llm_base_url,
                 api_key_env=atomic.llm_api_key_env,
+                max_tokens=atomic.llm_max_tokens,
+                token_limit_label=atomic.llm_token_limit_label,
+                prompt_token_limit_header=atomic.llm_prompt_token_limit_header,
+                generated_token_limit_header=atomic.llm_generated_token_limit_header,
             )
         return cls(**atomic_values, providers=providers)
 
@@ -321,6 +329,10 @@ def _worker_config_fields(raw: Mapping[str, Any], proj: Mapping[str, Any]) -> di
         "llm_provider": provider.name,
         "llm_base_url": provider.base_url,
         "llm_api_key_env": provider.api_key_env,
+        "llm_max_tokens": provider.max_tokens,
+        "llm_token_limit_label": provider.token_limit_label,
+        "llm_prompt_token_limit_header": provider.prompt_token_limit_header,
+        "llm_generated_token_limit_header": provider.generated_token_limit_header,
         "test_cmd": proj.get("test_cmd", ProjectConfig.test_cmd),
         "lint_cmd": proj.get("lint_cmd", ProjectConfig.lint_cmd),
         "format_cmd": proj.get("format_cmd", ProjectConfig.format_cmd),

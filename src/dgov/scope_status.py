@@ -36,6 +36,21 @@ class ScopeStatus:
 
 
 @dataclass(frozen=True)
+class _ScopeInputs:
+    actual_files: frozenset[str]
+    claimed_files: Sequence[str] | None
+    read_files: Sequence[str]
+    scope_ignore_files: Sequence[str]
+    scope_allow_files: Sequence[str]
+    scope_deny_files: Sequence[str]
+    session_root: str | None
+    task_slug: str | None
+    pane_slug: str | None
+    claimed_writable: frozenset[str]
+    claimed_readonly: frozenset[str]
+
+
+@dataclass(frozen=True)
 class _TransientScope:
     paths: frozenset[str]
     ignored: frozenset[str]
@@ -92,27 +107,7 @@ def analyze_scope_status(
     pane_slug: str | None = None,
 ) -> ScopeStatus:
     """Analyze explicit scope evidence without running git."""
-    claimed_writable = frozenset(claimed_files) if claimed_files else frozenset()
-    claimed_readonly = frozenset(read_files)
-    unclaimed_actual, ignored_actual = _classify_actual_scope(
-        actual_files,
-        claimed_writable,
-        scope_ignore_files,
-    )
-    transient = _analyze_transient_scope(
-        claimed_files=claimed_files,
-        claimed_writable=claimed_writable,
-        scope_ignore_files=scope_ignore_files,
-        session_root=session_root,
-        task_slug=task_slug,
-        pane_slug=pane_slug,
-    )
-    path_policy = classify_scope_path_policy(
-        actual_files,
-        scope_allow_files=scope_allow_files,
-        scope_deny_files=scope_deny_files,
-    )
-    blocking_failure = _blocking_scope_failure(
+    inputs = _scope_inputs(
         actual_files=actual_files,
         claimed_files=claimed_files,
         read_files=read_files,
@@ -123,17 +118,55 @@ def analyze_scope_status(
         task_slug=task_slug,
         pane_slug=pane_slug,
     )
+    return _analyze_scope_inputs(inputs)
+
+
+def _scope_inputs(
+    *,
+    actual_files: frozenset[str],
+    claimed_files: Sequence[str] | None,
+    read_files: Sequence[str],
+    scope_ignore_files: Sequence[str],
+    scope_allow_files: Sequence[str],
+    scope_deny_files: Sequence[str],
+    session_root: str | None,
+    task_slug: str | None,
+    pane_slug: str | None,
+) -> _ScopeInputs:
+    return _ScopeInputs(
+        actual_files=actual_files,
+        claimed_files=claimed_files,
+        read_files=read_files,
+        scope_ignore_files=scope_ignore_files,
+        scope_allow_files=scope_allow_files,
+        scope_deny_files=scope_deny_files,
+        session_root=session_root,
+        task_slug=task_slug,
+        pane_slug=pane_slug,
+        claimed_writable=frozenset(claimed_files) if claimed_files else frozenset(),
+        claimed_readonly=frozenset(read_files),
+    )
+
+
+def _analyze_scope_inputs(inputs: _ScopeInputs) -> ScopeStatus:
+    unclaimed_actual, ignored_actual = _classify_actual_scope(inputs)
+    transient = _analyze_transient_scope(inputs)
+    path_policy = classify_scope_path_policy(
+        inputs.actual_files,
+        scope_allow_files=inputs.scope_allow_files,
+        scope_deny_files=inputs.scope_deny_files,
+    )
 
     return _build_scope_status(
-        claimed_writable=claimed_writable,
-        claimed_readonly=claimed_readonly,
-        actual_files=actual_files,
+        claimed_writable=inputs.claimed_writable,
+        claimed_readonly=inputs.claimed_readonly,
+        actual_files=inputs.actual_files,
         ignored_actual_paths=ignored_actual,
         unclaimed_actual_paths=unclaimed_actual,
         transient=transient,
         path_policy_denied_paths=path_policy.denied,
         path_policy_outside_allow_paths=path_policy.outside_allowlist,
-        blocking_failure=blocking_failure,
+        blocking_failure=_blocking_scope_failure(inputs),
     )
 
 
@@ -164,69 +197,63 @@ def _build_scope_status(
     )
 
 
-def _classify_actual_scope(
-    actual_files: frozenset[str],
-    claimed_writable: frozenset[str],
-    scope_ignore_files: Sequence[str],
-) -> tuple[frozenset[str], frozenset[str]]:
-    unclaimed = compute_unclaimed_files(actual_files, claimed_writable, scope_ignore_files)
-    ignored = (actual_files - claimed_writable) - unclaimed
+def _classify_actual_scope(inputs: _ScopeInputs) -> tuple[frozenset[str], frozenset[str]]:
+    unclaimed = compute_unclaimed_files(
+        inputs.actual_files,
+        inputs.claimed_writable,
+        inputs.scope_ignore_files,
+    )
+    ignored = (inputs.actual_files - inputs.claimed_writable) - unclaimed
     return unclaimed, ignored
 
 
-def _analyze_transient_scope(
-    *,
-    claimed_files: Sequence[str] | None,
-    claimed_writable: frozenset[str],
-    scope_ignore_files: Sequence[str],
-    session_root: str | None,
-    task_slug: str | None,
-    pane_slug: str | None,
-) -> _TransientScope:
-    if not session_root or not task_slug or claimed_files is None:
+def _analyze_transient_scope(inputs: _ScopeInputs) -> _TransientScope:
+    if not inputs.session_root or not inputs.task_slug or inputs.claimed_files is None:
         return _TransientScope(frozenset(), frozenset(), frozenset())
 
-    transient_paths = collect_transient_write_paths(session_root, task_slug, pane_slug)
+    transient_paths = collect_transient_write_paths(
+        inputs.session_root,
+        inputs.task_slug,
+        inputs.pane_slug,
+    )
     ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = split_ignore_entries(
-        scope_ignore_files
+        inputs.scope_ignore_files
     )
     unclaimed = frozenset(
         filter_unclaimed_non_ignored(
             transient_paths,
-            claimed_writable,
+            inputs.claimed_writable,
             ignored_exact,
             ignored_prefix_dirs,
             ignored_named_dirs,
             ignored_globs,
         )
     )
-    ignored = (frozenset(transient_paths) - claimed_writable) - unclaimed
+    ignored = (frozenset(transient_paths) - inputs.claimed_writable) - unclaimed
     return _TransientScope(frozenset(transient_paths), ignored, unclaimed)
 
 
-def _blocking_scope_failure(
-    *,
-    actual_files: frozenset[str],
-    claimed_files: Sequence[str] | None,
-    read_files: Sequence[str],
-    scope_ignore_files: Sequence[str],
-    scope_allow_files: Sequence[str],
-    scope_deny_files: Sequence[str],
-    session_root: str | None,
-    task_slug: str | None,
-    pane_slug: str | None,
-) -> ReviewResult | None:
-    failure = check_scope_path_policy(actual_files, scope_allow_files, scope_deny_files)
+def _blocking_scope_failure(inputs: _ScopeInputs) -> ReviewResult | None:
+    failure = check_scope_path_policy(
+        inputs.actual_files,
+        inputs.scope_allow_files,
+        inputs.scope_deny_files,
+    )
     if failure is not None:
         return failure
-    failure = check_scope(actual_files, claimed_files, scope_ignore_files, read_files)
+    failure = check_scope(
+        inputs.actual_files,
+        inputs.claimed_files,
+        inputs.scope_ignore_files,
+        inputs.read_files,
+    )
     if failure is not None:
         return failure
     return check_transient_scope(
-        session_root,
-        task_slug,
-        pane_slug,
-        claimed_files,
-        actual_files,
-        scope_ignore_files,
+        inputs.session_root,
+        inputs.task_slug,
+        inputs.pane_slug,
+        inputs.claimed_files,
+        inputs.actual_files,
+        inputs.scope_ignore_files,
     )

@@ -36,7 +36,12 @@ def _slugify(text: str) -> str:
     return slug[:50] or "plan"
 
 
-def _materialize_plan(plan_data: dict, output_dir: Path) -> Path:
+def _materialize_plan(
+    plan_data: dict,
+    output_dir: Path,
+    *,
+    default_provider: str = "",
+) -> Path:
     """Convert emit_plan JSON to plan tree directory structure."""
     name = plan_data.get("name", "auto-plan")
     summary = plan_data.get("summary", "")
@@ -44,7 +49,9 @@ def _materialize_plan(plan_data: dict, output_dir: Path) -> Path:
     tasks_dir = plan_dir / "tasks"
     tasks_dir.mkdir(exist_ok=True)
 
-    (plan_dir / "_root.toml").write_text(_root_toml(str(name), str(summary)))
+    (plan_dir / "_root.toml").write_text(
+        _root_toml(str(name), str(summary), default_provider=default_provider)
+    )
     (tasks_dir / "main.toml").write_text(_tasks_toml(plan_data.get("tasks", [])))
     return plan_dir
 
@@ -58,10 +65,16 @@ def _unique_plan_dir(output_dir: Path, name: str) -> Path:
     return plan_dir
 
 
-def _root_toml(name: str, summary: str) -> str:
-    return (
-        f'[plan]\nname = {_toml_str(name)}\nsummary = {_toml_str(summary)}\nsections = ["tasks"]\n'
-    )
+def _root_toml(name: str, summary: str, *, default_provider: str = "") -> str:
+    lines = [
+        "[plan]",
+        f"name = {_toml_str(name)}",
+        f"summary = {_toml_str(summary)}",
+        'sections = ["tasks"]',
+    ]
+    if default_provider:
+        lines.append(f"default_provider = {_toml_str(default_provider)}")
+    return "\n".join(lines) + "\n"
 
 
 def _tasks_toml(tasks: object) -> str:
@@ -82,11 +95,18 @@ def _task_toml_lines(task: dict) -> list[str]:
         f"prompt = {_toml_ml_str(task.get('prompt', ''))}",
         f"commit_message = {_toml_str(task.get('commit_message', 'apply changes'))}",
     ]
+    lines.extend(_task_provider_lines(task.get("provider", "")))
     lines.extend(_task_files_lines(task.get("files", {})))
     lines.extend(_task_dep_lines(task.get("depends_on", [])))
     lines.extend(_task_role_lines(task.get("role", "worker")))
     lines.append("")
     return lines
+
+
+def _task_provider_lines(provider: object) -> list[str]:
+    if not isinstance(provider, str) or not provider.strip():
+        return []
+    return [f"provider = {_toml_str(provider.strip())}"]
 
 
 def _task_files_lines(files: object) -> list[str]:
@@ -167,6 +187,7 @@ def _planner_command(
     model: str,
     interactive: bool,
     config_json: str,
+    target_provider: str = "",
 ) -> list[str]:
     from dgov.workers.headless import _PLANNER_SCRIPT
 
@@ -183,6 +204,8 @@ def _planner_command(
         "--project-config",
         config_json,
     ]
+    if target_provider:
+        cmd.extend(["--target-provider", target_provider])
     if interactive:
         cmd.append("--interactive")
     return cmd
@@ -239,15 +262,26 @@ async def _run_planner_subprocess(
     model: str,
     interactive: bool,
     config_json: str,
+    target_provider: str = "",
 ) -> dict | None:
     """Spawn planner subprocess and handle stdin/stdout protocol."""
+    from dgov.workers.headless import _SUBPROCESS_STREAM_LIMIT
+
     plan_data: dict | None = None
     proc = await asyncio.create_subprocess_exec(
-        *_planner_command(project_root, goal, model, interactive, config_json),
+        *_planner_command(
+            project_root,
+            goal,
+            model,
+            interactive,
+            config_json,
+            target_provider=target_provider,
+        ),
         stdout=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.STDOUT,
         cwd=project_root,
+        limit=_SUBPROCESS_STREAM_LIMIT,
     )
 
     while True:
@@ -301,11 +335,12 @@ def _materialize_auto_plan(
     *,
     name: str | None,
     goal: str,
+    target_provider: str = "",
 ) -> Path:
     plans_dir = project_root / ".dgov" / "runtime" / "auto-plans"
     plans_dir.mkdir(parents=True, exist_ok=True)
     _finalize_plan_name(plan_data, name=name, goal=goal)
-    plan_dir = _materialize_plan(plan_data, plans_dir)
+    plan_dir = _materialize_plan(plan_data, plans_dir, default_provider=target_provider)
     task_count = len(plan_data.get("tasks", []))
     click.echo(f"[planner] Plan emitted: {plan_data['name']} ({task_count} task(s))", err=True)
     click.echo(f"  Created at {plan_dir}", err=True)
@@ -350,6 +385,7 @@ def _plan_create_settings(
     *,
     model: str | None,
     autonomous: bool,
+    provider: str | None = None,
 ) -> tuple[str, str, bool]:
     from dgov.config import load_project_config
 
@@ -357,17 +393,36 @@ def _plan_create_settings(
         pc = load_project_config(str(project_root))
     except ValueError as exc:
         raise click.ClickException(f"Planner provider is not configured: {exc}") from None
-    agent = (model or pc.default_agent).strip()
+    planner_provider = (provider or pc.llm_provider).strip()
+    try:
+        endpoint = pc.provider_config(planner_provider)
+    except ValueError as exc:
+        raise click.ClickException(f"Planner provider is not configured: {exc}") from None
+    project_default_agent = pc.default_agent if planner_provider == pc.llm_provider else ""
+    agent = (model or endpoint.default_agent or project_default_agent).strip()
     if not agent:
         raise click.ClickException(
-            "Planner model is not configured. Set [providers.<name>].default_agent "
+            "Planner model is not configured. Set the selected [providers.<name>].default_agent "
             "in .dgov/project.toml, or pass --model."
         )
     try:
-        config_json = json.dumps(pc.to_worker_payload())
+        config_json = json.dumps(pc.to_worker_payload(planner_provider))
     except ValueError as exc:
         raise click.ClickException(f"Planner provider is not configured: {exc}") from None
     return agent, config_json, not autonomous
+
+
+def _validate_target_provider(project_root: Path, target_provider: str) -> str:
+    if not target_provider:
+        return ""
+    from dgov.config import load_project_config
+
+    try:
+        pc = load_project_config(str(project_root))
+        pc.provider_config(target_provider)
+    except ValueError as exc:
+        raise click.ClickException(f"Target provider is not configured: {exc}") from None
+    return target_provider
 
 
 def _run_planner_or_exit(
@@ -377,14 +432,66 @@ def _run_planner_or_exit(
     agent: str,
     interactive: bool,
     config_json: str,
+    target_provider: str = "",
 ) -> dict:
     plan_data = asyncio.run(
-        _run_planner_subprocess(str(project_root), goal, agent, interactive, config_json)
+        _run_planner_subprocess(
+            str(project_root),
+            goal,
+            agent,
+            interactive,
+            config_json,
+            target_provider=target_provider,
+        )
     )
     if plan_data:
         return plan_data
     click.echo("Error: Planner did not emit a plan.", err=True)
     raise click.exceptions.Exit(code=1)
+
+
+def _execute_plan_create(
+    *,
+    goal: str,
+    autonomous: bool,
+    run_plan: bool,
+    name: str | None,
+    model: str | None,
+    provider: str | None,
+    target_provider: str,
+    apply_config: bool,
+) -> None:
+    project_root = resolve_project_root()
+    target_provider = _validate_target_provider(project_root, target_provider.strip())
+    agent, config_json, interactive = _plan_create_settings(
+        project_root,
+        model=model,
+        autonomous=autonomous,
+        provider=provider,
+    )
+    _echo_planner_header(interactive=interactive, agent=agent, goal=goal)
+    plan_data = _run_planner_or_exit(
+        project_root,
+        goal=goal,
+        agent=agent,
+        interactive=interactive,
+        config_json=config_json,
+        target_provider=target_provider,
+    )
+
+    _maybe_apply_or_report_config(project_root, plan_data, apply_config=apply_config)
+    plan_dir = _materialize_auto_plan(
+        project_root,
+        plan_data,
+        name=name,
+        goal=goal,
+        target_provider=target_provider,
+    )
+    _compile_auto_plan(plan_dir)
+    if run_plan:
+        _run_auto_plan(project_root, plan_dir)
+    else:
+        click.echo(f"\n  To run: dgov run {plan_dir}", err=True)
 
 
 @plan_cmd.command(name="create")
@@ -398,6 +505,12 @@ def _run_planner_or_exit(
 )
 @click.option("--name", default=None, help="Override the generated plan name")
 @click.option("--model", default=None, help="Override the planner model")
+@click.option("--provider", "provider", default=None, help="Override the planner provider")
+@click.option(
+    "--target-provider",
+    default="",
+    help="Set the default provider for generated plan tasks",
+)
 @click.option(
     "--apply-config",
     is_flag=True,
@@ -409,40 +522,18 @@ def plan_create_cmd(
     run_plan: bool,
     name: str | None,
     model: str | None,
+    provider: str | None,
+    target_provider: str,
     apply_config: bool,
 ) -> None:
-    """Auto-generate an implementation plan via the planner agent.
-
-    Spawns a planner that explores the codebase and produces a structured
-    plan. The plan is materialized to disk and optionally compiled and run.
-
-    \b
-    Examples:
-      dgov plan create "Fix the auth token refresh bug"
-      dgov plan create --auto "Add input validation to forms"
-      dgov plan create --auto --run "Refactor error handling in api.py"
-    """
-    project_root = resolve_project_root()
-    agent, config_json, interactive = _plan_create_settings(
-        project_root,
-        model=model,
-        autonomous=autonomous,
-    )
-    _echo_planner_header(interactive=interactive, agent=agent, goal=goal)
-    plan_data = _run_planner_or_exit(
-        project_root,
+    """Auto-generate an implementation plan via the planner agent."""
+    _execute_plan_create(
         goal=goal,
-        agent=agent,
-        interactive=interactive,
-        config_json=config_json,
+        autonomous=autonomous,
+        run_plan=run_plan,
+        name=name,
+        model=model,
+        provider=provider,
+        target_provider=target_provider,
+        apply_config=apply_config,
     )
-
-    _maybe_apply_or_report_config(project_root, plan_data, apply_config=apply_config)
-    plan_dir = _materialize_auto_plan(project_root, plan_data, name=name, goal=goal)
-    _compile_auto_plan(plan_dir)
-
-    if not run_plan:
-        click.echo(f"\n  To run: dgov run {plan_dir}", err=True)
-        return
-
-    _run_auto_plan(project_root, plan_dir)

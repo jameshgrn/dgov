@@ -1,0 +1,25 @@
+[tasks.config-test]
+summary = "Align Claude Code provider URL assertions with project config"
+commit_message = "Update Claude provider timeout assertions"
+role = "worker"
+iteration_budget = 8
+files.edit = ["tests/test_config.py"]
+files.read = [".dgov/project.toml"]
+test_cmd = "uv run pytest -q -m unit tests/test_config.py::TestLoadProjectConfig::test_source_repo_config_wires_local_gemma_provider"
+prompt = """
+Orient:
+- Read `.dgov/project.toml` and `tests/test_config.py`.
+- PR #45 CI failed in the `unit` job because `tests/test_config.py` still expects Claude Code provider URLs without the `timeout=1200` query parameter now present in `.dgov/project.toml`.
+- There are five source-repo Claude Code URL assertions in `tests/test_config.py` that should match `.dgov/project.toml`.
+
+Edit:
+1. Update the stale expected Claude Code provider URL strings in `tests/test_config.py` so they match `.dgov/project.toml` exactly.
+2. Do not change provider loading behavior or `.dgov/project.toml`.
+3. Keep the test focused on source-repo provider wiring.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_config.py::TestLoadProjectConfig::test_source_repo_config_wires_local_gemma_provider`
+- `uv run ruff check tests/test_config.py`
+- `uv run ruff format --check tests/test_config.py`
+- `uv run ty check`
+"""

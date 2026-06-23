@@ -1,0 +1,34 @@
+[tasks.lifecycle-states]
+summary = "Analyze first-class plan lifecycle states"
+role = "researcher"
+provider = "claude-sonnet-plan"
+files.read = [
+  ".dgov/governor.md",
+  "src/dgov/cli/plan.py",
+  "src/dgov/plan_review.py",
+  "tests/test_cli_plan_list.py",
+  "tests/test_cli.py",
+]
+prompt = """
+Orient:
+- Read the user feedback in this prompt. Treat it as dogfood evidence from orbitopo.
+- Read `.dgov/governor.md` lifecycle/failure catalog entries related to archive, stale review attention, degraded runs, remediation, and stale run windows.
+- Read `src/dgov/cli/plan.py` around plan list/status/review/remediate lifecycle rendering and `src/dgov/plan_review.py` around run status loading.
+- Read the focused lifecycle tests in `tests/test_cli_plan_list.py` and `tests/test_cli.py`.
+
+Feedback to analyze:
+- Most valuable improvement: make lifecycle states first-class.
+- Desired distinctions: “complete and archived,” “degraded but remediated by X,” “acknowledged historical failure,” and “active attention needed.”
+- Current friction: a stale degraded plan may remain visible in active listing even after follow-up remediation fixed the branch, requiring manual inference and archive.
+- Branch-local dgov state is useful but cognitively heavy.
+
+Research:
+1. Identify the current lifecycle vocabulary and where it is computed or rendered.
+2. Propose a dgovian state model that keeps durable event history as source of truth but makes operator attention state explicit.
+3. Identify the smallest implementation slice that would make the feedback visibly better without building a broad dashboard.
+4. Name exact files/tests likely touched by that slice.
+
+Verify:
+- Read-only research only. Do not edit files.
+- Call done with concise findings, recommended next plan shape, and residual risks.
+"""

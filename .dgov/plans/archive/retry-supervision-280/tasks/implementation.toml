@@ -1,0 +1,29 @@
+[tasks.retry-supervision]
+summary = "Preserve settlement retry timeout and budget overrides"
+prompt = """
+Orient:
+- Read `src/dgov/runner.py` around `_run_with_timeout`, `_settlement_retry`, `_retry_after_settlement_rejection`, and `_retry_scope`.
+- Read `tests/test_runner.py` around `_settlement_retry_task`, `_capture_retry_scope_factory`, and `TestVerificationScope`.
+- Ledger bug #280: settlement retry workers ignored task-level `iteration_budget`, were not wrapped in the task `timeout_s`, and therefore drifted from the supervision contract used by initial workers.
+- Keep this fix narrow. Do not change dispatch-run persistence, status rendering, preserved-worktree cleanup, or normal initial-worker timeout behavior in this task.
+
+Edit:
+1. In `src/dgov/runner.py`, make `_settlement_retry` preserve the original task supervision fields when building the retry task. At minimum, preserve `iteration_budget`; prefer `task.model_copy(update={...})` over manually reconstructing a partial `DagTaskSpec` if that keeps the retry task faithful without changing behavior.
+2. In `src/dgov/runner.py`, launch the settlement retry through the existing `_run_with_timeout` helper so the retry worker uses the original task `timeout_s` and cancellation cleanup path. Preserve the current retry pane slug, retry scope, `_noop_retry_exit`, and `self.on_event` behavior.
+3. In `tests/test_runner.py`, add focused coverage proving `_settlement_retry` passes a retry task with the original `iteration_budget` and calls the timeout-supervised runner with the original `timeout_s`. Keep the test local to settlement retry supervision; do not add slow sleeps.
+
+Verify:
+- `uv run pytest -q tests/test_runner.py -k "settlement_retry"`
+- `uv run ruff check src/dgov/runner.py tests/test_runner.py`
+- `uv run ruff format --check src/dgov/runner.py tests/test_runner.py`
+"""
+commit_message = "Preserve settlement retry supervision"
+role = "worker"
+iteration_budget = 18
+timeout_s = 420
+max_fork_depth = 0
+files.edit = [
+  "src/dgov/runner.py",
+  "tests/test_runner.py",
+]
+test_cmd = "uv run pytest -q tests/test_runner.py -k \"settlement_retry\""

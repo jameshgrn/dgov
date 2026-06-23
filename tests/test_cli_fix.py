@@ -8,8 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
-
-from dgov.cli import cli
+from helpers import cli
 
 pytestmark = pytest.mark.unit
 

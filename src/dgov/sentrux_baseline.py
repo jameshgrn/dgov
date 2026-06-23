@@ -253,6 +253,10 @@ def _is_refresh_compatible_path(path: str, scope_ignore_files: tuple[str, ...] =
     return (
         path in {SENTRUX_BASELINE_REL_PATH, DGOV_SENTRUX_BASELINE_META_REL_PATH}
         or path == ".dgov/plans/deployed.jsonl"
+        or path == ".dgov/runs.log"
+        or path.startswith(".dgov/state.db")
+        or path.startswith(".dgov/out/")
+        or path.startswith(".dgov/runtime/")
         or (path.startswith(".dgov/") and path.endswith("/_compiled.toml"))
         or _is_scope_ignored(path, scope_ignore_files)
     )

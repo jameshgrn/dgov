@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from helpers import cli
 
-from dgov.cli import cli
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
 from dgov.import_graph import build_import_graph, detect_cross_task_import_conflicts
 

@@ -8,9 +8,15 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from helpers import (
+    DiffStat,
+    PlanReview,
+    SettlementPhaseTiming,
+    SettlementResult,
+    UnitReview,
+    cli,
+)
 
-from dgov.cli import cli
-from dgov.plan_review import DiffStat, PlanReview, UnitReview
 from dgov.types import RunStatus
 
 pytestmark = pytest.mark.unit
@@ -82,6 +88,25 @@ def _default_plan_review() -> PlanReview:
         last_run_ts="2026-04-10T12:00:00Z",
         last_run_duration_s=12.5,
         units=[_default_unit_review()],
+    )
+
+
+def _phase_timing_review(
+    *phase_timings: SettlementPhaseTiming, settlement: SettlementResult = "n/a"
+) -> PlanReview:
+    unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="deployed",
+        settlement=settlement,
+        phase_timings=phase_timings,
+    )
+    return PlanReview(
+        plan_name="p",
+        source_dir=None,
+        last_run_ts=None,
+        last_run_duration_s=None,
+        units=[unit],
     )
 
 
@@ -223,7 +248,7 @@ def test_review_renders_semantic_evidence_from_event_log(
 def test_review_failed_unit_shows_hint_and_exits_nonzero(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import PlanReview, UnitReview
+    from helpers import PlanReview, UnitReview
 
     failed = UnitReview(
         unit="tasks/main.risky",
@@ -264,7 +289,7 @@ def test_review_failed_unit_shows_hint_and_exits_nonzero(
 def test_review_shows_warning_when_worker_note_mentions_unlanded_file(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import DiffStat, PlanReview, UnitReview
+    from helpers import DiffStat, PlanReview, UnitReview
 
     unit = UnitReview(
         unit="tasks/main.a",
@@ -358,7 +383,7 @@ def test_review_renders_run_level_status_and_advisory(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Run-level status and Sentrux advisory should appear before unit count."""
-    from dgov.plan_review import DiffStat, PlanReview, UnitReview
+    from helpers import DiffStat, PlanReview, UnitReview
 
     unit = UnitReview(
         unit="tasks/main.a",
@@ -403,7 +428,7 @@ def test_review_failed_run_status_shows_red(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Failed run status should be styled differently (we just verify it appears)."""
-    from dgov.plan_review import PlanReview, UnitReview
+    from helpers import PlanReview, UnitReview
 
     unit = UnitReview(
         unit="tasks/main.a",
@@ -435,7 +460,7 @@ def test_review_json_includes_run_level_fields(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """JSON output should include run-level Sentrux advisory fields."""
-    from dgov.plan_review import DiffStat, PlanReview, UnitReview
+    from helpers import DiffStat, PlanReview, UnitReview
 
     unit = UnitReview(
         unit="tasks/main.a",
@@ -481,7 +506,7 @@ def test_review_json_includes_run_level_fields(
 def test_review_only_filters_to_matching_unit(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import PlanReview, UnitReview
+    from helpers import PlanReview, UnitReview
 
     review = PlanReview(
         plan_name="p",
@@ -545,7 +570,7 @@ def test_review_missing_plan_reports_error(
 def test_review_renders_self_corrections_for_deployed_unit(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import DiffStat, PlanReview, UnitReview
+    from helpers import DiffStat, PlanReview, UnitReview
 
     unit = UnitReview(
         unit="tasks/main.a",
@@ -582,7 +607,7 @@ def test_review_renders_self_corrections_for_deployed_unit(
 def test_review_json_includes_self_corrections(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import PlanReview, UnitReview
+    from helpers import PlanReview, UnitReview
 
     unit = UnitReview(
         unit="tasks/main.a",
@@ -611,24 +636,10 @@ def test_review_json_includes_self_corrections(
 def test_review_renders_settlement_phase_timings(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import PlanReview, SettlementPhaseTiming, UnitReview
-
-    unit = UnitReview(
-        unit="tasks/main.a",
-        summary="do a",
-        status="deployed",
+    review = _phase_timing_review(
+        SettlementPhaseTiming("prepare_commit", 0.5, "passed"),
+        SettlementPhaseTiming("isolated_validation", 76.0, "passed"),
         settlement="ok",
-        phase_timings=(
-            SettlementPhaseTiming("prepare_commit", 0.5, "passed"),
-            SettlementPhaseTiming("isolated_validation", 76.0, "passed"),
-        ),
-    )
-    review = PlanReview(
-        plan_name="p",
-        source_dir=None,
-        last_run_ts=None,
-        last_run_duration_s=None,
-        units=[unit],
     )
     plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
     _patched_load_review(monkeypatch, review=review)
@@ -645,20 +656,8 @@ def test_review_renders_settlement_phase_timings(
 def test_review_json_includes_settlement_phase_timings(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import PlanReview, SettlementPhaseTiming, UnitReview
-
-    unit = UnitReview(
-        unit="tasks/main.a",
-        summary="do a",
-        status="deployed",
-        phase_timings=(SettlementPhaseTiming("isolated_validation", 76.0, "passed"),),
-    )
-    review = PlanReview(
-        plan_name="p",
-        source_dir=None,
-        last_run_ts=None,
-        last_run_duration_s=None,
-        units=[unit],
+    review = _phase_timing_review(
+        SettlementPhaseTiming("isolated_validation", 76.0, "passed"),
     )
     plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
     _patched_load_review(monkeypatch, review=review)
@@ -682,8 +681,6 @@ def test_review_json_includes_settlement_phase_timings(
 def test_review_json_includes_non_empty_settlement_phase_facts(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import PlanReview, SettlementPhaseTiming, UnitReview
-
     facts = (
         {
             "gate": "test",
@@ -694,20 +691,8 @@ def test_review_json_includes_non_empty_settlement_phase_facts(
             "exit_code": 0,
         },
     )
-    unit = UnitReview(
-        unit="tasks/main.a",
-        summary="do a",
-        status="deployed",
-        phase_timings=(
-            SettlementPhaseTiming("candidate_validation", 2.25, "passed", facts=facts),
-        ),
-    )
-    review = PlanReview(
-        plan_name="p",
-        source_dir=None,
-        last_run_ts=None,
-        last_run_duration_s=None,
-        units=[unit],
+    review = _phase_timing_review(
+        SettlementPhaseTiming("candidate_validation", 2.25, "passed", facts=facts),
     )
     plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
     _patched_load_review(monkeypatch, review=review)
@@ -731,7 +716,7 @@ def test_review_json_includes_non_empty_settlement_phase_facts(
 def test_review_only_nonexistent_errors_out(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import PlanReview
+    from helpers import PlanReview
 
     plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
     # Stub that returns empty units when filtered
@@ -757,7 +742,7 @@ def test_review_only_nonexistent_errors_out(
 def test_review_diff_flag_shows_full_patch(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import DiffStat, PlanReview, UnitReview
+    from helpers import DiffStat, PlanReview, UnitReview
 
     unit = UnitReview(
         unit="tasks/main.a",
@@ -795,7 +780,7 @@ def test_review_diff_flag_shows_full_patch(
 def test_review_events_flag_shows_tool_calls_and_thoughts(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import PlanReview, UnitReview
+    from helpers import PlanReview, UnitReview
 
     unit = UnitReview(
         unit="tasks/main.a",
@@ -835,7 +820,7 @@ def test_review_events_flag_shows_tool_calls_and_thoughts(
 def test_review_diff_and_events_combinable(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import PlanReview, UnitReview
+    from helpers import PlanReview, UnitReview
 
     unit = UnitReview(
         unit="tasks/main.a",

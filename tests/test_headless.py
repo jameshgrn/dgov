@@ -9,7 +9,12 @@ from typing import cast
 import pytest
 
 from dgov.dag_parser import DagFileSpec, DagTaskSpec
-from dgov.workers.headless import _config_json_for_task, _script_for_role, run_headless_worker
+from dgov.workers.headless import (
+    _SUBPROCESS_STREAM_LIMIT,
+    _config_json_for_task,
+    _script_for_role,
+    run_headless_worker,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -82,6 +87,34 @@ def _make_exit_recorder() -> tuple[list[tuple[int, str, int, int]], Callable]:
         exits.append((exit_code, last_error, prompt_tokens, completion_tokens))
 
     return exits, _on_exit
+
+
+def _run_headless_and_capture_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    task: DagTaskSpec,
+) -> tuple[dict[str, object], list[tuple[int, str, int, int]]]:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        _make_mock_subprocess_exec(exit_code=0, capture=captured),
+    )
+    exits, on_exit = _make_exit_recorder()
+    asyncio.run(
+        run_headless_worker(
+            project_root=str(tmp_path),
+            plan_name="plan-1",
+            task_slug="t1",
+            pane_slug="pane-1",
+            worktree_path=tmp_path,
+            task=task,
+            task_scope={"task_slug": "t1", "create": ["x.py"]},
+            on_exit=on_exit,
+        )
+    )
+    kwargs = cast(dict[str, object], captured.get("kwargs", {}))
+    return cast(dict[str, object], kwargs["env"]), exits
 
 
 def _make_test_task(
@@ -167,6 +200,8 @@ def test_run_headless_worker_uses_project_config_payload(
     task_scope_json = args[-1]
     assert isinstance(task_scope_json, str)
     assert json.loads(task_scope_json)["create"] == ["x.py"]
+    kwargs = cast(dict[str, object], captured.get("kwargs", {}))
+    assert kwargs["limit"] == _SUBPROCESS_STREAM_LIMIT
     assert exits == [(0, "", 0, 0)]
 
 
@@ -380,29 +415,8 @@ def test_run_headless_worker_env_omits_unrelated_parent_var(
     monkeypatch.setenv("TMPDIR", "/tmp/tmpdir-leak")
     monkeypatch.setenv("DGOV_RUN_SOURCE", "test-run")
     monkeypatch.setenv("LANG", "C.UTF-8")
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        asyncio,
-        "create_subprocess_exec",
-        _make_mock_subprocess_exec(exit_code=0, capture=captured),
-    )
-    exits, on_exit = _make_exit_recorder()
 
-    asyncio.run(
-        run_headless_worker(
-            project_root=str(tmp_path),
-            plan_name="plan-1",
-            task_slug="t1",
-            pane_slug="pane-1",
-            worktree_path=tmp_path,
-            task=task,
-            task_scope={"task_slug": "t1", "create": ["x.py"]},
-            on_exit=on_exit,
-        )
-    )
-
-    kwargs = cast(dict[str, object], captured.get("kwargs", {}))
-    env = cast(dict[str, object], kwargs["env"])
+    env, exits = _run_headless_and_capture_env(tmp_path, monkeypatch, task)
     assert "UNRELATED_VAR" not in env
     assert "HOME" not in env
     assert "USER" not in env
@@ -437,29 +451,45 @@ api_key_env = "OPENAI_API_KEY"
     task = _make_test_task(provider="openai")
     monkeypatch.setenv("FIREWORKS_API_KEY", "fw-secret")
     monkeypatch.setenv("OPENAI_API_KEY", "oa-secret")
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        asyncio,
-        "create_subprocess_exec",
-        _make_mock_subprocess_exec(exit_code=0, capture=captured),
-    )
-    exits, on_exit = _make_exit_recorder()
 
-    asyncio.run(
-        run_headless_worker(
-            project_root=str(tmp_path),
-            plan_name="plan-1",
-            task_slug="t1",
-            pane_slug="pane-1",
-            worktree_path=tmp_path,
-            task=task,
-            task_scope={"task_slug": "t1", "create": ["x.py"]},
-            on_exit=on_exit,
-        )
-    )
-
-    kwargs = cast(dict[str, object], captured.get("kwargs", {}))
-    env = cast(dict[str, object], kwargs["env"])
+    env, exits = _run_headless_and_capture_env(tmp_path, monkeypatch, task)
     assert "FIREWORKS_API_KEY" not in env
     assert env.get("OPENAI_API_KEY") == "oa-secret"
+    assert exits == [(0, "", 0, 0)]
+
+
+def test_run_headless_worker_env_allows_claude_code_provider_vars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup_project_toml(
+        tmp_path,
+        """
+[project]
+provider = "claude-haiku-worker"
+
+[providers.claude-haiku-worker]
+default_agent = "haiku"
+base_url = "claude-code://fast?preset=edit"
+""",
+    )
+    task = _make_test_task()
+    monkeypatch.setenv("HOME", "/tmp/claude-home")
+    monkeypatch.setenv("USER", "claude-user")
+    monkeypatch.setenv("LOGNAME", "claude-logname")
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    monkeypatch.setenv("DGOV_CLAUDE_CODE_RUNNER", "/tmp/run_claude_code.py")
+    monkeypatch.setenv("CLAUDE_CODE_BIN", "/tmp/claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
+    monkeypatch.setenv("UNRELATED_VAR", "should-not-pass")
+
+    env, exits = _run_headless_and_capture_env(tmp_path, monkeypatch, task)
+
+    assert env.get("HOME") == "/tmp/claude-home"
+    assert env.get("USER") == "claude-user"
+    assert env.get("LOGNAME") == "claude-logname"
+    assert env.get("SHELL") == "/bin/zsh"
+    assert env.get("DGOV_CLAUDE_CODE_RUNNER") == "/tmp/run_claude_code.py"
+    assert env.get("CLAUDE_CODE_BIN") == "/tmp/claude"
+    assert env.get("ANTHROPIC_API_KEY") == "anthropic-secret"
+    assert "UNRELATED_VAR" not in env
     assert exits == [(0, "", 0, 0)]

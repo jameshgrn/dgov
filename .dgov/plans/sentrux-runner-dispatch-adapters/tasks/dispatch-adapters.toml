@@ -1,0 +1,36 @@
+[tasks.dispatch-adapters]
+summary = "Move dispatch-run persistence access behind runner support"
+prompt = """
+## Orient
+- Read `src/dgov/runner.py` around imports, `_rehydrate_dispatch_run_contexts`, `_mint_dispatch_run`, `_record_terminal_dispatch_run`, and `_current_dispatch_run`.
+- Read `src/dgov/runner_support.py`.
+- Read `tests/test_runner.py` around `TestDispatchRunRecording`.
+- This task reduces real runner coupling for Sentrux: `runner.py` should no longer import `dgov.persistence.dispatch_runs` directly.
+- Do not move code into local imports in `runner.py` just to hide fan-out. Put small adapter functions in `runner_support.py`.
+- Use `grep` before broader reads. If output is clipped, narrow the next read immediately.
+
+## Edit
+1. In `src/dgov/runner_support.py`, add small adapter functions for dispatch-run persistence:
+   - `latest_dispatch_run_id(session_root: str, plan_id: str, unit_slug: str) -> str | None`
+   - `save_runner_dispatch_run(session_root: str, dispatch_run: Any) -> None`
+   - `load_runner_dispatch_run(session_root: str, dispatch_run_id: str) -> Any | None`
+2. These adapters should import `list_dispatch_runs`, `save_dispatch_run`, `get_dispatch_run`, and `_dispatch_run_from_row_dict` inside `runner_support.py`, not in `runner.py`.
+3. In `src/dgov/runner.py`, import those adapters from `dgov.runner_support`.
+4. Remove the direct `dgov.persistence.dispatch_runs` import from `runner.py`.
+5. Update `_rehydrate_dispatch_run_contexts`, `_mint_dispatch_run`, `_record_terminal_dispatch_run`, and `_current_dispatch_run` to call the adapters.
+6. Preserve behavior and public method names in `EventDagRunner`; tests should not need to change.
+
+## Verify
+- Use the test tool, not raw shell, for `uv run pytest -q -m unit tests/test_runner.py -k "DispatchRunRecording"`.
+- Use the test tool, not raw shell, for `uv run pytest -q -m unit tests/test_boundaries.py`.
+"""
+commit_message = "Route runner dispatch-run persistence through support adapters"
+role = "worker"
+timeout_s = 700
+iteration_budget = 18
+test_cmd = "uv run pytest -q -m unit tests/test_runner.py -k \"DispatchRunRecording\""
+max_fork_depth = 0
+
+[tasks.dispatch-adapters.files]
+edit = ["src/dgov/runner.py", "src/dgov/runner_support.py"]
+read = ["tests/test_runner.py", "tests/test_boundaries.py"]

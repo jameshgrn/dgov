@@ -42,6 +42,23 @@ system level. Workers may be probabilistic. Governance should not be.
   may keep `.dgov/` local-only; core dgov must not require production repos to
   track dgov plan history.
 
+## Lacustrine Pillars
+
+These are the structural invariants enforced at every dgov layer. They are
+governance constraints — workers, reviewers, and settlement gates must preserve
+them when changing architecture, state, runner/worktree, worker, settlement,
+plan, or persistence boundaries.
+
+- **Pillar #1: Separation of Powers** — Governor plans; Worker implements; Settlement validates.
+- **Pillar #2: The Atomic Attempt** — Each task runs in an isolated worktree checkout.
+- **Pillar #3: Snapshot Isolation** — Each worktree has independent git state.
+- **Pillar #4: Determinism** — All plan inputs and dependencies are validated before dispatch.
+- **Pillar #6: Event-Sourced** — Every action and thought is emitted as an append-only event.
+- **Pillar #7: Zero Ambient Authority** — Workers execute sandboxed within their claimed worktree only.
+- **Pillar #8: Falsifiable Validation** — All work is machine-verified before merge.
+- **Pillar #9: Hot-Path** — Zero-latency async signaling; no polling or pipes.
+- **Pillar #10: Fail-Closed** — Invalid state is rejected immediately; never silently passed.
+
 ## Governor Invocation
 
 When operator direction is ambiguous, classify the work before dispatching.
@@ -244,6 +261,51 @@ something this section does not, the index has drifted.
   recipes in `.dgov/project.toml` and reference them by name instead of embedding
   full commands in every task prompt.
 
+## Lieutenant Governor Delegation
+
+A lieutenant governor is a higher-capability agent authorized to operate the
+full dgov governor loop on behalf of the primary operator. Delegation is
+contract-bound, not open-ended.
+
+### Invoking delegation
+
+```
+dgov delegate "<vision>" [--lieutenant-provider <name>] [--worker-provider <name>]
+```
+
+This renders a deterministic delegation brief containing:
+- The vision the lieutenant is scoped to
+- Lieutenant provider and worker provider contracts (name, model, endpoint)
+- Stop rules the lieutenant must honor
+- Required plan-mediated workflow (plan → compile → run → review → ledger)
+- Verification expectations (lint, format, test commands from project config)
+- Ledger obligations after each `dgov run`
+
+Both `--lieutenant-provider` and `--worker-provider` must reference names
+defined in `.dgov/project.toml [providers.*]`. An unknown provider is a hard
+error; the brief is not rendered.
+
+### Lieutenant operating contract
+
+- Follow the brief exactly. Do not expand vision scope without a new delegation.
+- All work must flow through plan files. No ad hoc task dispatch.
+- Honor every stop rule. A stop-and-ledger event is a success, not a failure.
+- Run `dgov plan review <dir>` after every `dgov run` and record findings.
+- Ledger obligations are mandatory: bugs, rules, and decisions must be recorded
+  before the session ends.
+
+### What the governor owns
+
+The governor retains authority over:
+- Plan authoring and file claim approval
+- Scope violations — these are terminal regardless of lieutenant direction
+- Settlement and sentrux gates
+- Provider configuration in `.dgov/project.toml`
+
+The lieutenant may not override settlement, widen scope, or change provider
+config mid-delegation. If any of these are needed, stop and surface the
+decision to the governor.
+
 ## Operational Memory
 
 - The ledger is the durable memory for bugs, rules, decisions, patterns, and debt.
@@ -310,6 +372,10 @@ This is the sequence for going from idea to running plan.
 - Commit messages must be imperative and reflect one logical change.
 - If a task needs different model behavior, override `agent`; do not restate
   general governance rules in the task prompt.
+- Keep local-provider or unproven local-model tasks smaller than remote-model
+  tasks: one primary edit site, one behavior claim, one narrow verification
+  command, explicit tool-use guidance, and post-run audit/ledgering of model,
+  provider, tool calls, token use, settlement outcome, and lessons.
 - Use `self_review = true` on tasks where the worker is likely to make
   semantic mistakes (e.g. wrong method receiver, unused return values,
   incorrect API usage). Self-review spawns a clean-context reviewer on

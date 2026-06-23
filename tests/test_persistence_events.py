@@ -296,7 +296,7 @@ class TestSemanticSettlementEvents:
 
     def test_emit_integration_risk_scored_roundtrip(self, tmp_path):
         """integration_risk_scored event emits and reads back correctly."""
-        from dgov.semantic_settlement import (
+        from helpers import (
             IntegrationRiskRecord,
             RiskLevel,
             emit_integration_risk_scored,
@@ -334,7 +334,7 @@ class TestSemanticSettlementEvents:
 
     def test_emit_integration_overlap_detected_roundtrip(self, tmp_path):
         """integration_overlap_detected event emits and reads back correctly."""
-        from dgov.semantic_settlement import SymbolOverlap, emit_integration_overlap_detected
+        from helpers import SymbolOverlap, emit_integration_overlap_detected
 
         session_root = _session(tmp_path)
 
@@ -363,7 +363,7 @@ class TestSemanticSettlementEvents:
 
     def test_emit_integration_candidate_passed_roundtrip(self, tmp_path):
         """integration_candidate_passed event emits and reads back correctly."""
-        from dgov.semantic_settlement import (
+        from helpers import (
             IntegrationCandidateVerdict,
             emit_integration_candidate_passed,
         )
@@ -394,7 +394,7 @@ class TestSemanticSettlementEvents:
 
     def test_emit_integration_candidate_failed_roundtrip(self, tmp_path):
         """integration_candidate_failed event emits and reads back correctly."""
-        from dgov.semantic_settlement import (
+        from helpers import (
             FailureClass,
             IntegrationCandidateVerdict,
             TextConflict,
@@ -435,7 +435,7 @@ class TestSemanticSettlementEvents:
 
     def test_emit_semantic_gate_rejected_roundtrip(self, tmp_path):
         """semantic_gate_rejected event emits and reads back correctly."""
-        from dgov.semantic_settlement import (
+        from helpers import (
             FailureClass,
             SemanticGateVerdict,
             SymbolOverlap,
@@ -474,7 +474,7 @@ class TestSemanticSettlementEvents:
 
     def _emit_plan_a_risk_event(self, session_root):
         """Emit an integration_risk_scored event for plan-a."""
-        from dgov.semantic_settlement import (
+        from helpers import (
             IntegrationRiskRecord,
             RiskLevel,
             emit_integration_risk_scored,
@@ -493,7 +493,7 @@ class TestSemanticSettlementEvents:
 
     def _emit_plan_b_risk_event(self, session_root):
         """Emit an integration_risk_scored event for plan-b."""
-        from dgov.semantic_settlement import (
+        from helpers import (
             IntegrationRiskRecord,
             RiskLevel,
             emit_integration_risk_scored,
@@ -512,7 +512,7 @@ class TestSemanticSettlementEvents:
 
     def _emit_plan_b_candidate_event(self, session_root):
         """Emit an integration_candidate_passed event for plan-b."""
-        from dgov.semantic_settlement import (
+        from helpers import (
             IntegrationCandidateVerdict,
             emit_integration_candidate_passed,
         )
@@ -551,7 +551,7 @@ class TestSemanticSettlementEvents:
 
     def test_semantic_settlement_events_filter_by_task_slug(self, tmp_path):
         """Semantic settlement events can be filtered by task_slug."""
-        from dgov.semantic_settlement import (
+        from helpers import (
             IntegrationCandidateVerdict,
             emit_integration_candidate_passed,
         )
@@ -592,7 +592,7 @@ class TestSettlementPhaseEvents:
 
     def _emit_test_started_event(self, session_root):
         """Emit a SettlementPhaseStarted event with test constants."""
-        from dgov.event_types import SettlementPhaseStarted
+        from helpers import SettlementPhaseStarted
 
         event = SettlementPhaseStarted(
             pane=TEST_PANE,
@@ -604,7 +604,7 @@ class TestSettlementPhaseEvents:
 
     def _emit_test_completed_event(self, session_root):
         """Emit a SettlementPhaseCompleted event with test constants."""
-        from dgov.event_types import SettlementPhaseCompleted
+        from helpers import SettlementPhaseCompleted
 
         event = SettlementPhaseCompleted(
             pane=TEST_PANE,
@@ -619,7 +619,7 @@ class TestSettlementPhaseEvents:
 
     def _assert_started_event_matches_test_constants(self, event):
         """Assert a deserialized SettlementPhaseStarted matches test constants."""
-        from dgov.event_types import SettlementPhaseStarted
+        from helpers import SettlementPhaseStarted
 
         assert isinstance(event, SettlementPhaseStarted)
         assert event.pane == TEST_PANE
@@ -629,7 +629,7 @@ class TestSettlementPhaseEvents:
 
     def _assert_completed_event_matches_test_constants(self, event):
         """Assert a deserialized SettlementPhaseCompleted matches test constants."""
-        from dgov.event_types import SettlementPhaseCompleted
+        from helpers import SettlementPhaseCompleted
 
         assert isinstance(event, SettlementPhaseCompleted)
         assert event.pane == TEST_PANE
@@ -647,7 +647,7 @@ class TestSettlementPhaseEvents:
 
     def test_emit_settlement_phase_started_roundtrip(self, tmp_path):
         """settlement_phase_started event emits and reads back correctly."""
-        from dgov.event_types import SettlementPhaseStarted, serialize_event
+        from helpers import SettlementPhaseStarted, serialize_event
 
         session_root = _session(tmp_path)
 
@@ -672,7 +672,7 @@ class TestSettlementPhaseEvents:
 
     def test_emit_settlement_phase_completed_success_roundtrip(self, tmp_path):
         """settlement_phase_completed success event emits and reads back correctly."""
-        from dgov.event_types import SettlementPhaseCompleted, serialize_event
+        from helpers import SettlementPhaseCompleted, serialize_event
 
         session_root = _session(tmp_path)
 
@@ -703,7 +703,7 @@ class TestSettlementPhaseEvents:
 
     def test_emit_settlement_phase_completed_failure_roundtrip(self, tmp_path):
         """settlement_phase_completed failure event emits and reads back correctly."""
-        from dgov.event_types import SettlementPhaseCompleted, serialize_event
+        from helpers import SettlementPhaseCompleted, serialize_event
 
         session_root = _session(tmp_path)
 
@@ -734,7 +734,7 @@ class TestSettlementPhaseEvents:
 
     def test_settlement_phase_events_filter_by_plan_name(self, tmp_path):
         """Settlement phase events can be filtered by plan_name."""
-        from dgov.event_types import SettlementPhaseStarted, serialize_event
+        from helpers import SettlementPhaseStarted, serialize_event
 
         session_root = _session(tmp_path)
 
@@ -757,7 +757,7 @@ class TestSettlementPhaseEvents:
 
     def test_settlement_phase_events_filter_by_task_slug(self, tmp_path):
         """Settlement phase events can be filtered by task_slug."""
-        from dgov.event_types import SettlementPhaseCompleted, serialize_event
+        from helpers import SettlementPhaseCompleted, serialize_event
 
         session_root = _session(tmp_path)
 
@@ -781,14 +781,14 @@ class TestSettlementPhaseEvents:
 
     def _emit_serialized(self, session_root, event):
         """Serialize and emit an event object."""
-        from dgov.event_types import serialize_event
+        from helpers import serialize_event
 
         event_name, pane, kwargs = serialize_event(event)
         emit_event(session_root, event=event_name, pane=pane, **kwargs)
 
     def _assert_started_event(self, event, expected):
         """Assert a deserialized SettlementPhaseStarted has expected fields."""
-        from dgov.event_types import SettlementPhaseStarted
+        from helpers import SettlementPhaseStarted
 
         assert isinstance(event, SettlementPhaseStarted)
         assert event.pane == expected["pane"]
@@ -798,7 +798,7 @@ class TestSettlementPhaseEvents:
 
     def _assert_completed_event(self, event, expected):
         """Assert a deserialized SettlementPhaseCompleted has expected fields."""
-        from dgov.event_types import SettlementPhaseCompleted
+        from helpers import SettlementPhaseCompleted
 
         assert isinstance(event, SettlementPhaseCompleted)
         assert event.pane == expected["pane"]
@@ -811,7 +811,7 @@ class TestSettlementPhaseEvents:
 
     def test_settlement_phase_events_typed_deserialization(self, tmp_path):
         """Settlement phase events deserialize correctly via deserialize_event."""
-        from dgov.event_types import deserialize_event
+        from helpers import deserialize_event
 
         session_root = _session(tmp_path)
 
@@ -829,7 +829,7 @@ class TestSettlementPhaseEvents:
 
     def test_settlement_phase_completed_facts_roundtrip(self, tmp_path):
         """Facts payload on SettlementPhaseCompleted serializes and deserializes correctly."""
-        from dgov.event_types import SettlementPhaseCompleted, deserialize_event, serialize_event
+        from helpers import SettlementPhaseCompleted, deserialize_event, serialize_event
 
         session_root = _session(tmp_path)
 
@@ -872,7 +872,7 @@ class TestSettlementPhaseEvents:
 
     def test_settlement_phase_completed_old_event_without_facts_deserializes(self):
         """Old settlement_phase_completed rows without facts should retain the default."""
-        from dgov.event_types import SettlementPhaseCompleted, deserialize_event
+        from helpers import SettlementPhaseCompleted, deserialize_event
 
         event = deserialize_event({
             "event": "settlement_phase_completed",

@@ -1,0 +1,6 @@
+[plan]
+name = "fix-headless-ty-captured-kwargs"
+summary = "Repair the headless worker test typing blocker found during PR readiness."
+sections = ["tasks"]
+default_provider = "claude-haiku-worker"
+default_agent = "haiku"

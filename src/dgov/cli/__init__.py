@@ -139,6 +139,7 @@ def cli(
       dgov plan remediate <dir>  Scaffold a follow-up remediation plan
       dgov plan review <dir>     Post-hoc debrief of the last run
       dgov sentrux check         Run architectural quality check
+      dgov delegate <vision>     Render a lieutenant delegation brief
 
     Tasks run in isolated git worktrees. No tmux required.
     """
@@ -317,6 +318,7 @@ from dgov.cli import (  # noqa: E402
     clean as clean,
     compile as compile,
     coverage as coverage,
+    delegate as delegate,
     diagnose as diagnose,
     fix as fix,
     init as init,

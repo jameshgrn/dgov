@@ -1,0 +1,6 @@
+[plan]
+name = "verification-evidence-review-text"
+summary = "Surface persisted settlement command facts in text plan review."
+sections = ["tasks"]
+default_provider = "local"
+default_agent = "unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit"

@@ -1,5 +1,7 @@
 """Tests for dgov config: project config loading and prompt rendering."""
 
+from pathlib import Path
+
 import pytest
 
 from dgov.config import ProjectConfig, load_project_config
@@ -8,6 +10,25 @@ from dgov.workers.config import AtomicConfig, ProviderConfig
 
 pytestmark = pytest.mark.unit
 
+_NAMED_PROVIDER_REGISTRY_TOML = """
+[project]
+provider = "openai"
+
+[providers.openai]
+default_agent = "gpt-test"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[providers.openrouter]
+default_agent = "openrouter/test"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+max_tokens = 8192
+token_limit_label = "OpenRouter token policy"
+prompt_token_limit_header = "x-prompt-limit"
+generated_token_limit_header = "x-generated-limit"
+"""
+
 
 def _project_with_provider(
     name: str,
@@ -15,6 +36,10 @@ def _project_with_provider(
     base_url: str = "https://provider.test/v1",
     api_key_env: str = "TEST_PROVIDER_API_KEY",
     default_agent: str = "",
+    max_tokens: int | None = None,
+    token_limit_label: str = "",
+    prompt_token_limit_header: str = "",
+    generated_token_limit_header: str = "",
     **kwargs,
 ) -> ProjectConfig:
     return ProjectConfig(
@@ -28,10 +53,96 @@ def _project_with_provider(
                 base_url=base_url,
                 api_key_env=api_key_env,
                 default_agent=default_agent,
+                max_tokens=max_tokens,
+                token_limit_label=token_limit_label,
+                prompt_token_limit_header=prompt_token_limit_header,
+                generated_token_limit_header=generated_token_limit_header,
             )
         },
         **kwargs,
     )
+
+
+def _write_named_provider_registry(root: Path) -> None:
+    dgov_dir = root / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text(_NAMED_PROVIDER_REGISTRY_TOML)
+
+
+def _assert_openrouter_provider(pc: ProjectConfig) -> None:
+    assert pc.llm_runtime_settings("openrouter") == (
+        "https://openrouter.ai/api/v1",
+        "OPENROUTER_API_KEY",
+    )
+    assert pc.provider_config("openrouter").max_tokens == 8192
+    openrouter = pc.provider_config("openrouter")
+    assert openrouter.token_limit_label == "OpenRouter token policy"
+    assert openrouter.prompt_token_limit_header == "x-prompt-limit"
+    assert openrouter.generated_token_limit_header == "x-generated-limit"
+    payload = pc.to_worker_payload("openrouter")
+    assert payload["llm_max_tokens"] == 8192
+    assert payload["llm_token_limit_label"] == "OpenRouter token policy"
+    assert payload["llm_prompt_token_limit_header"] == "x-prompt-limit"
+    assert payload["llm_generated_token_limit_header"] == "x-generated-limit"
+
+
+def _assert_source_local_provider(pc: ProjectConfig) -> None:
+    local = pc.provider_config("local")
+    assert local.name == "local"
+    assert local.base_url == "http://localhost:8080/v1"
+    assert local.api_key_env == "LOCAL_LLM_API_KEY"
+    assert local.default_agent == "unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit"
+    assert local.max_tokens == 262144
+    assert pc.provider_default_agents()["local"] == local.default_agent
+    assert pc.agents["gemma-4-26b-a4b"] == local.default_agent
+
+    payload = pc.to_worker_payload("local")
+    assert payload["llm_provider"] == "local"
+    assert payload["llm_base_url"] == local.base_url
+    assert payload["llm_api_key_env"] == local.api_key_env
+    assert payload["llm_max_tokens"] == local.max_tokens
+
+
+def _assert_source_fireworks_provider(pc: ProjectConfig) -> None:
+    fireworks = pc.provider_config("fireworks")
+    assert fireworks.token_limit_label == "Fireworks adaptive serverless TPM"
+    assert fireworks.prompt_token_limit_header == "x-ratelimit-limit-tokens-prompt"
+    assert fireworks.generated_token_limit_header == "x-ratelimit-limit-tokens-generated"
+
+    payload = pc.to_worker_payload("fireworks")
+    assert payload["llm_token_limit_label"] == fireworks.token_limit_label
+    assert payload["llm_prompt_token_limit_header"] == fireworks.prompt_token_limit_header
+    assert payload["llm_generated_token_limit_header"] == fireworks.generated_token_limit_header
+
+
+def _assert_source_default_claude_provider(pc: ProjectConfig) -> None:
+    provider = pc.provider_config("claude")
+    assert pc.llm_provider == "claude"
+    assert pc.default_agent == "sonnet"
+    assert provider.default_agent == "sonnet"
+    assert provider.base_url == "claude-code://daily?max_turns=32&timeout=1200"
+    assert provider.api_key_env == ""
+    assert provider.requires_api_key() is False
+    assert pc.agents["claude"] == "sonnet"
+
+    payload = pc.to_worker_payload()
+    assert payload["llm_provider"] == "claude"
+    assert payload["llm_base_url"] == provider.base_url
+    assert payload["llm_api_key_env"] == ""
+
+
+def _assert_source_claude_code_provider(
+    pc: ProjectConfig,
+    provider_name: str,
+    *,
+    agent: str,
+    base_url: str,
+) -> None:
+    provider = pc.provider_config(provider_name)
+    assert provider.default_agent == agent
+    assert provider.base_url == base_url
+    assert provider.api_key_env == ""
+    assert provider.requires_api_key() is False
 
 
 class TestProjectConfigDefaults:
@@ -128,6 +239,10 @@ class TestWorkerPayload:
             worker_iteration_warn_at=60,
             worker_tree_max_lines=0,
             line_length=120,
+            max_tokens=8192,
+            token_limit_label="Fireworks adaptive serverless TPM",
+            prompt_token_limit_header="x-ratelimit-limit-tokens-prompt",
+            generated_token_limit_header="x-ratelimit-limit-tokens-generated",
             verify_commands={"rating": "uv run pytest tests/test_rating.py -q"},
             test_markers=("unit",),
             conventions={"imports": "absolute"},
@@ -147,6 +262,17 @@ class TestWorkerPayload:
         assert round_tripped.test_markers == ("unit",)
         assert round_tripped.conventions == {"imports": "absolute"}
         assert round_tripped.tool_policy.require_uv_run is True
+        assert round_tripped.llm_max_tokens == 8192
+        assert round_tripped.llm_token_limit_label == "Fireworks adaptive serverless TPM"
+        assert round_tripped.llm_prompt_token_limit_header == "x-ratelimit-limit-tokens-prompt"
+        assert (
+            round_tripped.llm_generated_token_limit_header == "x-ratelimit-limit-tokens-generated"
+        )
+        provider = round_tripped.provider_config("fireworks")
+        assert provider.max_tokens == 8192
+        assert provider.token_limit_label == "Fireworks adaptive serverless TPM"
+        assert provider.prompt_token_limit_header == "x-ratelimit-limit-tokens-prompt"
+        assert provider.generated_token_limit_header == "x-ratelimit-limit-tokens-generated"
 
     def test_to_atomic_config_preserves_type_check_and_line_length(self):
         pc = _project_with_provider(
@@ -272,38 +398,73 @@ class TestLoadProjectConfig:
         assert pc.type_check_cmd == "ty check"
 
     def test_loads_named_provider_registry(self, tmp_path):
-        dgov_dir = tmp_path / ".dgov"
-        dgov_dir.mkdir()
-        (dgov_dir / "project.toml").write_text(
-            """
-[project]
-provider = "openai"
-
-[providers.openai]
-default_agent = "gpt-test"
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-
-[providers.openrouter]
-default_agent = "openrouter/test"
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-"""
-        )
+        _write_named_provider_registry(tmp_path)
 
         pc = load_project_config(tmp_path)
 
         assert pc.llm_provider == "openai"
         assert pc.default_agent == "gpt-test"
         assert pc.llm_runtime_settings() == ("https://api.openai.com/v1", "OPENAI_API_KEY")
-        assert pc.llm_runtime_settings("openrouter") == (
-            "https://openrouter.ai/api/v1",
-            "OPENROUTER_API_KEY",
-        )
+        _assert_openrouter_provider(pc)
         assert pc.provider_default_agents() == {
             "openai": "gpt-test",
             "openrouter": "openrouter/test",
         }
+
+    def test_loads_claude_code_provider_without_api_key_env(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            """
+[project]
+provider = "claude-haiku-worker"
+
+[providers.claude-haiku-worker]
+default_agent = "haiku"
+base_url = "claude-code://fast?preset=edit"
+"""
+        )
+
+        pc = load_project_config(tmp_path)
+
+        provider = pc.provider_config("claude-haiku-worker")
+        assert provider.base_url == "claude-code://fast?preset=edit"
+        assert provider.api_key_env == ""
+        assert provider.requires_api_key() is False
+        assert pc.llm_api_key_env == ""
+        payload = pc.to_worker_payload("claude-haiku-worker")
+        assert payload["llm_api_key_env"] == ""
+
+    def test_source_repo_config_wires_local_gemma_provider(self):
+        pc = load_project_config(Path(__file__).resolve().parents[1])
+
+        _assert_source_default_claude_provider(pc)
+        _assert_source_local_provider(pc)
+        _assert_source_fireworks_provider(pc)
+        _assert_source_claude_code_provider(
+            pc,
+            "claude-haiku-worker",
+            agent="haiku",
+            base_url="claude-code://fast?preset=edit&max_turns=18&timeout=1200",
+        )
+        _assert_source_claude_code_provider(
+            pc,
+            "claude-haiku-plan",
+            agent="haiku",
+            base_url="claude-code://fast?preset=plan&max_turns=18&timeout=1200",
+        )
+        _assert_source_claude_code_provider(
+            pc,
+            "claude-sonnet-review",
+            agent="sonnet",
+            base_url="claude-code://daily?preset=review&max_turns=32&timeout=1200",
+        )
+        _assert_source_claude_code_provider(
+            pc,
+            "claude-sonnet-plan",
+            agent="sonnet",
+            base_url="claude-code://daily?preset=plan&max_turns=32&timeout=1200",
+        )
 
     def test_rejects_unknown_selected_provider(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"
@@ -311,6 +472,22 @@ api_key_env = "OPENROUTER_API_KEY"
         (dgov_dir / "project.toml").write_text('[project]\nprovider = "openai"\n')
 
         with pytest.raises(ValueError, match=r"\[providers\.openai\]"):
+            load_project_config(tmp_path)
+
+    def test_rejects_openai_compatible_provider_without_api_key_env(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            """
+[project]
+provider = "fireworks"
+
+[providers.fireworks]
+base_url = "https://api.fireworks.ai/inference/v1"
+"""
+        )
+
+        with pytest.raises(ValueError, match=r"\[providers\.fireworks\]\.api_key_env"):
             load_project_config(tmp_path)
 
     @pytest.mark.parametrize(
@@ -372,6 +549,30 @@ base_url = "https://api.fireworks.ai/inference/v1"
 api_key_env = "FIREWORKS_API_KEY"
 """,
                 r"\[providers\.fireworks\]\.default_agent must be a string",
+            ),
+            (
+                """
+[project]
+provider = "fireworks"
+
+[providers.fireworks]
+base_url = "https://api.fireworks.ai/inference/v1"
+api_key_env = "FIREWORKS_API_KEY"
+max_tokens = "8192"
+""",
+                r"\[providers\.fireworks\]\.max_tokens must be an integer",
+            ),
+            (
+                """
+[project]
+provider = "fireworks"
+
+[providers.fireworks]
+base_url = "https://api.fireworks.ai/inference/v1"
+api_key_env = "FIREWORKS_API_KEY"
+max_tokens = 0
+""",
+                r"\[providers\.fireworks\]\.max_tokens must be > 0",
             ),
         ],
     )

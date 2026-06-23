@@ -1,0 +1,5 @@
+[plan]
+name = "claude-stream-telemetry"
+summary = "Let dgov consume Claude Code stream-json output as live worker telemetry."
+sections = ["tasks", "review"]
+default_provider = "claude"

@@ -8,9 +8,8 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from helpers import cli, deploy_append
 
-from dgov.cli import cli
-from dgov.deploy_log import append as deploy_append
 from dgov.types import RunStatus
 
 pytestmark = pytest.mark.unit
@@ -30,7 +29,7 @@ def runner():
 
 def _patched_run_envelope(monkeypatch: pytest.MonkeyPatch, **overrides) -> None:
     """Stub plan_review.load_run_envelope so status tests can control run-level fields."""
-    from dgov.plan_review import RunEnvelope
+    from helpers import RunEnvelope
 
     envelope = overrides.get(
         "envelope",
@@ -374,7 +373,7 @@ def test_status_resolves_archived_plan_and_emits_note(
 def test_status_shows_degraded_follow_up_hint(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import RunEnvelope
+    from helpers import RunEnvelope
 
     envelope = RunEnvelope(
         plan_name="test-plan",
@@ -427,7 +426,7 @@ def test_status_uses_runs_log_fallback_for_degraded_hint(
 def test_status_json_includes_remediation_fields(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import RunEnvelope
+    from helpers import RunEnvelope
 
     envelope = RunEnvelope(
         plan_name="test-plan",
@@ -458,7 +457,7 @@ def test_status_json_includes_remediation_fields(
 def test_status_shows_branch_verification_failure(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dgov.plan_review import RunEnvelope
+    from helpers import RunEnvelope
 
     envelope = RunEnvelope(
         plan_name="test-plan",

@@ -28,7 +28,11 @@ if str(_project_root / "src") not in sys.path:
     sys.path.append(str(_project_root / "src"))
 
 from dgov.workers.atomic import AtomicTools, get_allowed_tool_names, get_tool_spec  # noqa: E402
-from dgov.workers.config import AtomicConfig  # noqa: E402
+from dgov.workers.config import (  # noqa: E402
+    AtomicConfig,
+    completion_budget_kwargs,
+    provider_requires_api_key,
+)
 from dgov.workers.provider import create_provider  # noqa: E402
 from dgov.workers.runtime import (  # noqa: E402
     WorkerEvent,
@@ -324,12 +328,14 @@ def _create_worker_completion(
     messages: list[Any],
     iteration: int,
     budget: int,
+    config: AtomicConfig,
 ) -> Any:
     return provider.create_chat_completion(
         model=model,
         messages=messages,
         tools=get_tool_spec(),
         tool_choice=cast(Any, tool_choice_for_iteration(iteration, budget)),
+        **completion_budget_kwargs(config),
     )
 
 
@@ -363,15 +369,24 @@ def _worker_config_and_provider(
     except ValueError as exc:
         WorkerEvent("error", f"Project configuration error: {exc}").emit()
         sys.exit(1)
-    if not config.llm_provider or not config.llm_base_url or not config.llm_api_key_env:
+    if not config.llm_provider or not config.llm_base_url:
         WorkerEvent(
             "error",
             "Provider configuration missing: set [project].provider and "
-            "[providers.<name>].base_url/api_key_env in .dgov/project.toml",
+            "[providers.<name>].base_url in .dgov/project.toml",
         ).emit()
         sys.exit(1)
-    api_key = os.environ.get(config.llm_api_key_env)
-    if not api_key:
+    api_key = ""
+    if provider_requires_api_key(config.llm_base_url):
+        if not config.llm_api_key_env:
+            WorkerEvent(
+                "error",
+                "Provider configuration missing: set "
+                "[providers.<name>].api_key_env in .dgov/project.toml",
+            ).emit()
+            sys.exit(1)
+        api_key = os.environ.get(config.llm_api_key_env, "")
+    if config.llm_api_key_env and not api_key:
         WorkerEvent(
             "error",
             f"{config.llm_api_key_env} missing for provider {config.llm_provider!r}",
@@ -381,6 +396,9 @@ def _worker_config_and_provider(
         name=config.llm_provider,
         base_url=config.llm_base_url,
         api_key=api_key,
+        token_limit_label=config.llm_token_limit_label,
+        prompt_token_limit_header=config.llm_prompt_token_limit_header,
+        generated_token_limit_header=config.llm_generated_token_limit_header,
     )
     return config, provider
 
@@ -432,6 +450,7 @@ def _call_provider_with_cleanup(
     messages: list[Any],
     iteration: int,
     budget: int,
+    config: AtomicConfig,
     cleanup: Callable[[], None],
 ) -> Any:
     """Call the provider with API-failure cleanup and exit behavior."""
@@ -442,6 +461,7 @@ def _call_provider_with_cleanup(
             messages=messages,
             iteration=iteration,
             budget=budget,
+            config=config,
         )
     except Exception as e:
         WorkerEvent("error", f"API Failure: {e!s}").emit()
@@ -491,6 +511,7 @@ def _run_worker_iteration(
     iteration: int,
     budget: int,
     warn_at: int,
+    config: AtomicConfig,
     cleanup: Callable[[], None],
     state: _WorkerLoopState,
 ) -> bool:
@@ -508,6 +529,7 @@ def _run_worker_iteration(
         messages=messages,
         iteration=iteration,
         budget=budget,
+        config=config,
         cleanup=cleanup,
     )
 
@@ -550,6 +572,7 @@ def _run_worker_loop(
             iteration,
             budget,
             warn_at,
+            config,
             cleanup,
             state,
         ):
