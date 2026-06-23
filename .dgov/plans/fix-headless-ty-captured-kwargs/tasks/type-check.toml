@@ -1,0 +1,24 @@
+[tasks.type-check]
+summary = "Type captured subprocess kwargs in the headless worker test"
+commit_message = "Fix headless captured kwargs typing"
+role = "worker"
+iteration_budget = 8
+files.edit = ["tests/test_headless.py"]
+test_cmd = "uv run ty check"
+prompt = """
+Orient:
+- Read `tests/test_headless.py`.
+- The PR-readiness gate failed on `uv run ty check` at `tests/test_headless.py:205` because ty cannot index the `kwargs` value after only `isinstance(kwargs, dict)`.
+- The same file already has a nearby pattern using `typing.cast(dict[str, object], captured.get("kwargs", {}))` for captured subprocess kwargs.
+
+Edit:
+1. Make the failing captured kwargs assertion typed in the same local style as the existing passing pattern.
+2. Keep the behavioral assertion that the subprocess stream `limit` equals `_SUBPROCESS_STREAM_LIMIT`.
+3. Do not change production code or broaden the test.
+
+Verify:
+- `uv run ty check`
+- `uv run pytest -q -m unit tests/test_headless.py -k run_headless_worker_uses_project_config_payload`
+- `uv run ruff check tests/test_headless.py`
+- `uv run ruff format --check tests/test_headless.py`
+"""
