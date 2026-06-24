@@ -1,0 +1,5 @@
+[plan]
+name = "self-review-degraded-state"
+summary = "Make cancelled or unresolved self-review visible as degraded validation instead of a silent clean pass."
+sections = ["core", "cli", "policy"]
+

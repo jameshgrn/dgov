@@ -1,0 +1,28 @@
+[tasks.self-review-runner]
+summary = "Treat empty self-review output as a rejection and track degraded self-review outcomes on the runner."
+prompt = """
+Orient:
+- Read `src/dgov/runner.py`, especially `_run_self_review_gate()`, `_complete_self_review_cycle()`, `_run_self_review()`, `_emit_self_review_auto_passed()`, and `_emit_self_review_error()`.
+- Read `tests/test_runner.py`, especially `TestSelfReview` and `TestAsyncErrorPaths`.
+- Current bug: `_run_self_review()` returns `(True, None)` when the reviewer subprocess produces no captured `done` verdict. Orbitopo dogfood reports show cancelled self-review then looks like a clean pass.
+- Preserve the advisory self-review policy: unresolved self-review does not block worker settlement outright, but it must be visible as degraded validation.
+
+Edit:
+1. Change empty captured self-review output to return a failed verdict with a clear finding such as "self-review cancelled: reviewer exited without producing a verdict".
+2. Add runner state that records whether self-review degraded the run. Set it when `_emit_self_review_auto_passed()` runs and when `_emit_self_review_error()` runs.
+3. Expose that state via a read-only property such as `self_review_degraded`.
+4. Add focused `tests/test_runner.py` coverage:
+   - a self-review worker that exits without emitting a done verdict triggers the existing fix cycle and still merges after the second review approves;
+   - a second-review auto-pass sets the degraded flag;
+   - a self-review exception sets the degraded flag.
+5. Keep the existing self-review events and existing advisory settlement flow intact.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_runner.py -k "self_review"`
+- `uv run ruff check src/dgov/runner.py tests/test_runner.py`
+- `uv run ruff format --check src/dgov/runner.py tests/test_runner.py`
+"""
+commit_message = "Track degraded self-review outcomes"
+files.edit = ["src/dgov/runner.py", "tests/test_runner.py"]
+test_cmd = "uv run pytest -q -m unit tests/test_runner.py -k \"self_review\""
+

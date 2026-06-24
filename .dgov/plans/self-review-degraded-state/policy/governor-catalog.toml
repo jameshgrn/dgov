@@ -1,0 +1,28 @@
+[tasks.governor-catalog]
+summary = "Add a governor catalog entry for silent self-review auto-pass failures."
+depends_on = [
+  "core/self-review-runner.self-review-runner",
+  "cli/run-status.run-status",
+]
+prompt = """
+Orient:
+- Read `.dgov/governor.md`, especially the Failure-to-task catalog and the Lacustrine Pillars.
+- Read the dependency commits for the self-review degraded-state implementation.
+- This is a recurring dogfood failure shape: cancelled or unresolved self-review looked like validation success.
+
+Edit:
+1. Add a concise catalog entry for a self-review verdict that is cancelled, missing, errored, or auto-passed without visible degraded status.
+2. Classify it as Implementation or Governance repair according to the existing catalog style.
+3. State the next action as treating missing/unresolved reviewer verdicts as rejected for the fix cycle and surfacing unresolved self-review as degraded operator state.
+4. Keep the entry alphabetically placed with the existing catalog entries if practical.
+
+Verify:
+- `uv run dgov compile .dgov/plans/self-review-degraded-state --dry-run`
+- `uv run dgov validate .dgov/plans/self-review-degraded-state`
+- `uv run ruff format --check .dgov/governor.md`
+"""
+commit_message = "Document self-review degraded validation failure shape"
+files.edit = [".dgov/governor.md"]
+files.read = ["src/dgov/runner.py", "src/dgov/cli/run_output.py"]
+test_cmd = "uv run dgov validate .dgov/plans/self-review-degraded-state"
+

@@ -1,0 +1,32 @@
+[tasks.run-status]
+summary = "Thread self-review degradation through run status, warnings, and run output helpers."
+depends_on = ["core/self-review-runner.self-review-runner"]
+prompt = """
+Orient:
+- Read `src/dgov/cli/run.py`, especially `_summarize_plan_run()` and `_emit_plan_run_summary()`.
+- Read `src/dgov/cli/run_output.py`, especially `derive_run_status()`, `run_status_and_summary()`, `emit_run_warnings()`, and `run_output_data()`.
+- Read the runner dependency commit and use `EventDagRunner.self_review_degraded`.
+- Sentrux degradation already maps to run status `degraded`; self-review auto-pass/error should use the same operator-visible category when there are no task failures.
+
+Edit:
+1. Add an optional `self_review_degraded: bool = False` parameter to the run-output helper path.
+2. Make `derive_run_status()` return `degraded` when self-review degraded the run and there are no failed or abandoned tasks.
+3. Preserve failure precedence: if tasks failed/abandoned, the status remains `partial` or `failed` as today.
+4. Thread `artifacts.runner.self_review_degraded` from `src/dgov/cli/run.py` into summary and warning rendering.
+5. Emit a concise non-JSON warning when self-review degraded the run, analogous to existing Sentrux/branch warnings.
+6. Add focused tests in a small helper test file, preferably `tests/test_run_output.py`, covering:
+   - self-review degradation alone returns `degraded`;
+   - self-review degradation plus failed tasks does not mask failure/partial status;
+   - `run_status_and_summary()` accepts the new parameter with a backwards-compatible default.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_run_output.py tests/test_runner.py -k "self_review or run_status"`
+- `uv run ruff check src/dgov/cli/run.py src/dgov/cli/run_output.py tests/test_run_output.py`
+- `uv run ruff format --check src/dgov/cli/run.py src/dgov/cli/run_output.py tests/test_run_output.py`
+"""
+commit_message = "Surface self-review degradation in run status"
+files.edit = ["src/dgov/cli/run.py", "src/dgov/cli/run_output.py"]
+files.create = ["tests/test_run_output.py"]
+files.read = ["src/dgov/runner.py", "tests/test_runner.py"]
+test_cmd = "uv run pytest -q -m unit tests/test_run_output.py tests/test_runner.py -k \"self_review or run_status\""
+
