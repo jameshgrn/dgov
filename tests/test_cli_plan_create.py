@@ -9,11 +9,13 @@ from typing import Any, cast
 
 import click
 import pytest
+from click.testing import CliRunner
 
 from dgov.cli.plan_create import (
     _materialize_plan,
     _plan_create_settings,
     _planner_command,
+    plan_create_cmd,
 )
 
 pytestmark = pytest.mark.unit
@@ -224,3 +226,69 @@ def test_read_planner_event_ignores_non_object_json() -> None:
         stdout = _Stdout()
 
     assert asyncio.run(_read_planner_event(cast(Any, _Proc()))) == {}
+
+
+def test_goal_file_reads_exact_multiline_text_with_backticks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    goal_text = 'Add `--foo` and `--bar` flags\nwith backticks and "quotes"\nline three\n'
+    goal_file = tmp_path / "goal.txt"
+    goal_file.write_text(goal_text, encoding="utf-8")
+
+    captured: dict = {}
+
+    def _fake_execute(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr("dgov.cli.plan_create._execute_plan_create", _fake_execute)
+
+    result = CliRunner().invoke(plan_create_cmd, ["--goal-file", str(goal_file)])
+    assert result.exit_code == 0, result.output
+    assert captured["goal"] == goal_text
+
+
+def test_positional_goal_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
+
+    def _fake_execute(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr("dgov.cli.plan_create._execute_plan_create", _fake_execute)
+
+    result = CliRunner().invoke(plan_create_cmd, ["add a feature"])
+    assert result.exit_code == 0, result.output
+    assert captured["goal"] == "add a feature"
+
+
+def test_goal_file_and_positional_together_fail(tmp_path: Path) -> None:
+    goal_file = tmp_path / "goal.txt"
+    goal_file.write_text("file goal")
+
+    result = CliRunner().invoke(
+        plan_create_cmd, ["--goal-file", str(goal_file), "positional goal"]
+    )
+    assert result.exit_code == 2
+    assert "not both" in result.output
+
+
+def test_positional_and_goal_file_together_fail(tmp_path: Path) -> None:
+    goal_file = tmp_path / "goal.txt"
+    goal_file.write_text("file goal")
+
+    result = CliRunner().invoke(
+        plan_create_cmd, ["positional goal", "--goal-file", str(goal_file)]
+    )
+    assert result.exit_code == 2
+    assert "not both" in result.output
+
+
+def test_no_goal_source_fails() -> None:
+    result = CliRunner().invoke(plan_create_cmd, [])
+    assert result.exit_code == 2
+    assert "--goal-file" in result.output
+
+
+def test_help_shows_goal_file_option() -> None:
+    result = CliRunner().invoke(plan_create_cmd, ["--help"])
+    assert result.exit_code == 0
+    assert "--goal-file" in result.output

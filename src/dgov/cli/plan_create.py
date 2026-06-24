@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import click
 
@@ -494,8 +495,47 @@ def _execute_plan_create(
         click.echo(f"\n  To run: dgov run {plan_dir}", err=True)
 
 
+class _GoalFileOption(click.Option):
+    def handle_parse_result(
+        self, ctx: click.Context, opts: Mapping[str, Any], args: list[str]
+    ) -> tuple[Any, list[str]]:
+        goal_file = opts.get(self.name) if self.name is not None else None
+        if goal_file is not None:
+            ctx.meta["_goal_file_path"] = str(goal_file)
+        return super().handle_parse_result(ctx, opts, args)
+
+
+def _goal_argument_callback(
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> str | None:
+    file_path: str | None = ctx.meta.get("_goal_file_path")
+    if value is not None and file_path is not None:
+        raise click.UsageError(
+            "Provide a goal as a positional argument or via --goal-file, not both.",
+            ctx=ctx,
+        )
+    if value is None and file_path is not None:
+        try:
+            return Path(file_path).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise click.BadParameter(
+                f"Cannot read goal file: {exc}",
+                ctx=ctx,
+                param_hint="'--goal-file'",
+            ) from exc
+    return value
+
+
 @plan_cmd.command(name="create")
-@click.argument("goal")
+@click.argument("goal", required=False, default=None, callback=_goal_argument_callback)
+@click.option(
+    "--goal-file",
+    cls=_GoalFileOption,
+    expose_value=False,
+    default=None,
+    type=click.Path(exists=True, file_okay=True, dir_okay=False, readable=True),
+    help="Read the goal text from a UTF-8 file.",
+)
 @click.option("--auto", "autonomous", is_flag=True, help="Autonomous mode (no user questions)")
 @click.option(
     "--run",
@@ -517,7 +557,7 @@ def _execute_plan_create(
     help="Apply discovered config overrides to project.toml",
 )
 def plan_create_cmd(
-    goal: str,
+    goal: str | None,
     autonomous: bool,
     run_plan: bool,
     name: str | None,
@@ -527,6 +567,10 @@ def plan_create_cmd(
     apply_config: bool,
 ) -> None:
     """Auto-generate an implementation plan via the planner agent."""
+    if goal is None:
+        raise click.UsageError(
+            "Missing goal: provide it as a positional argument or via --goal-file."
+        )
     _execute_plan_create(
         goal=goal,
         autonomous=autonomous,
