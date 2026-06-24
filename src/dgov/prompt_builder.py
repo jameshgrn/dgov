@@ -217,6 +217,17 @@ class PromptBuilder:
             "missing edge cases, and whether the code matches its stated intent.\n"
         )
 
+        sections.append(
+            "## Review scope\n"
+            "The dependency diff sections below are the authoritative review surface"
+            " for this plan.\n"
+            "Do not use broad ambient diffs such as `git diff main HEAD` to form"
+            " current-plan judgments — those include unrelated branch history and"
+            " will mislead your verdict.\n"
+            "If you read surrounding repo files for context, keep those reads tied"
+            " to the specific files and commits listed in the sections below.\n"
+        )
+
         records = deploy_log.read(self.session_root, self.dag.name)
         sha_by_unit = {r.unit: r.sha for r in records}
 

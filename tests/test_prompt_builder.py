@@ -69,6 +69,37 @@ def test_settlement_retry_prompt_omits_preexisting_sentrux_offenders() -> None:
     assert "src/dgov/sentrux_gate.py" not in prompt
 
 
+def _make_reviewer_prompt(tmp_path) -> str:
+    from dgov.dag_parser import DagDefinition
+
+    dag = DagDefinition(name="test-plan", tasks={}, dag_file=str(tmp_path / "plan.toml"))
+    builder = PromptBuilder(
+        session_root=str(tmp_path),
+        dag=dag,
+        baseline_diag_note="",
+        review_sop_blocks=(),
+    )
+    task = DagTaskSpec(slug="rev", summary="Review", depends_on=())
+    return builder.reviewer_prompt("rev", task)
+
+
+def test_reviewer_prompt_contains_scope_bounds_instruction(tmp_path) -> None:
+    prompt = _make_reviewer_prompt(tmp_path)
+    assert "authoritative review surface" in prompt
+
+
+def test_reviewer_prompt_warns_against_broad_ambient_diffs(tmp_path) -> None:
+    prompt = _make_reviewer_prompt(tmp_path)
+    assert "git diff main HEAD" in prompt
+
+
+def test_reviewer_prompt_contains_json_verdict_protocol(tmp_path) -> None:
+    prompt = _make_reviewer_prompt(tmp_path)
+    assert '"approved"' in prompt
+    assert '"issues"' in prompt
+    assert "done" in prompt
+
+
 def test_settlement_retry_prompt_omits_branch_verification_tail() -> None:
     task = DagTaskSpec(
         slug="fix-scope",
