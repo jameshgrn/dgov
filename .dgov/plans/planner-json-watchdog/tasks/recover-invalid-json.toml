@@ -1,0 +1,37 @@
+[tasks.recover-invalid-json]
+summary = "Add bounded invalid-JSON recovery for plan creation and focused provider/planner tests."
+prompt = """
+Orient:
+- Read `src/dgov/planner.py`, especially `_run_planner_iteration()`, `_handle_missing_plan_tool()`, and the main loop in `run_planner()`.
+- Read `src/dgov/workers/provider.py`, especially the Claude Code provider helpers around `_claude_code_response()`, `_emit_plan_arguments()`, and `_extract_json_object()`.
+- Read `tests/test_planner.py`, `tests/test_worker_provider.py`, and `tests/test_cli_plan_create.py`.
+- Orbitopo feedback reported that `dgov plan create` could emit partial structured output, restart exploration, and never write a plan tree. The desired invariant is bounded recovery: one explicit JSON-only repair attempt when the planner output is invalid, then a clear failure.
+
+Edit:
+1. Preserve the public `read_events()` and plan materialization APIs; this task is only about planner/provider behavior.
+2. Add a typed internal error or equivalent signal for invalid Claude `emit_plan` JSON that includes a compact diagnostic excerpt.
+3. Make the planner loop catch that invalid-plan-output signal, append a repair prompt that asks for only a complete `emit_plan` JSON object, and retry once.
+4. If the retry also fails, emit a clear `WorkerEvent("error", ...)`, clean up, and exit nonzero. Do not loop until the generic iteration budget.
+5. Keep normal provider/API failures fail-closed as before.
+6. Add focused unit tests covering:
+   - valid Claude plan output still synthesizes an `emit_plan` tool call;
+   - invalid Claude plan output includes a useful diagnostic excerpt;
+   - the planner retries invalid plan JSON once and then succeeds;
+   - repeated invalid plan JSON exits with a clear error.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_planner.py tests/test_worker_provider.py tests/test_cli_plan_create.py -k "planner or claude_code_provider"`
+- `uv run ruff check src/dgov/planner.py src/dgov/workers/provider.py tests/test_planner.py tests/test_worker_provider.py tests/test_cli_plan_create.py`
+- `uv run ruff format --check src/dgov/planner.py src/dgov/workers/provider.py tests/test_planner.py tests/test_worker_provider.py tests/test_cli_plan_create.py`
+- `uv run ty check`
+"""
+commit_message = "Recover from invalid planner JSON once"
+files.edit = [
+  "src/dgov/planner.py",
+  "src/dgov/workers/provider.py",
+  "tests/test_planner.py",
+  "tests/test_worker_provider.py",
+  "tests/test_cli_plan_create.py",
+]
+test_cmd = "uv run pytest -q -m unit tests/test_planner.py tests/test_worker_provider.py tests/test_cli_plan_create.py -k \"planner or claude_code_provider\""
+timeout_s = 1200
