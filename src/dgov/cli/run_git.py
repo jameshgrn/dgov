@@ -235,12 +235,34 @@ def block_dirty_committed_worktree(project_root: str) -> None:
         _raise_dirty_worktree(dirty)
 
 
+def _all_archive_changes_git_ignored(project_root: str, paths: list[str]) -> bool:
+    """Return True if git ignore policy covers every path in paths."""
+    # --no-index: check gitignore rules even for tracked files (default skips them)
+    if not paths:
+        return True
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", "--", *paths],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        env=_git_env(project_root),
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        return False
+    ignored = {line for line in result.stdout.splitlines() if line}
+    return all(path in ignored for path in paths)
+
+
 def warn_if_archive_left_git_changes(project_root: str) -> None:
     changes = git_stdout(
         project_root,
         ["status", "--porcelain", "--untracked-files=all", "--", ".dgov/plans"],
     )
     if not changes:
+        return
+    changed_paths = list(porcelain_status_paths(changes, include_rename_sources=True))
+    if not changed_paths or _all_archive_changes_git_ignored(project_root, changed_paths):
         return
     click.echo(
         "  archive git changes: plan source was moved under .dgov/plans/archive; "

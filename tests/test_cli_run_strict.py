@@ -30,7 +30,7 @@ from dgov.cli.run_checks import (
     branch_verification_gate,
     branch_verification_gate_from_base,
 )
-from dgov.cli.run_git import dirty_worker_files, git_stdout
+from dgov.cli.run_git import dirty_worker_files, git_stdout, warn_if_archive_left_git_changes
 from dgov.cli.run_lifecycle import (
     refresh_sentrux_baseline_after_clean_run as refresh_run_sentrux_baseline_after_clean_run,
 )
@@ -1427,3 +1427,41 @@ def test_clean_head_worktree_isolates_from_dirty_state(tmp_path: Path) -> None:
     assert not snapshot.exists()
     assert tracked.read_text() == "x = 2  # uncommitted\n"
     assert (repo / "untracked.py").exists()
+
+
+def test_warn_if_archive_left_git_changes_suppressed_when_all_paths_ignored(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No warning when every changed path under .dgov/plans is covered by gitignore policy."""
+    _init_committed_repo(tmp_path)
+    archive_dir = tmp_path / ".dgov" / "plans" / "archive" / "my-plan"
+    archive_dir.mkdir(parents=True)
+    (archive_dir / "_root.toml").write_text('[plan]\nname = "my-plan"\n')
+    _commit_all(tmp_path, "add archived plan")
+    # Add gitignore AFTER committing so the file shows as a tracked deletion.
+    (tmp_path / ".gitignore").write_text(".dgov/plans/archive/\n")
+    (archive_dir / "_root.toml").unlink()
+
+    warn_if_archive_left_git_changes(str(tmp_path))
+
+    captured = capsys.readouterr()
+    assert "archive git changes" not in captured.err
+
+
+def test_warn_if_archive_left_git_changes_fires_for_nonignored_source_move(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Warning fires when a tracked, non-gitignored plan source has git-visible changes."""
+    _init_committed_repo(tmp_path)
+    plan_dir = tmp_path / ".dgov" / "plans" / "my-plan"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "_root.toml").write_text('[plan]\nname = "my-plan"\n')
+    _commit_all(tmp_path, "add plan source")
+    (plan_dir / "_root.toml").unlink()
+
+    warn_if_archive_left_git_changes(str(tmp_path))
+
+    captured = capsys.readouterr()
+    assert "archive git changes" in captured.err
