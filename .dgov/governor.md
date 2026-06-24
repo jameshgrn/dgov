@@ -191,6 +191,12 @@ mechanical signal must be checked by hand.
 - Next action: Execute settlement gates from the candidate snapshot in a subprocess; never import governor-owned modules from the running runner for gating decisions.
 - Do not: Reload modules in-process to "refresh" — subprocess isolation is the invariant.
 
+**self_review_unresolved_verdict**
+- Evidence: A task with `self_review = true` exits the fix cycle without a visible reviewer verdict — the reviewer was cancelled, errored, timed out, or auto-passed — and run status shows no degraded signal; the unresolved review looks like validation success.
+- Class: Implementation.
+- Next action: Treat missing, cancelled, errored, or auto-passed reviewer verdicts as rejected for the fix cycle; surface unresolved self-review as degraded operator state so the governor can intervene rather than treating silence as approval.
+- Do not: Infer approval from a missing verdict — absent explicit reviewer acceptance is a rejection signal, not a pass.
+
 **sentrux_baseline_drift**
 - Evidence: Sentrux gate emits a stale-baseline warning (baseline is many
   commits behind HEAD or weeks old), or rejects with quality degradation
