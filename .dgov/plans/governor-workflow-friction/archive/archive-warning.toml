@@ -1,0 +1,29 @@
+[tasks.archive-warning]
+summary = "Suppress archive git-change warnings when plan archive changes are fully ignored by repository policy."
+prompt = """
+Orient:
+- Read `src/dgov/cli/run_git.py`, especially `warn_if_archive_left_git_changes()`, `git_stdout()`, and `_git_env()`.
+- Read `tests/test_cli_run_strict.py` helper functions around git repo setup.
+- Read `.dgov/governor.md` entry `archive_locality_regression`.
+- Orbitopo feedback: completed plan archival still required a manual archive commit warning even in repos where the plan archive is intentionally local/ignored.
+
+Edit:
+1. Update `warn_if_archive_left_git_changes(project_root)` so it still checks `git status --porcelain --untracked-files=all -- .dgov/plans`.
+2. Parse the changed paths from that status output using the existing `porcelain_status_paths()` helper if practical.
+3. Before warning, filter changed paths through git ignore policy. If every changed path is ignored by repository policy, suppress the warning. If any changed path is not ignored, preserve the existing warning text.
+4. Use git through the existing clean environment path (`_git_env`) or a small helper; do not introduce shell parsing.
+5. Add focused tests in `tests/test_cli_run_strict.py` for:
+   - no warning when only ignored archive paths are dirty/untracked;
+   - warning still appears when a tracked/nonignored plan source move leaves git-visible changes.
+6. Keep dirty worktree dispatch behavior unchanged.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_cli_run_strict.py -k "archive"`
+- `uv run ruff check src/dgov/cli/run_git.py tests/test_cli_run_strict.py`
+- `uv run ruff format --check src/dgov/cli/run_git.py tests/test_cli_run_strict.py`
+"""
+commit_message = "Respect ignored plan archive changes in warnings"
+files.edit = ["src/dgov/cli/run_git.py", "tests/test_cli_run_strict.py"]
+files.read = [".dgov/governor.md"]
+test_cmd = "uv run pytest -q -m unit tests/test_cli_run_strict.py -k \"archive\""
+
