@@ -26,7 +26,7 @@ if str(_project_root / "src") not in sys.path:
 
 from dgov.workers.atomic import AtomicTools, get_allowed_tool_names, get_tool_spec  # noqa: E402
 from dgov.workers.config import completion_budget_kwargs, provider_requires_api_key  # noqa: E402
-from dgov.workers.provider import create_provider  # noqa: E402
+from dgov.workers.provider import InvalidPlanOutputError, create_provider  # noqa: E402
 from dgov.workers.runtime import (  # noqa: E402
     WorkerEvent,
     execute_tool_call,
@@ -438,13 +438,20 @@ def _build_planner_runtime(
     return config, provider, actuators, _cleanup, ask_fn, messages, nudged, allowed_tools, budget
 
 
+_PLAN_REPAIR_PROMPT = (
+    "Your previous output could not be parsed as a valid emit_plan JSON object. "
+    "Respond with ONLY a complete JSON object — no markdown fences, no commentary. "
+    "Required fields: name (string), summary (string), tasks (list)."
+)
+
+
 def _run_planner_iteration(
     provider: Any,
     model: str,
     messages: list[Any],
     config: Any,
     interactive: bool,
-    actuators: AtomicTools,
+    actuators: AtomicTools | None,
     allowed_tools: frozenset[str],
     ask_fn: Callable[[str], str] | None,
     iteration: int,
@@ -460,6 +467,25 @@ def _run_planner_iteration(
             interactive=interactive,
             config=config,
         )
+    except InvalidPlanOutputError as exc:
+        already_tried_repair = any(
+            isinstance(m, dict)
+            and m.get("role") == "user"
+            and _PLAN_REPAIR_PROMPT in m.get("content", "")
+            for m in messages
+        )
+        if not already_tried_repair:
+            messages.append({
+                "role": "user",
+                "content": f"{_PLAN_REPAIR_PROMPT}\n\nDiagnostic excerpt: {exc.excerpt}",
+            })
+            return False, nudged
+        WorkerEvent(
+            "error",
+            f"Invalid emit_plan output after repair attempt: {exc!s}",
+        ).emit()
+        cleanup()
+        sys.exit(1)
     except Exception as exc:
         WorkerEvent("error", f"API Failure: {exc!s}").emit()
         cleanup()
@@ -471,6 +497,7 @@ def _run_planner_iteration(
         nudged = _handle_missing_plan_tool(resp, messages, nudged, cleanup)
         return False, nudged
 
+    assert actuators is not None
     done = _execute_planner_tools(
         msg,
         actuators,
@@ -500,7 +527,6 @@ def run_planner(
             target_provider=target_provider,
         )
     )
-
     for iteration in range(budget):
         done, nudged = _run_planner_iteration(
             provider,

@@ -22,6 +22,17 @@ from openai import OpenAI
 RATE_LIMIT_BACKOFF_S = (5.0, 30.0, 90.0)
 _JITTER_FRACTION = 0.2
 _PROVIDER_TOKEN_LIMIT_MARKER = "Provider token limit exceeded"
+_EMIT_PLAN_EXCERPT_LENGTH = 200
+
+
+class InvalidPlanOutputError(Exception):
+    """Raised when Claude Code returns output that cannot be parsed as emit_plan JSON."""
+
+    def __init__(self, message: str, *, excerpt: str) -> None:
+        super().__init__(message)
+        self.excerpt = excerpt
+
+
 CLAUDE_CODE_PROVIDER_SCHEME = "claude-code"
 _DEFAULT_CLAUDE_CODE_RUNNER = (
     Path.home() / ".codex" / "skills" / "invoke-claude" / "scripts" / "run_claude_code.py"
@@ -502,11 +513,18 @@ def _claude_code_response(terminal_tool: str, output: str, usage: dict[str, int]
 
 def _emit_plan_arguments(output: str) -> str:
     plan = _extract_json_object(output)
+    excerpt = output[:_EMIT_PLAN_EXCERPT_LENGTH].strip()
     if not isinstance(plan, dict):
-        raise RuntimeError("Claude Code provider did not return valid emit_plan JSON.")
+        raise InvalidPlanOutputError(
+            "Claude Code provider did not return valid emit_plan JSON.",
+            excerpt=excerpt,
+        )
     plan_map = cast("dict[str, Any]", plan)
     if not isinstance(plan_map.get("tasks"), list):
-        raise RuntimeError("Claude Code provider did not return valid emit_plan JSON.")
+        raise InvalidPlanOutputError(
+            "Claude Code provider emit_plan output is missing a 'tasks' list.",
+            excerpt=excerpt,
+        )
     return json.dumps(plan_map)
 
 
