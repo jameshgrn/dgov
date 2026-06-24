@@ -17,6 +17,7 @@ from dgov.typecheck_diagnostics import count_diagnostics
 logger = logging.getLogger(__name__)
 
 _REVIEW_APPLIES_TO = frozenset({"review", "reviewer"})
+_PROMPT_CONTRACT_LIMIT = 800
 _PREEXISTING_SENTRUX_MARKER = ("pre-existing sentrux offenders:",)
 _BRANCH_VERIFICATION_MARKERS = (
     "branch verification:",
@@ -192,10 +193,21 @@ class PromptBuilder:
         )
         diff_text = diff_result.stdout if diff_result.returncode == 0 else "(diff unavailable)"
 
+        contract_block = ""
+        if dep_task.prompt and dep_task.prompt.strip():
+            raw = dep_task.prompt.strip()
+            if len(raw) > _PROMPT_CONTRACT_LIMIT:
+                raw = raw[:_PROMPT_CONTRACT_LIMIT]
+                truncation_note = " [truncated]"
+            else:
+                truncation_note = ""
+            contract_block = f"Task prompt contract{truncation_note}:\n```\n{raw}\n```\n\n"
+
         return (
             f"## Task: {dep_slug}\n"
             f"Summary: {dep_task.summary}\n"
             f"Commit: {dep_task.commit_message}\n\n"
+            f"{contract_block}"
             f"```diff\n{diff_text}\n```\n"
         )
 
@@ -226,6 +238,15 @@ class PromptBuilder:
             " will mislead your verdict.\n"
             "If you read surrounding repo files for context, keep those reads tied"
             " to the specific files and commits listed in the sections below.\n"
+        )
+
+        sections.append(
+            "## Contract vs implementation\n"
+            "Each dependency section below includes the task prompt contract that"
+            " defined the work. For each dependency, compare the implementation diff"
+            " against its task prompt contract: verify that the implementation"
+            " satisfies the contract's requirements, edge cases, and any tests"
+            " promised — not just that existing tests pass.\n"
         )
 
         records = deploy_log.read(self.session_root, self.dag.name)
