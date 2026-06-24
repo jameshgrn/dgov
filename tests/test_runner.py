@@ -3038,6 +3038,70 @@ class TestSelfReview:
             # Auto-pass after one fix cycle — self-review is advisory
             assert results["a"] == "merged"
 
+    def test_self_review_no_verdict_triggers_fix_cycle(self):
+        """Reviewer that exits without a done verdict is treated as a rejection.
+
+        The fix cycle re-launches the worker; when the second review approves,
+        the task still merges — self-review remains advisory.
+        """
+        call_count: dict[str, int] = {}
+
+        async def _no_verdict_then_approve(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            call_count[task_slug] = call_count.get(task_slug, 0) + 1
+            if "-self-review" in task_slug:
+                if call_count[task_slug] == 2 and on_event:
+                    # Second review: approve
+                    on_event(task_slug, "done", '{"approved": true, "issues": []}')
+                # First review: no done event — exits without producing a verdict
+            else:
+                on_exit(task_slug, pane_slug, 0, "")
+
+        dag = _dag({"a": _task_with_self_review("a", self_review=True)})
+        with _io_patches(headless=_no_verdict_then_approve), patch(_P_GET_DIFF, _fake_diff):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            assert results["a"] == "merged"
+            # Fix cycle ran: self-review was called twice
+            assert call_count.get("a-self-review", 0) == 2
+
+    def test_self_review_auto_pass_sets_degraded_flag(self):
+        """When second review still finds issues, auto-pass sets the degraded flag."""
+
+        async def _always_reject(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            if "-self-review" in task_slug and on_event:
+                on_event(task_slug, "done", '{"approved": false, "issues": ["persistent issue"]}')
+            else:
+                on_exit(task_slug, pane_slug, 0, "")
+
+        dag = _dag({"a": _task_with_self_review("a", self_review=True)})
+        with _io_patches(headless=_always_reject), patch(_P_GET_DIFF, _fake_diff):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            assert results["a"] == "merged"
+            assert runner.self_review_degraded is True
+
     def test_self_review_prompt_structure_without_sops(self):
         """Without SOPs, prompt contains inline fallback criteria."""
         dag = _dag({"x": _task_with_self_review("x")})
@@ -3135,6 +3199,32 @@ class TestAsyncErrorPaths:
             results = asyncio.run(runner.run())
             # Self-review is advisory — exception auto-passes to settlement
             assert results["a"] == "merged"
+
+    def test_self_review_exception_sets_degraded_flag(self):
+        """Self-review exception marks self_review_degraded on the runner."""
+
+        async def _crash_on_review(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            if "-self-review" in task_slug:
+                raise RuntimeError("reviewer exploded")
+            on_exit(task_slug, pane_slug, 0, "")
+
+        dag = _dag({"a": _task_with_self_review("a", self_review=True)})
+        with _io_patches(headless=_crash_on_review), patch(_P_GET_DIFF, _fake_diff):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            assert results["a"] == "merged"
+            assert runner.self_review_degraded is True
 
     def test_fork_no_worktree_skips_fork(self):
         """If worktree is None when iteration exhaustion fires, no fork attempt."""
