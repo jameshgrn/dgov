@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -235,6 +236,7 @@ async def _launch_worker_subprocess(
         cwd=project_root,
         env=env,
         limit=_SUBPROCESS_STREAM_LIMIT,
+        start_new_session=True,
     )
     assert process.stdout is not None
     return process
@@ -337,20 +339,33 @@ async def _terminate_worker_process(
     if process.returncode is not None:
         return
     logger.warning("Cancelling worker [%s] — terminating subprocess", task_slug)
+
+    pgid: int | None = None
     try:
-        process.terminate()
+        pgid = os.getpgid(process.pid)
+        os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         return
     except OSError as exc:
-        logger.warning("Worker [%s] terminate failed: %s", task_slug, exc)
-        return
+        logger.warning("Worker [%s] process-group terminate failed: %s", task_slug, exc)
+        pgid = None
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            return
+        except OSError as exc2:
+            logger.warning("Worker [%s] terminate failed: %s", task_slug, exc2)
+            return
 
     if await _wait_for_worker_exit(process, _WORKER_TERMINATE_GRACE_S):
         return
 
     logger.warning("Worker [%s] did not terminate; killing subprocess", task_slug)
     try:
-        process.kill()
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            process.kill()
     except ProcessLookupError:
         return
     except OSError as exc:
