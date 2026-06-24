@@ -10,13 +10,15 @@ Orient:
 Edit:
 1. Add a `--goal-file` option to `dgov plan create` that reads the goal text from a UTF-8 file.
 2. Make the positional `goal` argument optional only so `--goal-file` can be used without it.
-3. Reject ambiguous input when both positional `goal` and `--goal-file` are provided.
-4. Reject missing input when neither positional `goal` nor `--goal-file` is provided.
-5. Keep `_execute_plan_create()` unchanged if possible; normalize the final goal text in the CLI command before calling it.
-6. Add focused tests in `tests/test_cli_plan_create.py` for:
+3. Preserve the `plan_create_cmd(goal, autonomous, run_plan, name, model, provider, target_provider, apply_config)` callback parameter list. Settlement rejects signature drift for this command callback.
+4. Use a small Click parsing helper if needed. The intended pattern is a custom `click.Option` with `expose_value=False`: inspect `opts` in `handle_parse_result()`, reject when both `goal_file` and the positional `goal` are present, read the file, and assign the text into `ctx.params["goal"]`. This keeps the command callback signature unchanged.
+5. Reject ambiguous input when both positional `goal` and `--goal-file` are provided in either order.
+6. Reject missing input when neither positional `goal` nor `--goal-file` is provided.
+7. Keep `_execute_plan_create()` unchanged if possible; normalize the final goal text before calling it.
+8. Add focused tests in `tests/test_cli_plan_create.py` for:
    - `--goal-file` reads exact multiline text including backticks;
    - positional goal still works;
-   - both sources together fail with a helpful usage error;
+   - both sources together fail with a helpful usage error, covering both `--goal-file file positional` and `positional --goal-file file` orderings;
    - no source fails with a helpful usage error;
    - `dgov plan create --help` shows `--goal-file` if the existing test style supports Click runner checks.
 
@@ -28,4 +30,3 @@ Verify:
 commit_message = "Add goal-file support to plan create"
 files.edit = ["src/dgov/cli/plan_create.py", "tests/test_cli_plan_create.py"]
 test_cmd = "uv run pytest -q -m unit tests/test_cli_plan_create.py -k \"goal_file or plan_create\""
-
