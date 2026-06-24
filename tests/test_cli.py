@@ -26,6 +26,8 @@ from dgov.cli.watch import (
     _default_watch_state,
     _format_event,
     _infer_plan_name_from_active_tasks,
+    _ndjson_payload,
+    _print_ndjson_updates,
 )
 from dgov.event_types import (
     IntegrationRiskScored,
@@ -41,6 +43,7 @@ from dgov.persistence import (
 )
 from dgov.persistence.schema import WorkerTask
 from dgov.types import TaskState
+from dgov.watch_state import EventRowUpdate, PlanSwitchUpdate
 
 pytestmark = pytest.mark.unit
 ROOT = Path(__file__).resolve().parents[1]
@@ -1434,6 +1437,7 @@ def test_watch_help_shows_flags(runner: CliRunner) -> None:
     assert result.exit_code == 0
     assert "--all" in result.output
     assert "--plan" in result.output
+    assert "--ndjson" in result.output
     assert "--root" in result.output
 
 
@@ -1446,10 +1450,16 @@ def test_watch_root_forwards_resolved_project_root(
     nested.mkdir(parents=True)
     captured: dict[str, object] = {}
 
-    def _capture(project_root: str, watch_all: bool = False, plan_name: str | None = None) -> None:
+    def _capture(
+        project_root: str,
+        watch_all: bool = False,
+        plan_name: str | None = None,
+        ndjson: bool = False,
+    ) -> None:
         captured["project_root"] = project_root
         captured["watch_all"] = watch_all
         captured["plan_name"] = plan_name
+        captured["ndjson"] = ndjson
 
     monkeypatch.setattr("dgov.cli.watch._cmd_watch", _capture)
 
@@ -1464,6 +1474,7 @@ def test_watch_root_forwards_resolved_project_root(
         "project_root": str(project_root),
         "watch_all": False,
         "plan_name": "constitution",
+        "ndjson": False,
     }
 
 
@@ -1727,12 +1738,97 @@ def test_default_watch_state_uses_inferred_plan_history(tmp_path: Path) -> None:
         plan_name="plan-a",
         task_slug="fix/a",
     )
-    assert _default_watch_state(str(tmp_path), watch_all=False, plan_name=None) == ("plan-a", 0)
+    assert _default_watch_state(str(tmp_path), watch_all=False, plan_name=None) == ("plan-a", 1)
 
 
 def test_default_watch_state_tails_from_latest_event_without_plan(tmp_path: Path) -> None:
     emit_event(str(tmp_path), "task_done", "pane-a", plan_name="old-plan")
     assert _default_watch_state(str(tmp_path), watch_all=False, plan_name=None) == (None, 1)
+
+
+def test_default_watch_state_uses_latest_run_start_cursor(tmp_path: Path) -> None:
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="stale",
+    )
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="fresh",
+    )
+
+    assert _default_watch_state(str(tmp_path), watch_all=False, plan_name=None) == ("plan-a", 3)
+
+
+def test_ndjson_payload_formats_plan_switch() -> None:
+    payload = _ndjson_payload(PlanSwitchUpdate(from_plan="plan-a", to_plan="plan-b"), "follow")
+
+    assert payload == {
+        "type": "plan_switch",
+        "mode": "follow",
+        "from_plan": "plan-a",
+        "to_plan": "plan-b",
+        "plan_name": "plan-b",
+    }
+
+
+def test_ndjson_payload_formats_event_row() -> None:
+    payload = _ndjson_payload(
+        EventRowUpdate(
+            id=12,
+            ts="2026-04-24T12:34:56Z",
+            event="worker_log",
+            pane="pane-a",
+            plan_name="plan-a",
+            task_slug="tasks/main.a",
+            payload={"log_type": "thought", "content": "checking"},
+        ),
+        "follow",
+    )
+
+    assert payload == {
+        "type": "event",
+        "mode": "follow",
+        "id": 12,
+        "ts": "2026-04-24T12:34:56Z",
+        "event": "worker_log",
+        "pane": "pane-a",
+        "plan_name": "plan-a",
+        "task_slug": "tasks/main.a",
+        "payload": {"log_type": "thought", "content": "checking"},
+    }
+
+
+def test_print_ndjson_updates_emits_line_delimited_json(capsys: pytest.CaptureFixture) -> None:
+    _print_ndjson_updates(
+        [
+            PlanSwitchUpdate(from_plan=None, to_plan="plan-a"),
+            EventRowUpdate(
+                id=12,
+                ts="2026-04-24T12:34:56Z",
+                event="worker_log",
+                pane="pane-a",
+                plan_name="plan-a",
+                task_slug="tasks/main.a",
+                payload={"log_type": "thought", "content": "checking"},
+            ),
+        ],
+        "follow",
+    )
+
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert rows[0]["type"] == "plan_selected"
+    assert rows[0]["plan_name"] == "plan-a"
+    assert rows[1]["type"] == "event"
+    assert rows[1]["event"] == "worker_log"
+    assert rows[1]["payload"] == {"log_type": "thought", "content": "checking"}
 
 
 def test_format_event_shows_successful_verify_tool_results() -> None:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -386,6 +387,7 @@ class _BlockingStdout:
 
 class _FakeWorkerProcess:
     def __init__(self, *, exit_on_terminate: bool = True) -> None:
+        self.pid = 12345
         self.stdout = _BlockingStdout()
         self.returncode: int | None = None
         self.exit_on_terminate = exit_on_terminate
@@ -446,10 +448,18 @@ def test_headless_worker_cancellation_terminates_subprocess(
         async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> Any:
             return fake
 
+        def _killpg(pgid: int, sig: int) -> None:
+            if sig == signal.SIGTERM:
+                fake.terminate()
+            elif sig == signal.SIGKILL:
+                fake.kill()
+
         monkeypatch.setattr(
             "dgov.workers.headless.asyncio.create_subprocess_exec",
             _fake_create_subprocess_exec,
         )
+        monkeypatch.setattr("dgov.workers.headless.os.getpgid", lambda pid: 99999)
+        monkeypatch.setattr("dgov.workers.headless.os.killpg", _killpg)
 
         task = asyncio.create_task(
             run_headless_worker(
@@ -486,10 +496,18 @@ def test_headless_worker_cancellation_kills_stubborn_subprocess(
         async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> Any:
             return fake
 
+        def _killpg(pgid: int, sig: int) -> None:
+            if sig == signal.SIGTERM:
+                fake.terminate()
+            elif sig == signal.SIGKILL:
+                fake.kill()
+
         monkeypatch.setattr(
             "dgov.workers.headless.asyncio.create_subprocess_exec",
             _fake_create_subprocess_exec,
         )
+        monkeypatch.setattr("dgov.workers.headless.os.getpgid", lambda pid: 99999)
+        monkeypatch.setattr("dgov.workers.headless.os.killpg", _killpg)
         monkeypatch.setattr("dgov.workers.headless._WORKER_TERMINATE_GRACE_S", 0.01)
 
         task = asyncio.create_task(
@@ -512,6 +530,93 @@ def test_headless_worker_cancellation_kills_stubborn_subprocess(
 
         assert fake.terminated is True
         assert fake.killed is True
+
+    asyncio.run(_run())
+
+
+def test_headless_worker_launch_uses_new_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> None:
+        _write_provider_config(tmp_path)
+        captured: dict[str, object] = {}
+
+        async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> Any:
+            captured.update(kwargs)
+            fake = _FakeWorkerProcess()
+            fake.stdout.release.set()
+            fake.returncode = 0
+            fake._exited.set()
+            return fake
+
+        monkeypatch.setattr(
+            "dgov.workers.headless.asyncio.create_subprocess_exec",
+            _fake_create_subprocess_exec,
+        )
+        monkeypatch.setattr("dgov.workers.headless.os.getpgid", lambda pid: 99999)
+        monkeypatch.setattr("dgov.workers.headless.os.killpg", lambda pgid, sig: None)
+
+        await run_headless_worker(
+            str(tmp_path),
+            "plan",
+            "task",
+            "pane",
+            tmp_path,
+            _headless_task(),
+            {},
+            lambda *args: None,
+        )
+
+        assert captured.get("start_new_session") is True
+
+    asyncio.run(_run())
+
+
+def test_headless_worker_cancellation_signals_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> None:
+        _write_provider_config(tmp_path)
+        fake = _FakeWorkerProcess()
+        pgid_signals: list[tuple[int, int]] = []
+
+        def _killpg(pgid: int, sig: int) -> None:
+            pgid_signals.append((pgid, sig))
+            if sig == signal.SIGTERM:
+                fake.returncode = -15
+                fake._exited.set()
+
+        async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> Any:
+            return fake
+
+        monkeypatch.setattr(
+            "dgov.workers.headless.asyncio.create_subprocess_exec",
+            _fake_create_subprocess_exec,
+        )
+        monkeypatch.setattr("dgov.workers.headless.os.getpgid", lambda pid: 99999)
+        monkeypatch.setattr("dgov.workers.headless.os.killpg", _killpg)
+
+        task = asyncio.create_task(
+            run_headless_worker(
+                str(tmp_path),
+                "plan",
+                "task",
+                "pane",
+                tmp_path,
+                _headless_task(),
+                {},
+                lambda *args: None,
+            )
+        )
+        await fake.stdout.started.wait()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert (99999, signal.SIGTERM) in pgid_signals
+        assert fake.terminated is False
+        assert fake.killed is False
 
     asyncio.run(_run())
 

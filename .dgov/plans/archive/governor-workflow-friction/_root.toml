@@ -1,0 +1,5 @@
+[plan]
+name = "governor-workflow-friction"
+summary = "Reduce orbitopo-reported governor workflow friction around plan creation, reviewer scope, and archive warnings."
+sections = ["cli", "review", "archive"]
+

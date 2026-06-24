@@ -1,0 +1,29 @@
+[tasks.reviewer-scope]
+summary = "Tighten reviewer prompts to keep final review bounded to dependency diffs and declared verification."
+prompt = """
+Orient:
+- Read `src/dgov/prompt_builder.py`, especially `reviewer_prompt()`.
+- Read `tests/test_prompt_builder.py`.
+- Read `.dgov/governor.md` entry `reviewer_scope_unbounded`.
+- Orbitopo feedback: a reviewer used `git diff main HEAD`, pulling broad branch history into a current-plan review.
+
+Edit:
+1. Add a concise reviewer-scope constraints block to reviewer prompts.
+2. The block should say that the injected dependency diff sections are the authoritative review surface, broad ambient diffs like `git diff main HEAD` should not be used for current-plan judgment, and any extra context reads should stay tied to the listed commits/files.
+3. Keep the final JSON verdict protocol intact.
+4. Add focused `tests/test_prompt_builder.py` coverage asserting the reviewer prompt contains:
+   - a scope/bounds instruction;
+   - an explicit warning against broad ambient diffs such as `git diff main HEAD`;
+   - the existing JSON verdict protocol.
+5. Avoid overfitting the exact prose beyond the important contract phrases.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_prompt_builder.py -k "reviewer"`
+- `uv run ruff check src/dgov/prompt_builder.py tests/test_prompt_builder.py`
+- `uv run ruff format --check src/dgov/prompt_builder.py tests/test_prompt_builder.py`
+"""
+commit_message = "Bound reviewer prompt scope"
+files.edit = ["src/dgov/prompt_builder.py", "tests/test_prompt_builder.py"]
+files.read = [".dgov/governor.md"]
+test_cmd = "uv run pytest -q -m unit tests/test_prompt_builder.py -k \"reviewer\""
+

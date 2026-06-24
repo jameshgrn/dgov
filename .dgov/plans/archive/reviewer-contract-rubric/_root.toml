@@ -1,0 +1,4 @@
+[plan]
+name = "reviewer-contract-rubric"
+summary = "Give reviewer tasks bounded dependency task-contract context and an explicit prompt-vs-implementation rubric."
+sections = ["tasks"]

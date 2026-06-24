@@ -36,13 +36,19 @@ def derive_run_status(
     succeeded: list[str],
     sentrux_failed: bool,
 ) -> str:
-    if not failed and not abandoned and not sentrux_failed:
+    if not failed and not abandoned:
+        if sentrux_failed:
+            return "degraded"
         return "complete"
-    if sentrux_failed and not failed and not abandoned:
-        return "degraded"
     if succeeded:
         return "partial"
     return "failed"
+
+
+def apply_self_review_degraded(run_status: str, self_review_degraded: bool) -> str:
+    if self_review_degraded and run_status == "complete":
+        return "degraded"
+    return run_status
 
 
 def stale_run_state(
@@ -68,6 +74,13 @@ def emit_stale_run_warning() -> None:
     )
     click.echo("  To retry failed tasks:  dgov run --continue <plan>", err=True)
     click.echo("  To start fresh:         dgov run --restart <plan>", err=True)
+
+
+def emit_self_review_degraded_warning() -> None:
+    click.echo(
+        "  self-review: degraded — auto-passed after persistent findings or review error.",
+        err=True,
+    )
 
 
 def emit_sentrux_warning(gate_result: dict[str, object]) -> None:

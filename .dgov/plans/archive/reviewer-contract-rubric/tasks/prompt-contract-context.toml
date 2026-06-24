@@ -1,0 +1,28 @@
+[tasks.prompt-contract-context]
+summary = "Include bounded dependency task prompt context in reviewer prompts and require contract-vs-implementation review."
+prompt = """
+Orient:
+- Read `src/dgov/prompt_builder.py`, especially `PromptBuilder.reviewer_prompt()` and `_dependency_diff_section()`.
+- Read `tests/test_prompt_builder.py`, especially reviewer prompt coverage.
+- Durable bug #310: reviewer prompts currently show dependency diffs, summaries, and commit messages, but not the dependency task prompt contract. That makes it easier for reviewers to miss cases where the implementation satisfies tests but violates the original task contract.
+- Keep prompt-budget discipline: dependency task prompts can be long, so any added contract context must be bounded and clearly marked if truncated.
+
+Edit:
+1. Add bounded dependency task-prompt context to each dependency review section. Prefer a small helper that trims long prompts deterministically and marks truncation.
+2. Add explicit reviewer guidance to compare the dependency diff against the dependency task prompt contract, including edge cases and tests promised by the task prompt.
+3. Preserve the existing scope-bound warning against broad ambient diffs such as `git diff main HEAD`.
+4. Add focused tests in `tests/test_prompt_builder.py` proving:
+   - reviewer prompts include dependency task prompt contract text when a dependency exists;
+   - long dependency prompts are bounded and marked as truncated;
+   - reviewer prompts explicitly ask for contract-vs-implementation review.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_prompt_builder.py -k "reviewer_prompt"`
+- `uv run ruff check src/dgov/prompt_builder.py tests/test_prompt_builder.py`
+- `uv run ruff format --check src/dgov/prompt_builder.py tests/test_prompt_builder.py`
+- `uv run ty check`
+"""
+commit_message = "Add reviewer contract rubric"
+files.edit = ["src/dgov/prompt_builder.py", "tests/test_prompt_builder.py"]
+test_cmd = "uv run pytest -q -m unit tests/test_prompt_builder.py -k \"reviewer_prompt\""
+timeout_s = 1200

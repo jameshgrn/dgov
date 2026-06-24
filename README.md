@@ -61,6 +61,14 @@ dgov run .dgov/plans/my-plan/
 dgov watch
 ```
 
+By default, `dgov watch` follows the single current live plan. If that plan
+finishes and a new single live plan starts, the watcher switches automatically
+and prints a divider. Use `dgov watch --plan my-plan` to pin a plan, `dgov watch
+--all` for all-plan history, and `dgov watch --root /path/to/repo` when watching
+from a sibling worktree or nested shell. For app integrations, `dgov watch
+--ndjson` emits line-delimited JSON rows for plan selections/switches and event
+rows.
+
 For the auto-plan path, replace steps 3–5 with `dgov plan create "<goal>"`. The
 planner agent explores the repo and writes a plan tree; add `--run` to compile
 and execute it immediately.
@@ -220,7 +228,8 @@ dgov plan remediate <dir>  # Scaffold a follow-up plan for a degraded deploy
 dgov archive-plan <name>   # Move a plan to local .dgov/plans/archive/
 
 # Observability
-dgov watch                 # Stream events live
+dgov watch                 # Follow the current live plan
+dgov watch --ndjson        # Stream app-ready line-delimited JSON
 dgov tools audit           # Summarize worker tool-call telemetry
 dgov diagnose              # Report matched failure shapes and next actions
 dgov ledger add <cat>      # Record bug, rule, pattern, decision, or debt

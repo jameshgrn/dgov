@@ -346,6 +346,7 @@ class PlanRunSummary:
     skipped: list[str]
     succeeded: list[str]
     task_errors: dict[str, str]
+    self_review_degraded: bool = False
 
 
 def _execute_plan_with_gates(
@@ -482,6 +483,7 @@ def _summarize_plan_run(artifacts: PlanRunArtifacts) -> PlanRunSummary:
     task_errors = {
         slug: err for slug, err in artifacts.runner.task_errors.items() if slug in failed_now
     }
+    sr_degraded = getattr(artifacts.runner, "self_review_degraded", False)
     run_status, failed, abandoned, skipped, succeeded, _ = run_output.run_status_and_summary(
         artifacts.results,
         task_errors,
@@ -489,6 +491,7 @@ def _summarize_plan_run(artifacts: PlanRunArtifacts) -> PlanRunSummary:
         artifacts.branch_result,
         artifacts.duration,
     )
+    run_status = run_output.apply_self_review_degraded(run_status, sr_degraded)
     return PlanRunSummary(
         run_status=run_status,
         failed=failed,
@@ -496,6 +499,7 @@ def _summarize_plan_run(artifacts: PlanRunArtifacts) -> PlanRunSummary:
         skipped=skipped,
         succeeded=succeeded,
         task_errors=task_errors,
+        self_review_degraded=sr_degraded,
     )
 
 
@@ -518,6 +522,8 @@ def _emit_plan_run_summary(
         branch_result=artifacts.branch_result,
         duration=artifacts.duration,
     )
+    if summary.self_review_degraded:
+        run_output.emit_self_review_degraded_warning()
     _emit_run_summary_output(
         run_status=summary.run_status,
         succeeded=summary.succeeded,

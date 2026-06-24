@@ -182,6 +182,7 @@ class EventDagRunner:
         self._settlement_semaphore = asyncio.Semaphore(1)
         self._shutdown_event = asyncio.Event()
         self._shutdown_interrupted = False
+        self._self_review_degraded: bool = False
         self._settlement_flow = SettlementFlow(
             session_root=session_root,
             plan_name=dag.name,
@@ -226,6 +227,11 @@ class EventDagRunner:
             for slug, ctx in self._tasks.items()
             if ctx.prompt_tokens or ctx.completion_tokens
         }
+
+    @property
+    def self_review_degraded(self) -> bool:
+        """True if any self-review in this run was auto-passed or errored."""
+        return self._self_review_degraded
 
     def _run_recovery_pipeline(self, continue_failed: bool = False) -> None:
         """Orchestrate recovery phases: seed → rehydrate → cleanup → resume.
@@ -1041,6 +1047,7 @@ class EventDagRunner:
         action: ReviewTask,
         findings: str | None,
     ) -> None:
+        self._self_review_degraded = True
         emit_event(
             self.session_root,
             SelfReviewAutoPassed(
@@ -1052,6 +1059,7 @@ class EventDagRunner:
         )
 
     def _emit_self_review_error(self, action: ReviewTask, exc: Exception) -> None:
+        self._self_review_degraded = True
         logger.warning("Self-review failed for %s, auto-passing: %s", action.task_slug, exc)
         emit_event(
             self.session_root,
@@ -1156,7 +1164,7 @@ class EventDagRunner:
         )
 
         if not captured:
-            return True, None
+            return False, "self-review cancelled: reviewer exited without producing a verdict"
         return self._parse_self_review_output(captured[-1])
 
     def _self_review_fix_task_spec(self, task: DagTaskSpec, findings: str) -> DagTaskSpec:

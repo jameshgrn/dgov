@@ -1,0 +1,4 @@
+[plan]
+name = "headless-timeout-process-cleanup"
+summary = "Ensure timed-out headless workers terminate their subprocess group, not only the immediate Python worker."
+sections = ["tasks"]

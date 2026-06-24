@@ -1,0 +1,44 @@
+[tasks.watch-cli-stream]
+summary = "Wire dgov watch to the model layer and add an app-ready NDJSON stream."
+depends_on = ["core/watch-state.watch-state-model"]
+prompt = """
+Orient:
+- Read `src/dgov/watch_state.py` from the dependency commit.
+- Read `src/dgov/cli/watch.py`, especially the Rich formatting functions that should remain presentation-only.
+- Read `tests/test_cli.py` watch tests around `test_watch_help_shows_flags`, `test_watch_root_forwards_resolved_project_root`, `_default_watch_state`, and `_infer_plan_name_from_active_tasks`.
+- Preserve `dgov watch --root` behavior.
+- Do not change `read_events()` public return type.
+
+Edit:
+1. Update `src/dgov/cli/watch.py` so plan selection and latest-run event windows come from `dgov.watch_state`, not local ad hoc `_WatchState` inference.
+2. Keep existing Rich event formatting for terminal output. The CLI module may retain terminal-only state such as last rendered task and task colors.
+3. Add a watch-local `--ndjson` flag. Also treat global `dgov --json watch` as NDJSON output if that is straightforward with the existing `want_json()` helper.
+4. NDJSON output must be line-delimited JSON and flush each line. It must include selection/switch control rows and normalized event rows from `src/dgov/watch_state.py`.
+5. Default terminal mode must:
+   - follow the single current live plan;
+   - switch automatically when a prior plan completes and a new single live plan starts;
+   - print a clear divider when the followed plan changes;
+   - avoid replaying old history when started idle.
+6. `--plan NAME` must remain pinned to that plan.
+7. `--all` must preserve all-plan behavior.
+8. Keep backwards-compatible helper shims if existing tests import `_default_watch_state` or `_infer_plan_name_from_active_tasks`, but delegate their semantics to the new model.
+9. Update `tests/test_cli.py` for:
+   - watch help shows `--ndjson`;
+   - root override forwarding preserves the new argument shape;
+   - default helper semantics still tail from latest id when idle and use latest-run lower bounds;
+   - NDJSON lines include a selection/switch row and event row with plan/event fields.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_cli.py tests/test_watch_state.py tests/test_live_state.py -k "watch or live_plan_names"`
+- `uv run ruff check src/dgov/cli/watch.py tests/test_cli.py`
+- `uv run ruff format --check src/dgov/cli/watch.py tests/test_cli.py`
+"""
+commit_message = "Wire watch CLI to stream model"
+files.edit = ["src/dgov/cli/watch.py", "tests/test_cli.py"]
+files.read = [
+    "src/dgov/watch_state.py",
+    "tests/test_watch_state.py",
+    "tests/test_live_state.py",
+    "src/dgov/cli/__init__.py",
+]
+test_cmd = "uv run pytest -q -m unit tests/test_cli.py tests/test_watch_state.py tests/test_live_state.py -k \"watch or live_plan_names\""

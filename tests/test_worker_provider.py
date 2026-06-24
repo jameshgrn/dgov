@@ -11,10 +11,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from dgov.workers.provider import (
+    InvalidPlanOutputError,
     OpenAICompatibleProvider,
     ProviderRateLimitError,
     TokenLimitPolicy,
     _claude_code_command,
+    _emit_plan_arguments,
     _estimate_request_tokens,
     _estimate_tokens_from_length,
     _extract_retry_after,
@@ -748,7 +750,7 @@ def test_claude_code_provider_rejects_invalid_emit_plan_output(monkeypatch, tmp_
         name="claude", base_url="claude-code://daily?preset=plan", api_key=""
     )
 
-    with pytest.raises(RuntimeError, match="valid emit_plan JSON"):
+    with pytest.raises(InvalidPlanOutputError, match="valid emit_plan JSON"):
         provider.create_chat_completion(
             model="sonnet",
             messages=[{"role": "user", "content": "plan"}],
@@ -912,3 +914,34 @@ def test_claude_code_provider_fallback_to_plain_stdout(monkeypatch, tmp_path) ->
 
     tool_call = response.choices[0].message.tool_calls[0]
     assert json.loads(tool_call.function.arguments) == {"summary": "plain text output"}
+
+
+def test_emit_plan_arguments_accepts_valid_plan_json() -> None:
+    """Valid emit_plan JSON output is returned as a JSON string."""
+    plan = {
+        "name": "test-plan",
+        "summary": "A test plan.",
+        "tasks": [{"slug": "task-1", "summary": "Do something"}],
+    }
+    result = _emit_plan_arguments(json.dumps(plan))
+    assert json.loads(result) == plan
+
+
+def test_emit_plan_arguments_raises_invalid_plan_output_error_with_excerpt() -> None:
+    """Invalid emit_plan output raises InvalidPlanOutputError with a compact diagnostic excerpt."""
+    bad_output = "I thought about it and here is my plan: " + "x" * 300
+
+    with pytest.raises(InvalidPlanOutputError) as exc_info:
+        _emit_plan_arguments(bad_output)
+
+    assert "valid emit_plan JSON" in str(exc_info.value)
+    assert len(exc_info.value.excerpt) <= 200
+    assert exc_info.value.excerpt == bad_output[:200].strip()
+
+
+def test_emit_plan_arguments_raises_invalid_plan_output_error_when_tasks_missing() -> None:
+    """emit_plan output with dict but no tasks list raises InvalidPlanOutputError."""
+    bad_output = json.dumps({"name": "plan", "summary": "No tasks here"})
+
+    with pytest.raises(InvalidPlanOutputError, match="missing a 'tasks' list"):
+        _emit_plan_arguments(bad_output)

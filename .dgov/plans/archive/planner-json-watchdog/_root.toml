@@ -1,0 +1,4 @@
+[plan]
+name = "planner-json-watchdog"
+summary = "Recover once from invalid Claude planner JSON and fail closed with clear diagnostics instead of hanging or silently dropping plan output."
+sections = ["tasks"]
