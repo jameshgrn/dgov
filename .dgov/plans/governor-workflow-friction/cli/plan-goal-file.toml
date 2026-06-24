@@ -30,3 +30,4 @@ Verify:
 commit_message = "Add goal-file support to plan create"
 files.edit = ["src/dgov/cli/plan_create.py", "tests/test_cli_plan_create.py"]
 test_cmd = "uv run pytest -q -m unit tests/test_cli_plan_create.py -k \"goal_file or plan_create\""
+timeout_s = 1200
