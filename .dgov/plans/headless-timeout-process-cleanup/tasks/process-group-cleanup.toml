@@ -1,0 +1,28 @@
+[tasks.process-group-cleanup]
+summary = "Launch headless worker subprocesses in their own process group and terminate the group on cancellation."
+prompt = """
+Orient:
+- Read `src/dgov/workers/headless.py`, especially `_launch_worker_subprocess()`, `_terminate_worker_process()`, and `_wait_for_worker_exit()`.
+- Read `tests/test_worker.py`, especially `_FakeWorkerProcess` and the existing headless cancellation tests.
+- Durable bug #307: timed-out Claude Code workers left orphan subprocess trees attached to the same task worktree after dgov cancelled the immediate worker.
+- Related prior fix #271: synchronous worker/verify subprocesses already use process-group cleanup; mirror that invariant for this async headless path without changing provider behavior.
+
+Edit:
+1. Start headless worker subprocesses in a new session/process group via the async subprocess launch options.
+2. On cancellation, send termination to the worker process group first, falling back to the immediate process when process-group signaling is unavailable or races with exit.
+3. If graceful termination times out, kill the worker process group before falling back to the immediate process kill.
+4. Keep cancellation semantics unchanged: `run_headless_worker()` still re-raises `asyncio.CancelledError` and must not call `on_exit` for cancellations.
+5. Add focused unit coverage in `tests/test_worker.py` proving:
+   - launch requests a new session/process group;
+   - cancellation signals the process group;
+   - the existing stubborn-process fallback still kills when graceful termination does not exit.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_worker.py -k "headless_worker_cancellation or headless_worker_launch"`
+- `uv run ruff check src/dgov/workers/headless.py tests/test_worker.py`
+- `uv run ruff format --check src/dgov/workers/headless.py tests/test_worker.py`
+"""
+commit_message = "Clean up headless worker process groups"
+files.edit = ["src/dgov/workers/headless.py", "tests/test_worker.py"]
+test_cmd = "uv run pytest -q -m unit tests/test_worker.py -k \"headless_worker_cancellation or headless_worker_launch\""
+timeout_s = 1200
